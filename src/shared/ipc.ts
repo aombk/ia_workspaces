@@ -1,0 +1,87 @@
+/**
+ * IPC channel names, kept in one place so the preload bridge and the main
+ * process can't drift apart. The renderer never sees these strings — it only
+ * ever touches the typed `window.iaw` facade defined in preload.ts.
+ */
+export const IPC = {
+  // renderer -> main (invoke)
+  loadState: 'state:load',
+  saveState: 'state:save',
+  listShells: 'shell:list',
+  pickFolder: 'dialog:pickFolder',
+  pickSaveFile: 'dialog:pickSaveFile',
+  pickOpenFile: 'dialog:pickOpenFile',
+  homeDir: 'app:homeDir',
+  appVersion: 'app:version',
+  gitBranch: 'git:branch',
+  readDir: 'files:readDir',
+  listImages: 'files:listImages',
+  readText: 'files:readText',
+  fileStamp: 'files:stamp',
+  readBytes: 'files:readBytes',
+  patchBytes: 'files:patchBytes',
+  writeText: 'files:writeText',
+  createFile: 'files:createFile',
+  openWith: 'files:openWith',
+  gitDiff: 'files:gitDiff',
+  compareFiles: 'files:compare',
+  search: 'files:search',
+  processes: 'app:processes',
+  wslDistros: 'app:wslDistros',
+  sshHosts: 'app:sshHosts',
+  claudeUsage: 'app:claudeUsage',
+  gitStatus: 'git:status',
+  isDirectory: 'files:isDirectory',
+  createDirectory: 'files:createDirectory',
+  renameEntry: 'files:rename',
+  removeEntry: 'files:remove',
+  copyEntry: 'files:copy',
+  moveEntry: 'files:move',
+  setTranslucent: 'window:translucent',
+  ptySpawn: 'pty:spawn',
+  ptyWrite: 'pty:write',
+  ptyResize: 'pty:resize',
+  ptyKill: 'pty:kill',
+  ptyIsBusy: 'pty:isBusy',
+  agentAnswer: 'agent:answer',
+  agentState: 'agent:state',
+  pasteImage: 'clipboard:pasteImage',
+  getContextMenu: 'shell:getContextMenu',
+  setContextMenu: 'shell:setContextMenu',
+  notify: 'notify:show',
+  setBadge: 'badge:set',
+  openExternal: 'shell:openExternal',
+  openInExplorer: 'shell:openInExplorer',
+  revealItem: 'shell:revealItem',
+  readClaudeConfig: 'claude:readConfig',
+  setClaudeIntegration: 'claude:setIntegration',
+  /** Synchronous: the renderer needs it before it first paints. */
+  usesNativeOverlay: 'window:usesNativeOverlay',
+  relaunch: 'app:relaunch',
+  setOverlayColors: 'window:overlayColors',
+  windowMinimize: 'window:minimize',
+  windowMaximizeToggle: 'window:maximizeToggle',
+  windowClose: 'window:close',
+
+  // main -> renderer (send)
+  onPtyData: 'pty:data',
+  onPtyExit: 'pty:exit',
+  onPtyMeta: 'pty:meta',
+  onPaneStatus: 'pane:status',
+  onOpenFolder: 'app:openFolder',
+  onAlert: 'alert:fire',
+  onFocusTerminal: 'focus:terminal',
+  onWindowFocus: 'window:focus',
+  onExternalState: 'state:external',
+  onMenuAction: 'menu:action',
+} as const
+
+export type MenuAction =
+  | 'new-terminal'
+  | 'close-terminal'
+  | 'new-project'
+  | 'settings'
+  | 'find'
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'zoom-reset'

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hardened-runtime entitlements for the signed .app.
+
+  The hardened runtime is required for notarization, and it switches off a set
+  of things by default that Electron and this app in particular need back:
+
+  - allow-jit and allow-unsigned-executable-memory: V8 compiles JavaScript to
+    machine code at runtime. Without these, Chromium will not start at all.
+  - allow-dyld-environment-variables: Electron sets DYLD_ variables when it
+    relaunches itself, which the hardened runtime otherwise strips.
+  - disable-library-validation: node-pty ships a native .node addon that is not
+    signed with our team ID. This is what lets it load.
+
+  The last two matter more here than in an ordinary Electron app, because this
+  one's whole job is spawning other people's programs:
+
+  - inherit on the child: a shell we spawn, and everything it spawns after that,
+    must not inherit our sandbox restrictions. A terminal that could not run
+    `git` would be pointless.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

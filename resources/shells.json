@@ -1,0 +1,164 @@
+{
+  "$comment": [
+    "Every shell the app knows how to launch, on every platform, in one place.",
+    "",
+    "Read by src/main/shells.ts and src-tauri/src/shells.rs. It exists because",
+    "those two files previously held the same table twice, in two languages, and",
+    "adding macOS and Linux would have made that six copies. A new shell is an",
+    "entry here and nothing else.",
+    "",
+    "`candidates` are tried in order and the first that exists on disk wins, so a",
+    "shell installed by Homebrew on Apple silicon, Homebrew on Intel, and the",
+    "system is one entry rather than three. ${VAR} is expanded from the",
+    "environment; a candidate whose variable is unset is skipped rather than",
+    "producing a path with a hole in it.",
+    "",
+    "`integration` names a launch mechanism, not a script. The three are",
+    "genuinely different pieces of engineering — a command-line flag, an rc file",
+    "argument, and an environment variable pointing at a directory — so each host",
+    "implements the three and this file only says which applies."
+  ],
+
+  "shells": [
+    {
+      "kind": "powershell",
+      "label": "Windows PowerShell",
+      "platforms": ["windows"],
+      "candidates": ["${SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"],
+      "args": [],
+      "integration": "powershell-file",
+      "login": false
+    },
+    {
+      "kind": "pwsh",
+      "label": "PowerShell 7",
+      "platforms": ["windows", "macos", "linux"],
+      "candidates": [
+        "${ProgramFiles}\\PowerShell\\7\\pwsh.exe",
+        "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        "/opt/homebrew/bin/pwsh",
+        "/usr/local/bin/pwsh",
+        "/usr/bin/pwsh"
+      ],
+      "args": [],
+      "integration": "powershell-file",
+      "login": false
+    },
+    {
+      "kind": "cmd",
+      "label": "Command Prompt",
+      "platforms": ["windows"],
+      "candidates": ["${SystemRoot}\\System32\\cmd.exe"],
+      "args": [],
+      "integration": "none",
+      "login": false
+    },
+    {
+      "kind": "wsl",
+      "label": "WSL",
+      "platforms": ["windows"],
+      "candidates": ["${SystemRoot}\\System32\\wsl.exe"],
+      "args": [],
+      "integration": "none",
+      "login": false
+    },
+
+    {
+      "kind": "ssh",
+      "label": "SSH",
+      "platforms": ["windows", "macos", "linux"],
+      "candidates": [
+        "${SystemRoot}\\System32\\OpenSSH\\ssh.exe",
+        "/usr/bin/ssh",
+        "/opt/homebrew/bin/ssh",
+        "/usr/local/bin/ssh"
+      ],
+      "args": [],
+      "integration": "none",
+      "login": false
+    },
+
+    {
+      "kind": "zsh",
+      "label": "zsh",
+      "platforms": ["macos", "linux"],
+      "candidates": ["/bin/zsh", "/usr/bin/zsh", "/opt/homebrew/bin/zsh", "/usr/local/bin/zsh"],
+      "args": [],
+      "integration": "zsh-zdotdir",
+      "login": true
+    },
+    {
+      "kind": "bash",
+      "label": "bash",
+      "platforms": ["macos", "linux"],
+      "candidates": ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/bin/bash", "/usr/bin/bash"],
+      "args": [],
+      "integration": "bash-rcfile",
+      "login": true
+    },
+    {
+      "kind": "fish",
+      "label": "fish",
+      "platforms": ["macos", "linux"],
+      "candidates": ["/opt/homebrew/bin/fish", "/usr/local/bin/fish", "/usr/bin/fish"],
+      "args": [],
+      "integration": "none",
+      "login": true
+    },
+    {
+      "kind": "sh",
+      "label": "sh",
+      "platforms": ["macos", "linux"],
+      "candidates": ["/bin/sh"],
+      "args": [],
+      "integration": "none",
+      "login": true
+    }
+  ],
+
+  "$notes": {
+    "pwsh-candidates": [
+      "Listed for all three platforms because PowerShell 7 is genuinely",
+      "cross-platform and someone who chose it on Windows will want it on a Mac.",
+      "The homebrew paths come before /usr/bin so a user-installed 7.x wins over",
+      "an older distro package."
+    ],
+    "bash-order": [
+      "Homebrew first, and this one matters on macOS: /bin/bash is bash 3.2 from",
+      "2007, kept at that version for licensing reasons. The integration script",
+      "uses PROMPT_COMMAND as an array on 5.1+, and 3.2 takes the string path —",
+      "it works either way, but anyone who installed a modern bash meant it."
+    ],
+    "fish": [
+      "No integration: fish is not POSIX and posix.sh would not parse in it. It",
+      "launches and works, minus folder tracking and command-finished alerts —",
+      "the same deal cmd.exe and WSL already get. A fish port of the script is a",
+      "third file, and that is a trade to make when someone actually wants it."
+    ],
+    "ssh": [
+      "On all three platforms, and that is not a compromise: Windows has",
+      "shipped OpenSSH since 10/1809, at the System32 path listed above. So an",
+      "SSH pane is the same feature everywhere, unlike WSL.",
+      "",
+      "`integration: none`, and this is the honest part. The integration script",
+      "lives on *this* machine; the shell answering on the far end has never",
+      "seen it and emits nothing. So an SSH pane has no folder tracking and no",
+      "command-finished alerts — the same deal cmd.exe, WSL and fish get. What",
+      "still works is everything read off the byte stream: activity detection,",
+      "the bell, and an agent's own declared state via `iaw`.",
+      "",
+      "Making it work would mean writing a file onto someone else's machine,",
+      "which is a decision for the person whose machine it is, not a default.",
+      "",
+      "No `login: true` either: the login shell is requested inside the remote",
+      "command instead, because -l here would be handed to ssh rather than to",
+      "the shell it starts."
+    ],
+    "login": [
+      "POSIX shells launch as login shells because that is where a Mac's PATH",
+      "comes from: /etc/zprofile runs path_helper, and a non-login shell skips",
+      "it, leaving panes without /usr/local/bin. Windows has no equivalent, so",
+      "the flag is false there."
+    ]
+  }
+}

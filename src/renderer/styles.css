@@ -1,0 +1,4536 @@
+@import '@xterm/xterm/css/xterm.css';
+
+:root {
+  --bg: #141414;
+  --bg-raised: #1c1c1c;
+  --bg-hover: #262626;
+  --bg-active: #303030;
+  --border: #2a2a2a;
+  --border-strong: #3a3a3a;
+  --text: #dcdcdc;
+  --text-dim: #9a9a9a;
+  --text-faint: #6f6f6f;
+  --accent: #9e9e9e;
+  --danger: #d16a63;
+  --warn: #d1a45f;
+  --titlebar-h: 36px;
+  --tabstrip-h: 36px;
+  --status-h: 24px;
+  /* Corner rounding, in three tiers, overwritten by the theme's roundness.
+     `sm` is badges and chips, `md` is panels, rows and inputs, `lg` is what
+     floats — dialogs, menus, toasts. These are the `full` values; the theme
+     writes them all on :root at startup, so nothing here needs to change for
+     `subtle` or `square`.
+
+     `--radius-knob` is the switch's slider and follows its track. `--radius-dot`
+     is everything circular by meaning — a workspace colour, an attention mark,
+     the tick on the selected mode — which stays a circle at `subtle` and goes
+     square only at `square`, where nothing in the window is round. Nothing in
+     this file should hard-code a radius again; that is what put a round knob in
+     a square trough the first time. */
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --radius-knob: 50%;
+  --radius-dot: 50%;
+  --radius-workspace-dot: 50%;
+  --guide-line: #4a4a4a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+ * A class that sets `display` outranks the UA stylesheet's `[hidden]` rule, so
+ * elements like .findbar (display:flex) stayed visible despite the attribute.
+ * This makes `hidden` authoritative everywhere.
+ */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  user-select: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input,
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  outline: none;
+}
+
+input:focus,
+select:focus {
+  border-color: var(--accent);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ------------------------------------------------------------------ titlebar */
+
+.titlebar {
+  height: var(--titlebar-h);
+  min-height: var(--titlebar-h);
+  display: flex;
+  align-items: stretch;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+/*
+ * Where Windows draws the caption buttons itself, they are composited over the
+ * page instead of taking part in its layout, so the bar has to leave a hole for
+ * them. Chromium publishes the strip's geometry through these env vars and
+ * keeps them current as the window is resized, maximised or moved between
+ * monitors — which a hard-coded width could not do, since the buttons scale
+ * with the display's DPI. Runtimes with no overlay never set the class.
+ */
+html.native-caption .titlebar {
+  padding-right: calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px));
+}
+
+.titlebar-drag {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+  -webkit-app-region: drag;
+  min-width: 0;
+}
+
+.app-mark {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--workspace-color, var(--accent));
+  flex: none;
+}
+
+.app-name {
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  flex: none;
+}
+
+.titlebar-context {
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Only shown on runtimes without native caption buttons (Tauri). */
+.window-controls {
+  display: flex;
+  -webkit-app-region: no-drag;
+}
+
+.window-controls button {
+  width: 46px;
+  display: grid;
+  place-items: center;
+  font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets';
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.window-controls button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.window-controls button.close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------- sidebar */
+
+.sidebar {
+  width: 230px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border);
+  min-width: 0;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 8px 6px 14px;
+}
+
+.sidebar-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.icon-btn.wide {
+  width: auto;
+  gap: 8px;
+  grid-auto-flow: column;
+  justify-content: start;
+  padding: 0 10px;
+  height: 30px;
+  width: 100%;
+}
+
+.workspace-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 6px;
+}
+
+.workspace {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.workspace:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.workspace.active {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+/* Accent rail on the active project, tinted per project colour. */
+.workspace.active::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--workspace-color, var(--accent));
+}
+
+.workspace.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.workspace.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* The fold. Always present so names line up whether a row has children or not. */
+/*
+ * The elbow marking a nested workspace.
+ *
+ * Segoe UI Symbol is named ahead of the inherited UI font on purpose: U+2937 is
+ * not in Segoe UI Variable, and a missing glyph is a tofu box rather than a
+ * fallback to something similar. Segoe UI Symbol ships with every supported
+ * Windows and does have it. The last resort is the arrow the sharper of the two
+ * candidates uses, which is in far more fonts — a box would be worse than a
+ * corner that is merely square.
+ */
+.workspace-elbow {
+  width: 10px;
+  flex: none;
+  text-align: center;
+  font-family: 'Segoe UI Symbol', 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-faint);
+  /* Sits low in its em box, so it lines up with the name rather than the cap. */
+  transform: translateY(-1px);
+  /*
+   * These two numbers are what put the glyph under the parent's colour dot.
+   *
+   * The row is a 9px-gap flex line; trimming to 8px before and 3px after makes
+   * the elbow's whole footprint 21px against the 9px the gap alone would be —
+   * exactly one level of indent more. `workspaceRow` gives that level back by
+   * dropping this row's padding by the same 12px, so the glyph lands in the
+   * space the indent would have wasted: centred on the column the parent's dot
+   * sits in, and close enough to this row's dot to read as joined to it. The
+   * dot and the name still step by a clean 12px per level.
+   */
+  margin-left: -1px;
+  margin-right: -6px;
+}
+
+.workspace-twisty {
+  width: 10px;
+  flex: none;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.workspace-twisty:hover {
+  color: var(--text);
+}
+
+/* Dropping into the middle of a row nests under it; the edges reorder. */
+.workspace.drop-into {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.workspace-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-workspace-dot);
+  background: var(--workspace-color, var(--accent));
+  flex: none;
+}
+
+.workspace-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.workspace-name-input {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 13px;
+}
+
+.workspace-count {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-lg);
+  padding: 1px 6px;
+  flex: none;
+}
+
+.attention-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-dot);
+  background: var(--warn);
+  flex: none;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/*
+ * A question, rather than something that merely happened. It gets the blocked
+ * colour and a halo so it reads at a glance across a full sidebar, and it stays
+ * put while you look at it — see `paneNeedsInput`.
+ */
+.attention-dot--input {
+  width: 8px;
+  height: 8px;
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 28%, transparent);
+}
+
+/*
+ * A workspace already has a mark standing for it, so the sidebar pulses that
+ * one instead of growing a second dot beside it. Its own colour is kept — the
+ * blink is the signal, and swapping the colour would cost the one thing that
+ * tells the workspaces apart at a glance.
+ */
+.workspace.has-attention .workspace-dot {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.workspace.needs-input .workspace-dot {
+  animation: pulse 1.1s ease-in-out infinite;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 32%, transparent);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/*
+ * The row or tab holding a question, tinted so the thing you have to find is
+ * findable without hunting for a 8px dot. The left edge is the loud part; the
+ * wash behind it keeps it legible when the row is also the active one.
+ */
+.workspace.needs-input,
+.tab.needs-input {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+
+.workspace.needs-input:hover,
+.tab.needs-input:hover {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+.workspace.needs-input.active,
+.tab.needs-input.active {
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+}
+
+.add-workspace {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 4px 6px;
+  padding: 0 8px;
+  height: 32px;
+  border-radius: var(--radius);
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.add-workspace:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.add-workspace .plus {
+  width: 8px;
+  text-align: center;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.sidebar-foot {
+  padding: 6px;
+  border-top: 1px solid var(--border);
+}
+
+/* Collapsed rail: icons only. */
+.app.sidebar-collapsed .sidebar {
+  width: 52px !important;
+}
+
+.app.sidebar-collapsed .sidebar-title,
+.app.sidebar-collapsed .workspace-name,
+.app.sidebar-collapsed .workspace-count,
+.app.sidebar-collapsed .add-workspace .label,
+.app.sidebar-collapsed .sidebar-foot .label {
+  display: none;
+}
+
+.app.sidebar-collapsed .workspace,
+.app.sidebar-collapsed .add-workspace,
+.app.sidebar-collapsed .icon-btn.wide {
+  justify-content: center;
+  padding: 0;
+}
+
+/*
+ * Collapsed, the sidebar is a column of dots with no room for a name, so the
+ * fold and the indent have nothing to say. Children stay listed: hiding them
+ * would make a shut parent look like workspaces that had vanished.
+ */
+.app.sidebar-collapsed .workspace-twisty {
+  display: none;
+}
+
+.app.sidebar-collapsed .workspace {
+  padding-left: 0 !important;
+}
+
+.app.sidebar-collapsed #collapse-sidebar {
+  transform: rotate(180deg);
+}
+
+.app.sidebar-collapsed .sidebar-resizer {
+  pointer-events: none;
+}
+
+.sidebar-resizer {
+  width: 4px;
+  margin-left: -2px;
+  margin-right: -2px;
+  z-index: 5;
+  cursor: col-resize;
+  background: transparent;
+  flex: none;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+  background: var(--accent);
+  opacity: 0.5;
+}
+
+/* ---------------------------------------------------------------------- main */
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tabstrip {
+  height: var(--tabstrip-h);
+  min-height: var(--tabstrip-h);
+  display: flex;
+  align-items: stretch;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tabstrip::-webkit-scrollbar {
+  height: 0;
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  max-width: 220px;
+  min-width: 110px;
+  border-right: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  flex: none;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.tab.active {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.tab.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--workspace-color, var(--accent));
+}
+
+.tab.drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tab.drop-after {
+  box-shadow: inset -2px 0 0 var(--accent);
+}
+
+.tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.tab-title-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.tab-close {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  color: var(--text-faint);
+  flex: none;
+  opacity: 0;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: rgba(248, 81, 73, 0.18);
+  color: var(--danger);
+}
+
+.new-tab {
+  width: 34px;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  font-size: 16px;
+  flex: none;
+}
+
+.new-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.terminal-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/*
+ * No inset. The content area used to be held off the chrome by a few pixels of
+ * padding on every side, which reads as a gap rather than as a boundary — a
+ * single hairline in the theme's own border colour says the same thing and
+ * gives the space back to the terminal.
+ */
+.terminal-host {
+  position: absolute;
+  inset: 0;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+
+/* Every terminal stays mounted so scrollback survives tab switches. */
+.pane {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  /* Just enough that the first column of glyphs is not welded to the edge;
+     the old value also padded the top and left, which is what read as a gutter. */
+  padding: 2px 0 2px 4px;
+  overflow: hidden;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 6px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.empty-title {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.empty-hint {
+  margin: 0;
+  font-size: 12px;
+}
+
+kbd {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+}
+
+/* ------------------------------------------------------------------- findbar */
+
+.findbar {
+  position: absolute;
+  top: calc(var(--titlebar-h) + var(--tabstrip-h) + 8px);
+  right: 20px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.findbar input {
+  width: 220px;
+}
+
+.findbar button {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+}
+
+.findbar button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* ----------------------------------------------------------------- statusbar */
+
+.statusbar {
+  height: var(--status-h);
+  min-height: var(--status-h);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.status-spacer {
+  flex: 1;
+}
+
+.status-cwd {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.status-cwd:hover {
+  color: var(--text-dim);
+  text-decoration: underline;
+}
+
+.status-runtime {
+  padding: 1px 6px;
+  border-radius: var(--radius-lg);
+  background: rgba(88, 166, 255, 0.12);
+  color: var(--accent);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* -------------------------------------------------------------- context menu */
+
+.context-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 190px;
+  padding: 4px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
+/*
+ * Labels start at the left, always.
+ *
+ * This was `justify-content: space-between`, which is right for an item with a
+ * shortcut — label at one end, `Ctrl+T` at the other — and wrong for everything
+ * else. On an item carrying a state dot it pushed the two children apart, so
+ * the label ended up hard against the right edge while its neighbours sat left,
+ * and a long menu of "Reopen as…" entries read as a ragged column.
+ *
+ * The rule that fixes both: nothing is spread, the label takes the slack, and
+ * anything trailing is pushed out by that rather than by the container.
+ */
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text);
+  text-align: left;
+}
+
+.context-menu button .label {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+}
+
+/*
+ * Which one you are on, as a dot in the workspace's own colour.
+ *
+ * A fixed slot whether or not it is filled, so every label in the group lines
+ * up and the column does not move as the selection changes. The hollow ring on
+ * the others is what makes the filled one read as "this one" rather than as a
+ * decoration that happens to be there.
+ */
+.context-menu .check {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-dot);
+  border: 1px solid var(--text-faint);
+  box-sizing: border-box;
+}
+
+.context-menu .check.on {
+  background: var(--workspace-color, var(--accent));
+  border-color: var(--workspace-color, var(--accent));
+}
+
+.context-menu button:hover {
+  background: var(--bg-active);
+}
+
+.context-menu button.danger:hover {
+  background: rgba(248, 81, 73, 0.16);
+  color: var(--danger);
+}
+
+.context-menu .shortcut {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.context-menu .sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+/* Eight per row, so the palette wraps into rows rather than stretching the
+   menu as wide as the number of colours. */
+.context-menu .swatches {
+  display: grid;
+  grid-template-columns: repeat(8, 16px);
+  gap: 6px;
+  padding: 6px 10px;
+}
+
+.context-menu .swatch {
+  /* flex: none, or the row squashes these into ellipses. */
+  flex: none;
+  width: 16px;
+  height: 16px;
+  aspect-ratio: 1;
+  padding: 0;
+  border-radius: var(--radius-dot);
+  border: 2px solid transparent;
+}
+
+.context-menu .swatch.selected {
+  border-color: var(--text);
+}
+
+/* ----------------------------------------------------------------- settings */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(1, 4, 9, 0.6);
+}
+
+.settings-panel {
+  position: fixed;
+  z-index: 60;
+  /* Reaching the end of the settings must not start scrolling the terminal
+     behind them, and the panel is what the wheel belongs to while it is up. */
+  overscroll-behavior: contain;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(620px, calc(100vw - 48px));
+  max-height: min(760px, calc(100vh - 64px));
+  overflow-y: auto;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+
+.settings-head {
+  position: sticky;
+  top: 0;
+  /* Above the fields it slides over: without a stacking order of its own, a
+     select or a slider scrolling past is painted on top of the header. */
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-body {
+  padding: 8px 20px 20px;
+}
+
+.settings-section {
+  margin-top: 18px;
+}
+
+.settings-section > h3 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+}
+
+.field:last-child {
+  border-bottom: none;
+}
+
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.field-label .name {
+  font-size: 13px;
+}
+
+.field-label .hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+
+.field-control {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-control input[type='number'] {
+  width: 72px;
+}
+
+/* A value the panel reports rather than edits — the app version, and the like. */
+.field-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The check button and whatever it last reported. Wraps rather than stretching
+ * the row, because "Could not check: <reason>" can be a sentence and the panel
+ * is a fixed width.
+ */
+.update-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 260px;
+}
+
+.update-row .hint {
+  text-align: right;
+}
+
+.field-control input[type='text'] {
+  width: 200px;
+}
+
+.field-control select {
+  min-width: 160px;
+}
+
+.field-control input[type='range'] {
+  width: 120px;
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+/* Switch — a box, not a slider.
+
+   Off is an empty outline; on is the same box with an accent square inside it,
+   inset a couple of pixels. A sliding pill spends 34px saying one bit, and its
+   travel is the only thing distinguishing the two states — here the fill does
+   that, which reads at a glance and at half the width.
+
+   The outline stays put between states. Only the inner square appears, so the
+   row of settings does not shift as things are switched. */
+.switch {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: none;
+  transition: border-color 0.15s;
+  flex: none;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  /* The couple of pixels. `inset` rather than a width, so the fill tracks the
+     box: change the size above and this still lands correctly. */
+  inset: 2px;
+  border-radius: var(--radius-sm);
+  background: none;
+  transition: background 0.15s;
+}
+
+.switch:hover {
+  border-color: var(--accent);
+}
+
+.switch[aria-checked='true'] {
+  border-color: var(--accent);
+}
+
+.switch[aria-checked='true']::after {
+  background: var(--accent);
+}
+
+.btn {
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-active);
+  font-size: 12px;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+.btn.primary {
+  background: #1f6feb;
+  border-color: #1f6feb;
+  color: #fff;
+}
+
+.btn.primary:hover {
+  background: #388bfd;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.callout {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: rgba(88, 166, 255, 0.08);
+  border: 1px solid rgba(88, 166, 255, 0.25);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.callout.ok {
+  background: rgba(63, 185, 80, 0.08);
+  border-color: rgba(63, 185, 80, 0.3);
+}
+
+/* A flex item is sized by its content unless told otherwise, so without this a
+   long unbroken command widens the whole panel instead of wrapping. */
+.callout > * {
+  min-width: 0;
+}
+
+.callout code {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  /* The sample commands carry JSON arguments with no spaces to break at. */
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- agent inbox */
+
+.inbox-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.inbox-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.inbox-title {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.inbox-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inbox-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* The danger rail matches the tab and workspace tint, so the same question
+   looks like the same question wherever you meet it. */
+.inbox-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--bg-hover);
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+
+.inbox-where {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.inbox-where:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.inbox-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-dot);
+  background: var(--workspace-color, var(--accent));
+  flex: none;
+}
+
+.inbox-where__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inbox-reason {
+  color: var(--text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.inbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.inbox-choice {
+  padding: 3px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.inbox-choice:hover {
+  border-color: var(--accent);
+}
+
+.inbox-choice.default {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.inbox-note,
+.inbox-sent {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ----------------------------------------------------------------------- tasks */
+
+.tasks-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.tasks-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.tasks-title {
+  flex: 1;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.tasks-save {
+  padding: 3px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-save:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.tasks-save:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.tasks-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tasks-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.tasks-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  cursor: default;
+  min-width: 0;
+}
+
+.tasks-row:hover {
+  background: var(--bg-hover);
+}
+
+.tasks-row.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.tasks-row.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.tasks-run {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tasks-run:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.tasks-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tasks-name {
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-command {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tasks-name-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-active);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 2px 6px;
+}
+
+/* ------------------------------------------------------------ command palette */
+
+.palette {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  /* Not centred: the list grows downward, and a box that moves as you type is
+     a box you have to keep re-finding. */
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.palette-box {
+  width: min(620px, 88vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-raised, var(--bg));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+#palette-input {
+  flex: none;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.palette-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.palette-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.palette-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.palette-row.selected {
+  background: var(--bg-active);
+}
+
+.palette-label {
+  color: var(--text);
+  font-size: 13px;
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-detail {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-kind {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ---------------------------------------------------------------- reader pane */
+
+.reader-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.reader-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.reader-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* The end of a path is the useful end. */
+  direction: rtl;
+  text-align: left;
+}
+
+.reader-btn {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.reader-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.reader-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
+}
+
+.reader-error {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.reader-plain {
+  margin: 0;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Rendered markdown. Measured column, because a README across a 1400px pane is
+   unreadable however good the typography is. */
+.reader-body.markdown {
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.65;
+  max-width: 78ch;
+}
+
+.reader-body.markdown h1,
+.reader-body.markdown h2,
+.reader-body.markdown h3,
+.reader-body.markdown h4,
+.reader-body.markdown h5,
+.reader-body.markdown h6 {
+  margin: 1.4em 0 0.5em;
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.reader-body.markdown h1 {
+  font-size: 1.7em;
+}
+.reader-body.markdown h2 {
+  font-size: 1.35em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--border);
+}
+.reader-body.markdown h3 {
+  font-size: 1.15em;
+}
+
+.reader-body.markdown > *:first-child {
+  margin-top: 0;
+}
+
+.reader-body.markdown p,
+.reader-body.markdown ul,
+.reader-body.markdown ol {
+  margin: 0 0 0.9em;
+}
+
+.reader-body.markdown ul,
+.reader-body.markdown ol {
+  padding-left: 1.5em;
+}
+
+.reader-body.markdown li {
+  margin: 0.2em 0;
+}
+
+.reader-body.markdown code {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.88em;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+
+.reader-body.markdown pre {
+  margin: 0 0 0.9em;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  overflow-x: auto;
+}
+
+.reader-body.markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: normal;
+}
+
+.reader-body.markdown blockquote {
+  margin: 0 0 0.9em;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+
+.reader-body.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.4em 0;
+}
+
+.reader-body.markdown a[data-href] {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* A link we would not follow — relative, or a scheme we do not open. Shown as
+   text so the label still reads, without pretending to be clickable. */
+.reader-body.markdown .md-link-inert {
+  color: var(--text-dim);
+}
+
+/* Never wider than the column, and never taller than most of the pane: a
+   1600px screenshot in a narrow split should shrink to fit, not set the width
+   of the document and put a horizontal scrollbar under every paragraph. */
+.reader-body.markdown .md-image {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  height: auto;
+  margin: 0.2em 0 1em;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* An image that did not load reads as its caption rather than a torn icon. */
+.reader-body.markdown .md-image-missing {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ------------------------------------------------------------------ diff pane */
+
+.diff-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.diff-title {
+  flex: 1;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.diff-btn {
+  padding: 2px 9px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.diff-btn.active,
+.diff-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.diff-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.diff-files {
+  flex: none;
+  width: 220px;
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding: 4px;
+}
+
+.diff-file {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.diff-file:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.diff-file.active {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.diff-file__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* The end of a path is the useful end. */
+  direction: rtl;
+  text-align: left;
+}
+
+.diff-status {
+  flex: none;
+  width: 12px;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  text-align: center;
+}
+
+.diff-status--m {
+  color: var(--warn);
+}
+.diff-status--a,
+.diff-status--new {
+  color: var(--ok, #7fb069);
+}
+.diff-status--d {
+  color: var(--danger);
+}
+
+.diff-body {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+.diff-empty {
+  padding: 24px 16px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.diff-text {
+  margin: 0;
+  padding: 8px 0;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  /* Diff lines are meaningful as lines — wrapping them makes a hunk unreadable,
+     so the pane scrolls sideways instead. */
+  white-space: pre;
+  min-width: max-content;
+}
+
+.diff-line {
+  padding: 0 12px;
+}
+
+.diff-line--add {
+  background: rgba(63, 185, 80, 0.13);
+  color: #9fd6a5;
+}
+.diff-line--del {
+  background: rgba(248, 81, 73, 0.13);
+  color: #f0a49f;
+}
+.diff-line--hunk {
+  color: var(--accent);
+  background: rgba(88, 166, 255, 0.08);
+}
+.diff-line--file,
+.diff-line--meta {
+  color: var(--text-faint);
+}
+.diff-line--ctx {
+  color: var(--text-dim);
+}
+
+/* --------------------------------------------------------------- compare pane
+
+   Shares the diff pane's head, buttons and colours; what is its own is the pair
+   of drop slots and the two-column body. */
+
+.compare-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.compare-pickers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 8px 10px;
+  flex: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.compare-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  /* Dashed until it holds something: an empty slot is an invitation, and the
+     border is what says "put a file here" without a sentence saying so. */
+  border: 1px dashed var(--border-strong);
+  min-width: 0;
+}
+
+.compare-slot.filled {
+  border-style: solid;
+  border-color: var(--border);
+  background: var(--bg-raised);
+}
+
+.compare-slot.over {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.compare-slot__label {
+  font-size: 12px;
+  color: var(--text);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compare-slot__hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  direction: rtl; /* a path that does not fit should lose its start, not its name */
+  text-align: left;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compare-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* Two columns, each its own scroller: the body must not scroll as well, or the
+   inner bars end up out of reach below the fold. */
+.compare-body.columns {
+  overflow: hidden;
+}
+
+.compare-columns {
+  display: grid;
+  /* The same dead-centre split as a wrapped row, and for the same reason: the
+     floor of 0 stops a long line on one side widening its own column. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.compare-col {
+  overflow: auto;
+  min-width: 0;
+}
+
+.compare-col:first-child {
+  border-right: 1px solid var(--border);
+}
+
+/* Opened to the widest line in the column, so a changed line's background runs
+   the whole scrollable width rather than stopping where the view happens to. */
+.compare-col__inner {
+  min-width: max-content;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 4px 0;
+}
+
+/* The divider is the column's edge here, not each cell's. Left on, it would
+   also draw a line down the far right of the pane and one that scrolls away
+   with the text it belongs to. */
+.compare-col .compare-cell {
+  border-right: none;
+}
+
+.compare-split {
+  min-width: max-content;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 4px 0;
+}
+
+.compare-row {
+  display: grid;
+  /* Dead centre, and the same centre on every row.
+
+     `1fr` is `minmax(auto, 1fr)`, and that automatic minimum is the width of
+     the cell's own content — which, with `white-space: pre`, is its longest
+     line entire. Each row is its own grid, so a row with a long line on the
+     left held its left column wider than a row without one, and the divider
+     wandered down the page instead of running straight. Flooring both tracks
+     at 0 takes the content out of the decision: two equal halves, always.
+
+     The pane still scrolls sideways. `min-width: max-content` on the parent is
+     what does that, and under a max-content constraint two equal `fr` tracks
+     size to twice the widest line — so nothing is clipped, it is reached by
+     scrolling, exactly as before. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.compare-cell {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px;
+  /* Lines are meaningful as lines; the pane scrolls sideways instead of
+     wrapping, exactly as the unified view does. */
+  white-space: pre;
+  border-right: 1px solid var(--border);
+}
+
+.compare-num {
+  flex: none;
+  width: 4ch;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+/* ---- Wrap toggle.
+
+   Dropping `min-width: max-content` is the half that matters: while the body
+   is allowed to be as wide as its widest line there is no overflow to wrap,
+   and `pre-wrap` alone would do nothing at all.
+
+   Alignment survives because each row is its own grid — a left line that wraps
+   to three lines makes the whole row three lines tall, so its right-hand
+   counterpart still sits opposite it. That is the property the per-row grid was
+   already buying, now doing work it was not asked for before. */
+.compare-pane.wrap .compare-split,
+.compare-pane.wrap .diff-text {
+  min-width: 0;
+}
+
+.compare-pane.wrap .compare-cell,
+.compare-pane.wrap .diff-text {
+  white-space: pre-wrap;
+  /* A long path or a minified line has no spaces to break at, and without this
+     it would push the column wide again and defeat the whole toggle. */
+  overflow-wrap: anywhere;
+}
+
+/* The gutter must not wrap with the text, or the number tears off its line. */
+.compare-pane.wrap .compare-cell {
+  align-items: flex-start;
+}
+
+.compare-cell--ctx {
+  color: var(--text-dim);
+}
+.compare-cell--add {
+  background: rgba(63, 185, 80, 0.13);
+  color: #9fd6a5;
+}
+.compare-cell--del {
+  background: rgba(248, 81, 73, 0.13);
+  color: #f0a49f;
+}
+/* Padding opposite a change on the other side — deliberately inert. */
+.compare-cell--blank {
+  background: color-mix(in srgb, var(--text-faint) 7%, transparent);
+}
+
+.compare-row--hunk .compare-cell--hunk {
+  grid-column: 1 / -1;
+  color: var(--accent);
+  background: rgba(88, 166, 255, 0.08);
+  border-right: none;
+}
+
+/* ---------------------------------------------------------------- search pane */
+
+.search-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.search-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+}
+
+.search-toggle {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.search-toggle.active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.search-status {
+  flex: none;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
+}
+
+.search-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.search-group {
+  margin-bottom: 6px;
+}
+
+.search-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.search-file:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.search-file__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* The end of a path is the useful end. */
+  direction: rtl;
+  text-align: left;
+}
+
+.search-file__count {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-faint);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-lg);
+  padding: 1px 6px;
+}
+
+.search-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 2px 8px 2px 20px;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.search-hit:hover {
+  background: var(--bg-hover);
+}
+
+.search-hit__line {
+  flex: none;
+  min-width: 3ch;
+  text-align: right;
+  color: var(--text-faint);
+}
+
+.search-hit__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-hit mark {
+  background: rgba(210, 153, 34, 0.32);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+}
+
+/* ----------------------------------------------------------------- ports pane */
+
+.ports-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.ports-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.ports-title {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.ports-status {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.ports-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0 8px;
+}
+
+.ports-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.ports-pane-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px 3px;
+  margin-top: 4px;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.ports-pane-row:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.ports-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-dot);
+  background: var(--workspace-color, var(--accent));
+  flex: none;
+}
+
+.ports-pane-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ports-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px 3px 20px;
+  min-width: 0;
+}
+
+.ports-row:hover {
+  background: var(--bg-hover);
+}
+
+.ports-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ports-pid {
+  flex: none;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* A port is the thing you came here to find, so it is the loudest mark. */
+.ports-port {
+  flex: none;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+}
+
+.ports-stop {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.ports-row:hover .ports-stop {
+  opacity: 1;
+}
+
+.ports-stop:hover {
+  border-color: var(--danger);
+  color: var(--text);
+}
+
+/* A one-line "what is this pane" note under a panel's header. */
+.pane-about {
+  flex: none;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* ----------------------------------------------------------------------- notes */
+
+/* The app turns selection off everywhere, so a drag across a tab strip or a
+   pane header does not smear highlight over the chrome. The rendered note is
+   the exception: it is prose, and prose you cannot copy out of is prose you end
+   up retyping. Links keep their pointer; everything else reads as text. */
+.notes-pane .reader-body {
+  user-select: text;
+  cursor: text;
+}
+
+.notes-pane .reader-body a[data-href],
+.notes-pane .reader-body button {
+  cursor: pointer;
+}
+
+.notes-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+/* The formatting-as-you-type view: one editable surface where the markup stays
+   visible but stands back, and what it marks up is drawn as it will read.
+   Sizes and weights vary per line, which a textarea cannot do — hence a
+   contenteditable, and hence the hand-rolled undo behind it. */
+.md-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
+  outline: none;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+  caret-color: var(--accent);
+}
+
+/* Syntax that is present, editable, and out of the way. */
+.md-mark {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.md-line {
+  min-height: 1.65em;
+}
+
+.md-h1,
+.md-h2,
+.md-h3,
+.md-h4,
+.md-h5,
+.md-h6 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin-top: 0.6em;
+}
+
+.md-h1 {
+  font-size: 1.7em;
+}
+.md-h2 {
+  font-size: 1.35em;
+}
+.md-h3 {
+  font-size: 1.15em;
+}
+
+.md-quote {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.md-rule {
+  color: var(--text-faint);
+}
+
+/* A fenced block *inside a markdown document*, tinted to say it is a block
+   inside something. A file that is entirely code is not — `.md-src` is the
+   same monospace with no band behind it, which is why the two are separate
+   classes rather than one. */
+.md-code-line,
+.md-src,
+.md-code {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.md-code-line {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.md-code {
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-sm);
+}
+
+.md-strong {
+  font-weight: 700;
+}
+
+.md-em {
+  font-style: italic;
+}
+
+.md-del {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+
+.md-link {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.md-checked .md-done {
+  color: var(--ok, var(--accent));
+}
+
+.md-checked {
+  color: var(--text-dim);
+}
+
+/* Code, JSON and anything else with a grammar: monospace, and the four things
+   worth colouring. Deliberately not a theme-per-language — a file you are
+   changing three characters in does not need one. */
+[data-mode='code'] .md-editor,
+[data-mode='json'] .md-editor,
+[data-mode='text'] .md-editor {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.tok-comment {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.tok-string {
+  color: var(--ok, #9ece6a);
+}
+
+.tok-number {
+  color: var(--warn, #e0af68);
+}
+
+.tok-keyword {
+  color: var(--accent);
+}
+
+.tok-key {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* The file's own name, and the button that changes it. */
+.editor-path {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--text-dim);
+  cursor: pointer;
+  text-align: left;
+}
+
+.editor-path:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* Word wrap off means a horizontal scrollbar, which is the honest way to show
+   a line that is genuinely too long — wrapping code lies about its indent. */
+.md-editor.no-wrap {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* The character-limit rule.
+
+   A background rather than an element, for the same reason the line numbers are
+   a counter: nothing here is part of the text, so it cannot be selected, copied
+   or land in the file.
+
+   `local` is what makes it scroll with the content instead of hanging in front
+   of it — with wrap off and a long line, the rule has to travel with column 80,
+   not sit over the viewport. `content-box` starts the measurement at the first
+   character rather than at the padding edge.
+
+   `ch` — the width of a `0` — is the cell width in the monospace modes, and in
+   markdown's proportional font it is close enough for what this is: a mark for
+   where a line is getting long, not a measurement. It is a font-relative unit
+   either way, so the rule moves with the text when the pane is zoomed. */
+.md-editor.ruled {
+  --column-guide: 80;
+  /* The same weight as the divider between two panes: present when you look for
+     it, not a line down the middle of the page competing with the text. */
+  background-image: linear-gradient(to right, var(--border), var(--border));
+  background-size: 1px 100%;
+  /* `repeat-y`, not `no-repeat`. With `local` the background scrolls with the
+     content and `100%` resolves to one viewport height — so a single tile drew
+     the rule down the first screenful and then stopped, and scrolling left it
+     behind entirely. Tiling it downwards is what makes it a rule rather than a
+     dash near the top. */
+  background-repeat: repeat-y;
+  background-origin: content-box;
+  background-attachment: local;
+  background-position: calc(var(--column-guide) * 1ch) 0;
+}
+
+/* The gutter shifts the first character right by exactly its own width, so the
+   rule shifts with it — otherwise turning line numbers on moves column 80. */
+.md-editor.ruled.numbered {
+  background-position: calc(3.5em + var(--column-guide) * 1ch) 0;
+}
+
+/* Line numbers as a CSS counter, so they are drawn but not *there*: nothing in
+   the gutter is part of the text, and selecting a paragraph cannot pick one up. */
+.md-editor.numbered {
+  counter-reset: line;
+  padding-left: 0;
+}
+
+.md-editor.numbered > .md-line {
+  counter-increment: line;
+  padding-left: 3.5em;
+  position: relative;
+}
+
+.md-editor.numbered > .md-line::before {
+  content: counter(line);
+  position: absolute;
+  left: 0;
+  width: 2.6em;
+  text-align: right;
+  color: var(--text-faint);
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* A file from the tree, hovering over somewhere it can be dropped. */
+.editor-drop {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+}
+
+.tab.drop-into {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* ------------------------------------------------------------------ find bar */
+
+.find-bar {
+  flex: none;
+  padding: 6px 10px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Something else wrote to the file this tab is holding. Warn-coloured and
+   sitting between the toolbar and the text, because it is not an error — the
+   file is fine, both versions are fine — but it is the one thing to read before
+   typing another character into the older one. */
+.editor-conflict {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--warn) 14%, var(--bg-raised));
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.editor-conflict__text {
+  flex: 1;
+  min-width: 220px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.find-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.find-row + .find-row {
+  margin-top: 6px;
+}
+
+.find-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.find-input.find-miss {
+  border-color: var(--danger);
+}
+
+.find-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+  min-width: 5.5em;
+  text-align: right;
+}
+
+.find-btn {
+  flex: none;
+  min-width: 26px;
+}
+
+.find-toggle.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------- csv/hex */
+
+.csv-grid {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.csv-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+}
+
+.csv-cell,
+.csv-gutter {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  text-align: left;
+  white-space: pre;
+  outline: none;
+  vertical-align: top;
+}
+
+.csv-cell:focus {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+thead .csv-cell {
+  position: sticky;
+  top: 0;
+  background: var(--bg-raised);
+  font-weight: 600;
+  z-index: 1;
+}
+
+/* Row numbers: the one column that is not the file's own data. */
+.csv-gutter {
+  position: sticky;
+  left: 0;
+  background: var(--bg-raised);
+  color: var(--text-faint);
+  text-align: right;
+  user-select: none;
+}
+
+.csv-note {
+  color: var(--text-faint);
+  font-size: 11px;
+  padding: 8px 4px 0;
+}
+
+.hex-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  user-select: text;
+}
+
+.hex-row {
+  display: flex;
+  gap: 16px;
+  white-space: pre;
+}
+
+.hex-offset {
+  color: var(--text-faint);
+}
+
+.hex-bytes {
+  color: var(--text);
+}
+
+.hex-ascii {
+  color: var(--text-dim);
+}
+
+.hex-view:focus {
+  outline: none;
+}
+
+.hex-cell {
+  cursor: text;
+}
+
+/* The byte the keyboard is on, and its twin in the other column. */
+.hex-at {
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: var(--radius-sm);
+}
+
+.hex-echo {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-sm);
+}
+
+/* Changed and not yet written. Colour rather than a mark: in a wall of hex,
+   a differently coloured pair of digits is the only thing that reads. */
+.hex-changed {
+  color: var(--warn, #e0af68);
+  font-weight: 700;
+}
+
+/* Autosave's only visible surface. Quiet by default — it is confirming that
+   nothing is wrong — and coloured only when something is. */
+.notes-status {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.01em;
+}
+
+.notes-status[data-state='failed'],
+.notes-status[data-state='blocked'] {
+  color: var(--danger);
+}
+
+/* The autosave switch. On is the quiet state and off is the loud one: off is
+   the one where walking away loses work, so it is the one that has to catch
+   your eye. */
+.reader-btn.on {
+  border-color: var(--ok, #9ece6a);
+  color: var(--ok, #9ece6a);
+}
+
+.reader-btn.off {
+  border-color: var(--warn, #e0af68);
+  color: var(--warn, #e0af68);
+  font-weight: 600;
+}
+
+.reader-btn.on::before,
+.reader-btn.off::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: var(--radius-dot);
+  vertical-align: middle;
+  background: currentColor;
+}
+
+.reader-btn.off::before {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+
+/* Changed bytes waiting on the Save button. Not an error — nothing is wrong —
+   but the one state in the editor where walking away loses something. */
+.notes-status[data-state='unsaved'] {
+  color: var(--warn, #e0af68);
+}
+
+.notes-hint {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  margin: 0;
+}
+
+/* The note's own editor. Monospace and full-bleed: markdown source is code
+   shaped like prose, and a measured column here would fight the wrapping the
+   rendered view already does properly. */
+.notes-editor {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 16px 20px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  tab-size: 2;
+}
+
+.notes-editor::placeholder {
+  color: var(--text-faint);
+}
+
+.reader-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.reader-btn:disabled:hover {
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
+/* ------------------------------------------------- sidebar: inbox and usage */
+
+/* The waiting-for-you button lives with Settings: both are app-wide, neither
+   belongs to the workspace you happen to be looking at. */
+#open-inbox .inbox-glyph {
+  font-size: 11px;
+  flex: none;
+}
+
+#open-inbox.has-waiting {
+  color: var(--danger);
+}
+
+#open-inbox.active {
+  background: var(--bg-active);
+}
+
+.inbox-count {
+  margin-left: auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  background: var(--danger);
+  color: #fff;
+  border-radius: var(--radius-lg);
+  padding: 0 6px;
+}
+
+.inbox-panel {
+  /* Anchored to the sidebar rather than the title bar, since that is what
+     opened it. */
+  left: 12px;
+  right: auto;
+  width: min(460px, 60vw);
+}
+
+.sidebar-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px 6px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.sidebar-usage.muted {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.usage-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.usage-row__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.usage-row__label {
+  flex: none;
+}
+
+.usage-row__reset {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-row__track {
+  display: block;
+  width: 100%;
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.usage-row__fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-sm);
+  background: var(--text-dim);
+}
+
+.usage-row__value {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Only the top band is loud. A sidebar that is always shouting stops meaning
+   anything. */
+.usage-row--warn .usage-row__fill {
+  background: var(--warn);
+}
+.usage-row--warn .usage-row__value {
+  color: var(--warn);
+}
+.usage-row--high .usage-row__fill {
+  background: var(--danger);
+}
+.usage-row--high .usage-row__value {
+  color: var(--danger);
+}
+
+/* The rail has no room for any of this. */
+.app.sidebar-collapsed .sidebar-usage,
+.app.sidebar-collapsed .inbox-count {
+  display: none;
+}
+
+/* -------------------------------------------------------------------- toasts */
+
+.toast-host {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  min-width: 240px;
+  max-width: 340px;
+  padding: 10px 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  cursor: pointer;
+  animation: toast-in 0.18s ease-out;
+}
+
+.toast.warn {
+  border-left-color: var(--warn);
+}
+
+.toast.error {
+  border-left-color: var(--danger);
+}
+
+.toast-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.toast-body {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* --------------------------------------------------------------- scrollbars */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: var(--radius);
+  border: 2px solid var(--bg-raised);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  border-color: var(--bg);
+}
+
+/* --------------------------------------------------------------- workspaces */
+
+.workspace-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.workspace-branch {
+  font-size: 10px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app.sidebar-collapsed .workspace-branch,
+.app.sidebar-collapsed .workspace-label {
+  display: none;
+}
+
+/* -------------------------------------------------------------- split panes */
+
+.terminal-host {
+  display: flex;
+}
+
+/* Parks panes belonging to tabs that aren't on screen. */
+.pane-pool {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.pane-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-split.row {
+  flex-direction: row;
+}
+
+.pane-split.column {
+  flex-direction: column;
+}
+
+.pane-slot {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-basis: 0;
+}
+
+/* Only mark the focused pane once a tab actually has more than one. */
+.pane-split .pane {
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+  border-radius: var(--radius-sm);
+}
+
+.pane-split .pane.active {
+  outline-color: var(--workspace-color, var(--accent));
+}
+
+.pane-divider {
+  flex: none;
+  background: var(--border);
+  z-index: 4;
+  background-clip: padding-box;
+}
+
+.pane-divider.row {
+  width: 5px;
+  cursor: col-resize;
+  border-left: 2px solid transparent;
+  border-right: 2px solid transparent;
+}
+
+.pane-divider.column {
+  height: 5px;
+  cursor: row-resize;
+  border-top: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+}
+
+.pane-divider:hover,
+.pane-divider.dragging {
+  background: var(--accent);
+}
+
+/* A pane needing attention gets a ring, so it reads across splits. */
+.pane.attention {
+  outline: 2px solid var(--warn) !important;
+}
+
+/* An agent that declared it is stuck outranks the generic attention ring. */
+.pane[data-status='blocked'] {
+  outline: 2px solid var(--danger) !important;
+}
+
+/* --------------------------------------------------------- pane agent state */
+
+.pane-state {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-dot);
+  flex: none;
+  margin-right: 2px;
+}
+
+.pane-state--active {
+  background: var(--text-faint);
+}
+
+.pane-state--working {
+  background: var(--accent);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.pane-state--blocked {
+  background: var(--danger);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/*
+ * The answer bar. Absolutely positioned so it never enters xterm's own size
+ * measurement — a bar that changed the grid size would reflow the whole
+ * scrollback every time an agent asked a question.
+ */
+.pane-blocked {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  background: var(--bg-raised);
+  border-top: 2px solid var(--danger);
+  font-size: 12px;
+}
+
+.pane-blocked__reason {
+  color: var(--text);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-blocked__choice {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.pane-blocked__choice:hover {
+  border-color: var(--accent);
+}
+
+.pane-blocked__choice.default {
+  border-color: var(--accent);
+}
+
+.pane-blocked__sent {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+/* ------------------------------------------------------------ notifications */
+
+.notif-button {
+  position: relative;
+  width: 40px;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  -webkit-app-region: no-drag;
+}
+
+.notif-button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.notif-button.has-unread {
+  color: var(--warn);
+}
+
+/* Inline SVG rather than an emoji, so it takes the theme colour instead of
+   rendering as a full-colour glyph. */
+.notif-button .bell {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+.icon-btn .gear {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex: none;
+}
+
+.notif-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: var(--radius);
+  background: var(--warn);
+  color: #141414;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+.notif-panel {
+  position: fixed;
+  top: calc(var(--titlebar-h) + 6px);
+  right: 12px;
+  z-index: 120;
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(520px, calc(100vh - 80px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.notif-head h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.notif-head-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.notif-head-actions .btn {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.notif-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.notif-empty {
+  margin: 0;
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.notif-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  text-align: left;
+  border-left: 2px solid transparent;
+}
+
+.notif-item:hover {
+  background: var(--bg-hover);
+}
+
+.notif-item.unread {
+  border-left-color: var(--warn);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.notif-item .notif-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  border: none;
+}
+
+.notif-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.notif-when {
+  font-size: 10px;
+  color: var(--text-faint);
+  flex: none;
+}
+
+.notif-body {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notif-where {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.notif-foot {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.status-panes {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------- theme editor */
+
+/* Two roles, side by side: the app, and the terminal's palette. The same themes
+   are listed in both, because a theme holds a full set of colours and the
+   column decides which half of it gets used. */
+/* One grid for both columns, three rows deep: heading, list, actions. The
+   columns are `display: contents`, so their parts are placed straight into the
+   shared rows — which is what keeps the two halves aligned. Nesting a flex
+   column each side could not: a two-line heading or a wrapped button row on one
+   side pushed everything below it out of step with the other. */
+.theme-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.theme-column {
+  display: contents;
+}
+
+.theme-column--0 > * {
+  grid-column: 1;
+}
+
+.theme-column--1 > * {
+  grid-column: 2;
+}
+
+.theme-column__head {
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: end;
+}
+
+/* Both lists share one grid row, so they are the same height whether one has
+   four themes in it and the other forty. */
+.theme-columns .theme-list {
+  grid-row: 2;
+  margin-bottom: 0;
+  min-height: 180px;
+}
+
+.theme-column .theme-actions {
+  grid-row: 3;
+  align-self: start;
+}
+
+.theme-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 12px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 4px;
+}
+
+.theme-row {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-row:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.theme-row.selected {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+/* A dot rather than a tick, so the row stays a plain list of names. */
+.theme-row.selected::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-dot);
+  background: var(--accent);
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.theme-row:not(.selected) {
+  padding-left: 23px;
+}
+
+.theme-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* The editor's file row: importing and exporting, kept clear of Done so the
+   one button that closes the editor is not lost among them. */
+.theme-actions--files {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.theme-actions--files + .theme-actions {
+  margin-top: 10px;
+}
+
+.theme-hint {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.theme-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.theme-name-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.theme-group {
+  margin-top: 14px;
+}
+
+.theme-group h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 6px;
+}
+
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.color-row input[type='color'] {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+  flex: none;
+}
+
+.color-label {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.color-hex {
+  width: 90px;
+  flex: none;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  padding: 3px 6px;
+}
+
+/* ---------------------------------------------------------------- file tree */
+
+/* Square, not rounded: a radius here left a visible corner gap against the
+   chrome, which is the same gutter problem in a different shape. */
+.files-pane {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: var(--bg-raised);
+  overflow: hidden;
+  user-select: none;
+}
+
+.files-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 4px 4px 2px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.files-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  font-size: 12px;
+  flex: none;
+}
+
+.files-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.files-path-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+}
+
+.files-filter {
+  position: relative;
+  padding: 0 4px 4px;
+  flex: none;
+}
+
+.files-filter input {
+  width: 100%;
+  height: 22px;
+  /* Room on the right for the clear button to sit inside the field. */
+  padding: 0 22px 0 6px;
+  font-size: 11px;
+}
+
+.files-filter-clear {
+  position: absolute;
+  right: 8px;
+  top: 3px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.files-filter-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.files-crumbs {
+  flex: 1;
+  cursor: text;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+
+.files-crumbs::-webkit-scrollbar {
+  height: 0;
+}
+
+.files-crumb {
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: none;
+}
+
+.files-crumb:last-child {
+  color: var(--text);
+}
+
+.files-crumb:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.files-crumb-sep {
+  color: var(--text-faint);
+  font-size: 10px;
+  flex: none;
+}
+
+.files-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 0 6px;
+}
+
+.files-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding-right: 6px;
+  padding-left: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+.files-row:hover {
+  background-color: var(--bg-hover);
+  color: var(--text);
+}
+
+.files-row.selected {
+  background-color: var(--bg-active);
+  color: var(--text);
+}
+
+/* Tree guides.
+   Real 1px rules spanning the full row height, so verticals meet across row
+   boundaries instead of breaking at every line the way box glyphs do. */
+.files-guides {
+  display: flex;
+  flex: none;
+  align-self: stretch;
+  user-select: none;
+}
+
+.files-guide {
+  position: relative;
+  width: 20px;
+  flex: none;
+}
+
+/* An ancestor branch that continues past this row. */
+.files-guide.through::before,
+.files-guide.elbow::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--guide-line);
+}
+
+/* The last child stops its vertical at the elbow. */
+.files-guide.elbow.last::before {
+  bottom: auto;
+  height: 11px;
+}
+
+/* The connector reaching the row's own content — long enough to read as a
+   branch rather than a tick. */
+.files-guide.elbow::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 11px;
+  right: 1px;
+  height: 1px;
+  background: var(--guide-line);
+}
+
+/* The current folder, sitting above everything as the tree's trunk. */
+.files-root {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.files-root .files-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.files-rename-input {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.files-row.dir .files-name {
+  color: var(--text);
+}
+
+.files-twisty {
+  width: 10px;
+  flex: none;
+  font-size: 9px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.files-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Optional columns. Fixed widths and a monospace face so the numbers form a
+   column you can run your eye down, rather than a ragged edge that moves with
+   every name beside it. Right-aligned, because that is where a number ends. */
+.files-size,
+.files-date {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  text-align: right;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.files-size {
+  width: 54px;
+}
+
+.files-date {
+  width: 58px;
+}
+
+.files-status {
+  flex: none;
+  width: 13px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+}
+
+.files-status.s-mod {
+  color: var(--warn);
+}
+
+.files-status.s-new {
+  color: #7fb069;
+}
+
+.files-status.s-inner {
+  color: var(--text-faint);
+}
+
+.files-empty {
+  margin: 0;
+  padding: 16px 10px;
+  font-size: 11px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* ------------------------------------------------------- window translucency
+
+   With a translucent theme the page must stop painting so the terminal's own
+   alpha reveals the desktop. Everything else — sidebar, tab strip, status bar,
+   panels — keeps its solid chrome colour, so only the terminal is see-through.
+*/
+html.translucent,
+html.translucent body,
+html.translucent .terminal-area {
+  background: transparent;
+}
+
+/*
+   xterm.css paints `.xterm-viewport` solid black — a workaround for macOS
+   scrollbars that has been in the stylesheet for years. xterm used to override
+   it from JS when `allowTransparency` was set, but as of xterm 6 that option is
+   dead: it survives in the defaults object and is never read again. The theme's
+   alpha is still applied, to `.xterm-scrollable-element` — which sits *above*
+   the black viewport, so a translucent background composited against black and
+   the grid came out looking solid while the gutter around it went see-through.
+
+   Clearing the viewport is what lets the alpha reach the desktop. Left alone
+   for opaque themes, where the rule costs nothing and the scrollbar reason for
+   it still stands.
+*/
+html.translucent .xterm .xterm-viewport {
+  background-color: transparent;
+}
+
+/* The title bar sits above the terminal and stays readable. */
+html.translucent .titlebar {
+  background: var(--bg);
+}
+
+/* Guides follow the theme rather than staying a fixed grey. */
+.files-pane {
+  --guide-line: color-mix(in srgb, var(--text-faint) 70%, transparent);
+}
+
+/* ---------------------------------------------------------- split pane chrome
+
+   A header only appears once a tab holds more than one pane; a lone pane would
+   just lose a row of height to it.
+*/
+.pane-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/*
+ * Whatever the shell is wrapping — a terminal, a file tree, a browser — fills
+ * it. Written as "everything except the header" rather than by listing the pane
+ * kinds, because a shell now wraps a lone pane too and a new kind must not have
+ * to remember to add itself here to be visible. The drop hint is positioned
+ * absolutely, so flex does not apply to it either way.
+ */
+.pane-shell > :not(.pane-header) {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.pane-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  flex: none;
+  padding: 0 4px 0 6px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  cursor: grab;
+  user-select: none;
+}
+
+.pane-header:active {
+  cursor: grabbing;
+}
+
+.pane-header.active {
+  color: var(--text);
+  background: var(--bg-active);
+}
+
+.pane-grip {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: -1px;
+  opacity: 0.6;
+}
+
+.pane-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-title-input {
+  flex: 1;
+  min-width: 0;
+  height: 17px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.pane-close {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  color: var(--text-faint);
+  opacity: 0;
+}
+
+.pane-header:hover .pane-close,
+.pane-header.active .pane-close {
+  opacity: 1;
+}
+
+.pane-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--danger);
+}
+
+/* Drop zone preview: the half of the pane the dragged one would take. */
+.pane-drop-hint {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.pane-drop-hint.left {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+}
+
+.pane-drop-hint.right {
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+}
+
+.pane-drop-hint.top {
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 50%;
+}
+
+.pane-drop-hint.bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 50%;
+}
+
+/* ------------------------------------------------------------- docked tree
+
+   The tree pinned beside every tab in a workspace, as opposed to a tree pane
+   living inside one tab.
+*/
+.tree-panel {
+  width: 260px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+/* Inside the dock the tree fills the panel and drops its pane styling. */
+.tree-panel .files-pane {
+  flex: 1;
+  min-height: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------- browser */
+
+.browser-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  position: relative;
+}
+
+.browser-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.browser-btn {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.browser-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.browser-btn:disabled {
+  color: var(--text-faint);
+  opacity: 0.4;
+  cursor: default;
+}
+
+.browser-address {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input, var(--bg-hover));
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.browser-address:focus {
+  border-color: var(--accent);
+}
+
+/*
+ * The guest.
+ *
+ * `<webview>` defaults to inline, which leaves a descender gap under it and a
+ * scrollbar on the pane that owns it. It also has no intrinsic size, so without
+ * an explicit basis it collapses to nothing inside a flex column.
+ */
+.browser-view {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  background: #fff;
+}
+
+/*
+ * A page that would not load. Sits over the guest rather than pushing it down,
+ * so the layout does not jump when a dev server comes and goes.
+ */
+.browser-status {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 11px;
+  display: none;
+}
+
+.browser-status.visible {
+  display: block;
+}
+
+.unavailable-pane {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 32px;
+  background: var(--bg);
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.unavailable-title {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.unavailable-body {
+  font-size: 11px;
+  line-height: 1.5;
+  max-width: 42ch;
+  margin: 0 auto;
+}
+
+/* A pane being dragged out of its split can land at the end of the strip. */
+.tab-strip.drop-end {
+  box-shadow: inset -3px 0 0 var(--accent);
+}
+
+/* Shown only when the page is not at 100%, like a browser's own indicator. */
+.browser-zoom {
+  flex: none;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.browser-zoom:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+
+/* ---------------------------------------------------------------- images pane */
+
+.images-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.images-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.images-btn {
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.images-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+/* A toggle that is on is filled rather than merely outlined: these sit in a row
+   of otherwise identical buttons, where a border change alone does not read. */
+.images-btn.active {
+  color: var(--bg);
+  background: var(--workspace-color, var(--accent));
+  border-color: var(--workspace-color, var(--accent));
+}
+
+.images-status {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The scroll container. Cells are absolutely positioned inside it, so its own
+   height is set from the solved layout rather than by its contents. */
+.images-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px;
+}
+
+.images-cell {
+  position: absolute;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.images-thumb {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* The layout already solved for this image's true ratio, so the box and the
+     picture agree and there is nothing to crop. `cover` rather than `contain`
+     only to absorb sub-pixel rounding at the edges. */
+  object-fit: cover;
+}
+
+.images-cell.broken {
+  border: 1px dashed var(--danger);
+  background: none;
+}
+
+.images-cell-board {
+  cursor: grab;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.images-cell-board.dragging {
+  cursor: grabbing;
+  z-index: 2;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
+/* The resize corner. Only drawn on hover: a grip on every image at once turns a
+   board of photographs into a board of handles. */
+.images-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--workspace-color, var(--accent)) 50%);
+  opacity: 0;
+}
+
+.images-cell-board:hover .images-grip {
+  opacity: 0.85;
+}
+
+/* Single-image view: one file, selected in the tree, shown whole. */
+.images-single {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 12px;
+}
+
+.images-single-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.images-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-align: center;
+  padding: 24px;
+}
+
+/* The maximised viewer. The same element as the tree-selection single view,
+   with a bar and a darker backdrop when it was opened deliberately. */
+.images-single.maximized {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.images-single-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.images-single-name {
+  flex: 1;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* min-height: 0 so the image is bounded by the row rather than by its own
+   intrinsic height, which is what keeps a tall photograph inside the pane. */
+.images-single.maximized .images-single-img {
+  flex: 1;
+  min-height: 0;
+  margin: 12px;
+  max-height: none;
+}
+
+/* Delete, in the maximised bar. Coloured only on hover: a permanently red
+   button in a bar you sit looking at reads as a warning about the image. */
+.images-btn.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: none;
+}
+
+.images-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.images-btn:disabled:hover {
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+
+/* Zoomed image. `transform-origin: center` is what the zoom-at-cursor maths in
+   imagesPane assumes, so it is set rather than left to the default. */
+.images-single-img {
+  transform-origin: center center;
+}
+
+/* Nothing escapes the pane when zoomed in — the transform is clipped rather
+   than scrolled, because panning is by dragging. */
+.images-single {
+  overflow: hidden;
+}
+
+/* The element stays the fitted size and `transform` magnifies it — a transform
+   does not affect layout, so the box never moves and there is nothing to
+   reflow. Overriding max-width here would resize the element itself and the
+   image would jump on the first notch. */
+.images-single-img.zoomed {
+  cursor: grab;
+}
+
+.images-single.panning .images-single-img.zoomed {
+  cursor: grabbing;
+}
+
+/* Nearest-neighbour resampling, for pixel art.
+   `pixelated` is the CSS keyword that maps to nearest-neighbour on upscale.
+   `crisp-edges` is its cousin and is inconsistently implemented, so it is not
+   used. Applies to the gallery and the single view alike, which is the point of
+   putting it on the pane root rather than on each image. */
+.images-pane.pixelated .images-thumb,
+.images-pane.pixelated .images-single-img {
+  image-rendering: pixelated;
+}
+
+/* A cut row, until it is pasted. Faded rather than removed: the file is still
+   there, and this is the only thing on screen saying it is about to move. */
+.files-row.cut {
+  opacity: 0.45;
+}

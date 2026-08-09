@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: iaw-img:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+    />
+    <title>ia_workspaces</title>
+    <link rel="stylesheet" href="renderer.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <header id="titlebar" class="titlebar">
+        <div class="titlebar-drag">
+          <span class="app-mark"></span>
+          <span class="app-name">ia_workspaces</span>
+          <span id="titlebar-context" class="titlebar-context"></span>
+        </div>
+        <button id="notif-button" class="notif-button" title="Notifications (Ctrl+I)">
+          <svg class="bell" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M8 1.6a3.7 3.7 0 0 0-3.7 3.7v2.2c0 .5-.2 1-.5 1.4l-.7.9a.6.6 0 0 0 .45 1h8.9a.6.6 0 0 0 .45-1l-.7-.9a2.3 2.3 0 0 1-.5-1.4V5.3A3.7 3.7 0 0 0 8 1.6Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M6.5 12.4a1.6 1.6 0 0 0 3 0"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.2"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span id="notif-badge" class="notif-badge" hidden>0</span>
+        </button>
+        <div id="window-controls" class="window-controls" hidden>
+          <button data-win="minimize" title="Minimize" aria-label="Minimize">&#xE921;</button>
+          <button data-win="maximize" title="Maximize" aria-label="Maximize">&#xE922;</button>
+          <button data-win="close" class="close" title="Close" aria-label="Close">&#xE8BB;</button>
+        </div>
+      </header>
+
+      <div class="body">
+        <aside id="sidebar" class="sidebar">
+          <div class="sidebar-head">
+            <span class="sidebar-title">Workspaces</span>
+            <button id="collapse-sidebar" class="icon-btn" title="Collapse sidebar (Ctrl+B)">&#8249;</button>
+          </div>
+          <div id="workspace-list" class="workspace-list" role="tablist" aria-label="Workspaces"></div>
+          <button id="add-workspace" class="add-workspace" title="New workspace (Ctrl+Shift+N)">
+            <span class="plus">+</span><span class="label">Add workspace</span>
+          </button>
+          <div class="sidebar-foot">
+            <button id="open-settings" class="icon-btn wide" title="Settings (Ctrl+,)">
+              <svg class="gear" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" stroke-width="1.2" />
+                <path
+                  d="M8 1.9v1.4M8 12.7v1.4M14.1 8h-1.4M3.3 8H1.9m8.63-4.53-.99.99M6.36 9.64l-.99.99m5.16 0-.99-.99M6.36 6.36l-.99-.99"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.2"
+                  stroke-linecap="round"
+                />
+              </svg>
+              <span class="label">Settings</span>
+            </button>
+
+            <!--
+              Both of these span the whole app rather than any one workspace, so
+              they sit with the sidebar's own controls rather than as a tab
+              inside a project that has nothing to do with them.
+            -->
+            <button id="open-inbox" class="icon-btn wide" title="Waiting for you (Ctrl+Shift+A)">
+              <span class="inbox-glyph">◉</span>
+              <span class="label">Waiting for you</span>
+              <span id="inbox-count" class="inbox-count" hidden></span>
+            </button>
+
+            <div id="sidebar-usage" class="sidebar-usage" hidden></div>
+          </div>
+        </aside>
+
+        <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical"></div>
+
+        <aside id="tree-panel" class="tree-panel" hidden aria-label="File tree"></aside>
+        <div id="tree-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" hidden></div>
+
+        <main class="main">
+          <div id="tabstrip" class="tabstrip" role="tablist" aria-label="Terminals"></div>
+
+          <div class="terminal-area">
+            <div id="terminal-host" class="terminal-host"></div>
+            <div id="empty-state" class="empty-state" hidden>
+              <p class="empty-title">No terminals open</p>
+              <p class="empty-hint">
+                Press <kbd>Ctrl</kbd>+<kbd>T</kbd> or click <strong>+</strong> to start one.
+              </p>
+            </div>
+          </div>
+
+          <div id="findbar" class="findbar" hidden>
+            <input id="find-input" type="text" placeholder="Find in terminal…" spellcheck="false" />
+            <button id="find-prev" title="Previous (Shift+Enter)">&#8593;</button>
+            <button id="find-next" title="Next (Enter)">&#8595;</button>
+            <button id="find-close" title="Close (Esc)">&#10005;</button>
+          </div>
+
+          <footer id="statusbar" class="statusbar">
+            <span id="status-cwd" class="status-cwd"></span>
+            <span class="status-spacer"></span>
+            <span id="status-panes" class="status-panes"></span>
+            <span id="status-shell" class="status-shell"></span>
+            <span id="status-runtime" class="status-runtime"></span>
+          </footer>
+        </main>
+      </div>
+    </div>
+
+    <div id="palette" class="palette" hidden aria-label="Command palette">
+      <div class="palette-box" role="dialog" aria-modal="true">
+        <input
+          id="palette-input"
+          type="text"
+          placeholder="Go to a workspace, run a task, do a thing…"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <div id="palette-list" class="palette-list" role="listbox"></div>
+      </div>
+    </div>
+
+    <div id="inbox-panel" class="notif-panel inbox-panel" hidden aria-label="Waiting for you"></div>
+
+    <div id="notif-panel" class="notif-panel" hidden aria-label="Notifications">
+      <div class="notif-head">
+        <h3>Notifications</h3>
+        <div class="notif-head-actions">
+          <button id="notif-mark-all" class="btn">Mark all read</button>
+          <button id="notif-clear" class="btn">Clear</button>
+        </div>
+      </div>
+      <div id="notif-list" class="notif-list"></div>
+      <p class="notif-foot"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> jumps to the oldest unread.</p>
+    </div>
+
+    <div id="overlay" class="overlay" hidden></div>
+    <div id="settings-panel" class="settings-panel" hidden aria-label="Settings"></div>
+    <div id="context-menu" class="context-menu" hidden role="menu"></div>
+    <div id="toast-host" class="toast-host" aria-live="polite"></div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

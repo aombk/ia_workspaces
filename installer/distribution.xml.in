@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+    <title>ia_workspaces</title>
+    <organization>net.attinom.iraisynn</organization>
+    <options customize="never" require-scripts="false" hostArchitectures="x86_64,arm64"/>
+
+    <!--
+      Both domains offered, so the destination page is a real choice rather than
+      a formality: "for all users of this computer" writes to
+      /Applications/iraisynn attinom/, "for me only" to
+      ~/Applications/iraisynn attinom/ and needs no password. `enable_anywhere`
+      is deliberately off — an .app dragged somewhere arbitrary by an installer
+      is how you end up with two copies and no idea which one Spotlight opens.
+    -->
+    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="true"/>
+
+    <welcome language="en" mime-type="text/html"><![CDATA[
+        <html><body style="font-family: -apple-system; padding: 16px;">
+        <h2 style="margin: 0;">ia_workspaces</h2>
+        <p style="color: #555; margin-top: 4px;">version @APP_VERSION@ &#183; by iraisynn attinom</p>
+        <p>A workspace-oriented terminal: vertical workspace tabs, terminal tabs
+        with split panes, a browser, a file tree and an editor — and it says when
+        a pane needs you.</p>
+        <p>This installer places <code>ia_workspaces.app</code> in an
+        <code>iraisynn attinom</code> folder inside Applications. The next page
+        is where you choose whether that is the whole computer or just your
+        account.</p>
+        </body></html>
+    ]]></welcome>
+    <conclusion language="en" mime-type="text/html"><![CDATA[
+        <html><body style="font-family: -apple-system; padding: 16px;">
+        <h2 style="margin: 0;">Installed</h2>
+        <p style="color: #555; margin-top: 4px;">version @APP_VERSION@</p>
+        <p>Your workspaces, tabs and panes are kept in your user library, not
+        beside the app — so this install left any you already had alone.</p>
+        <p><a href="https://iraisynn.attinom.net">iraisynn.attinom.net</a></p>
+        </body></html>
+    ]]></conclusion>
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="@PKG_IDENTIFIER@"/>
+        </line>
+    </choices-outline>
+    <choice id="default" title="ia_workspaces"/>
+    <choice id="@PKG_IDENTIFIER@" visible="false" title="ia_workspaces">
+        <pkg-ref id="@PKG_IDENTIFIER@"/>
+    </choice>
+    <pkg-ref id="@PKG_IDENTIFIER@" version="@APP_VERSION@"
+             onConclusion="none">ia_workspaces-component.pkg</pkg-ref>
+</installer-gui-script>

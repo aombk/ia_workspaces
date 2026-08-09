@@ -1,0 +1,5 @@
+{
+  "this file is": "deliberately invalid",
+  "missing": "a closing brace, and the comma below is trailing",
+  "trailing": [1, 2, 3,],
+  "unquoted key": value

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entitlements for the helper processes inside the .app bundle.
+
+  `inherit` means "take the parent's entitlements", and it is the only one that
+  may appear alongside it — listing anything else here is a signing error rather
+  than an addition. The Electron helpers (GPU, Renderer, Plugin) each get this.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.inherit</key>
+  <true/>
+</dict>
+</plist>

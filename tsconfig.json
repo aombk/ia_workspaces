@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    // Nothing is emitted, but the type graph is still worth keeping: with it,
+    // a second `npm run typecheck` only re-checks what changed. The file lives
+    // under out/ with every other intermediate, and deleting it costs one slow
+    // run and nothing else.
+    "incremental": true,
+    "tsBuildInfoFile": "out/typecheck.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}

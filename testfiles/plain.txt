@@ -1,0 +1,11 @@
+Plain text, no grammar, no styling.
+
+# This is not a heading.
+// This is not a comment.
+"This is not a string."
+
+The Plain text view is the one that promises to show you exactly what is in the
+file and nothing else. Useful when a file's extension is lying about what it is.
+
+	This line begins with a tab.
+    This one begins with four spaces.

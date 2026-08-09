@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+build/
+dist/
+
+borf/
+
+# Working notes, not published
+changelog.d/
+NOTES.md
+tools/collect-changelog.mjs
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Build artifacts — belt and braces. out/ and build/ are ignored above, so
+# these only matter for a stray copy somewhere else in the tree.
+*.exe
+*.dmg
+*.pkg
+*.AppImage
+*.blockmap
+ia_workspaces-linux.tar.gz
