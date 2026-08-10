@@ -9,7 +9,9 @@
  * Matching is subsequence, not substring: "nt" should find "new terminal", which
  * is how anyone actually types into one of these.
  */
+import { backend } from '../../backend'
 import { store, tabLabel } from '../state'
+import type { HistoryEntry, VaultEntry } from '../../shared/types'
 import type { UiActions } from './actions'
 
 interface Command {
@@ -81,6 +83,107 @@ export function showPalette(): void {
   selected = 0
   root().hidden = false
   input().value = ''
+  input().placeholder = 'Go to, or do'
+  refine()
+  input().focus()
+}
+
+/**
+ * The same box, filled with what you have typed before.
+ *
+ * A second mode rather than history mixed into the commands: five hundred shell
+ * lines would drown the two dozen things the palette is actually for, and the
+ * two are reached with different questions in mind. Everything else — the
+ * subsequence matching, the keyboard handling, the styling — is shared, which
+ * is why this is a mode and not a second widget.
+ *
+ * Picking one **types it without submitting**. That is the same rule the resume
+ * feature follows and for the same reason: what you last ran might be a build,
+ * a push or a delete, and putting it in front of the Enter key on somebody's
+ * behalf is not a decision this app gets to make. The line lands on the prompt,
+ * ready to edit or run.
+ */
+/**
+ * Transcripts of panes that have been closed.
+ *
+ * A third mode, and the cheapest of the three: the entries are text files, so
+ * picking one opens it in the editor pane — which already renders text and
+ * already has find — rather than in anything written for this. Searching
+ * *across* them is the search pane pointed at the folder, which the last entry
+ * offers.
+ */
+export async function showVault(): Promise<void> {
+  let entries: VaultEntry[] = []
+  let folder = ''
+  try {
+    ;[entries, folder] = await Promise.all([backend().vault.list(), backend().vault.folder()])
+  } catch {
+    entries = []
+  }
+
+  const workspace = store.activeWorkspace
+  commands = entries.map((entry) => ({
+    kind: 'Transcript',
+    label: entry.label,
+    detail: `${new Date(entry.at).toLocaleString()} · ${describeSize(entry.bytes)}`,
+    run: () => {
+      if (workspace) actions.openEditor(workspace.id, entry.path)
+    },
+  }))
+
+  if (folder) {
+    commands.push({
+      kind: 'Transcript',
+      label: 'Search every transcript…',
+      detail: folder,
+      run: () => {
+        if (workspace) actions.openSearch(workspace.id, folder)
+      },
+    })
+  }
+
+  selected = 0
+  root().hidden = false
+  input().value = ''
+  input().placeholder = entries.length
+    ? 'Type to find a closed pane'
+    : 'No transcripts yet — they are written when a pane is closed'
+  refine()
+  input().focus()
+}
+
+function describeSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+export async function showHistory(): Promise<void> {
+  let entries: HistoryEntry[] = []
+  try {
+    entries = await backend().commandHistory()
+  } catch {
+    entries = []
+  }
+
+  // Captured before the box opens: by the time a row is picked the palette has
+  // taken focus, and "the pane you were in" is the only sensible target.
+  const pane = store.activePane
+  commands = entries.map((entry) => ({
+    kind: 'History',
+    label: entry.command,
+    detail: entry.cwd,
+    run: () => {
+      if (pane) void backend().pty.write(pane.id, entry.command)
+    },
+  }))
+
+  selected = 0
+  root().hidden = false
+  input().value = ''
+  input().placeholder = commands.length
+    ? 'Type to find a command — Enter puts it on the prompt'
+    : 'Nothing recorded yet'
   refine()
   input().focus()
 }
@@ -106,6 +209,22 @@ export function paletteIsOpen(): boolean {
 function collect(): Command[] {
   const out: Command[] = []
   const active = store.activeWorkspace
+
+  // The two other modes of this very box. Listed because a chord is not
+  // discoverable and, on some keyboard layouts, Ctrl+Alt is AltGr and produces
+  // a character instead.
+  out.push({
+    kind: 'Find',
+    label: 'Command history',
+    detail: 'Everything you have typed — Ctrl+Alt+H',
+    run: () => void showHistory(),
+  })
+  out.push({
+    kind: 'Find',
+    label: 'Transcripts of closed panes',
+    detail: 'What a pane printed before you closed it — Ctrl+Alt+V',
+    run: () => void showVault(),
+  })
 
   for (const workspace of store.workspaces) {
     const parent = store.workspaces.find((w) => w.id === workspace.parentId)

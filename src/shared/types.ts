@@ -620,9 +620,24 @@ export interface Settings {
   showUsageMonitor: boolean
   /**
    * Keep each pane's screen on disk so a restored pane comes back with what it
-   * was showing. The shell itself is still fresh — a PTY dies with its app.
+   * was showing. Only reached when the shell itself did not survive — see
+   * `keepSessionsAlive`.
    */
   restoreScrollback: boolean
+  /**
+   * Whether shells outlive the app.
+   *
+   * On, the pseudo-terminals are owned by the session broker rather than by
+   * this process, so quitting detaches and reopening reattaches to the same
+   * live shells. Off, they run in-process and end with the window, which is
+   * what this app did before the broker existed.
+   *
+   * Worth offering rather than assuming: a background process holding shells
+   * open is exactly the kind of thing somebody may not want on a shared or
+   * locked-down machine, and "my terminals keep running after I quit" is a
+   * surprise if you did not ask for it.
+   */
+  keepSessionsAlive: boolean
   /**
    * What an editor does when the file under it changes on disk.
    *
@@ -725,6 +740,87 @@ export interface PersistedState {
   treeWidth: number
   window: WindowState
   settings: Settings
+}
+
+/**
+ * One shell the session broker is holding.
+ *
+ * Reported so that shells kept alive on the user's behalf are something they
+ * can *see*. A background process quietly holding terminals open is a
+ * reasonable thing to want and an unreasonable thing to have to take on trust —
+ * and between a pane being removed and the orphan sweep noticing, this is the
+ * only way to know a shell is still there.
+ */
+export interface HeldSession {
+  /** The pane id it was started for. Still the handle used to end it. */
+  id: string
+  alive: boolean
+  pid: number
+  startedAt: number
+  /** How many windows are currently showing it. */
+  attached: number
+}
+
+export interface SessionHostInfo {
+  /**
+   * `broker` — shells outlive the app. `local` — they end with the window,
+   * either by choice or because no broker could be started. `connecting` —
+   * nothing has needed a shell yet, so the question has not been asked.
+   */
+  kind: 'broker' | 'local' | 'connecting'
+  sessions: HeldSession[]
+}
+
+/** One archived pane transcript. See `src/main/vault.ts`. */
+export interface VaultEntry {
+  /** Absolute path to the text file, which the editor pane opens directly. */
+  path: string
+  label: string
+  at: number
+  bytes: number
+}
+
+/** One remembered command line. See `src/main/history.ts`. */
+export interface HistoryEntry {
+  command: string
+  /** Where it was run, which is often the thing that identifies it. */
+  cwd: string
+  /** Epoch milliseconds of the most recent time it was submitted. */
+  at: number
+  /**
+   * The pane it was last submitted in.
+   *
+   * The list is deliberately shared across panes, so this is not used to
+   * partition it — it is what makes a "just this pane" filter possible without
+   * a second store. Absent on entries written before it was recorded.
+   */
+  paneId?: string
+}
+
+/** One checkout of a repository. See `src/main/worktrees.ts`. */
+export interface Worktree {
+  /** Absolute path to the checkout. */
+  path: string
+  /** Branch name, or undefined for a detached HEAD. */
+  branch?: string
+  head?: string
+  /** True for the repository's own main checkout, which cannot be removed. */
+  main: boolean
+  locked: boolean
+  /** Git thinks the directory is gone. Still registered, still removable. */
+  prunable: boolean
+}
+
+/** One agent whose hooks Settings can install, and whether they are in place. */
+export interface AgentConfigInfo {
+  id: string
+  label: string
+  /** Absolute path to the agent's own settings file, shown so it is not a mystery. */
+  path: string
+  exists: boolean
+  hooksInstalled: boolean
+  /** A step installing cannot do for the user, if this agent has one. */
+  note?: string
 }
 
 export interface SpawnRequest {
@@ -919,6 +1015,7 @@ export const DEFAULT_SETTINGS: Settings = {
   imageFit: false,
   showUsageMonitor: true,
   restoreScrollback: true,
+  keepSessionsAlive: true,
   refreshChangedFiles: 'auto',
   resumeAgentSessions: true,
   externalEditor: '',

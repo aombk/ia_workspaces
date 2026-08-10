@@ -44,6 +44,23 @@ export function createElectronBackend(): Backend {
     compareFiles: (left, right) => api.compareFiles(left, right),
     search: (cwd, query, caseSensitive) => api.search(cwd, query, caseSensitive),
     processes: () => api.processes(),
+    sessionHost: () => api.sessionHost(),
+    commandHistory: () => api.commandHistory(),
+    vault: {
+      list: () => api.vaultList(),
+      folder: () => api.vaultFolder(),
+    },
+    worktrees: {
+      list: (cwd) => api.worktreeList(cwd),
+      at: (cwd) => api.worktreeAt(cwd),
+      add: (cwd, branch, dir) => api.worktreeAdd(cwd, branch, dir),
+      remove: (cwd, dir, force) => api.worktreeRemove(cwd, dir, force),
+      suggest: (cwd, branch) => api.worktreeSuggest(cwd, branch),
+    },
+    agents: {
+      list: () => api.agentHooks(),
+      set: (id, enabled) => api.setAgentHooks(id, enabled),
+    },
     wslDistros: () => api.wslDistros(),
     sshHosts: () => api.sshHosts(),
     claudeUsage: () => api.claudeUsage(),

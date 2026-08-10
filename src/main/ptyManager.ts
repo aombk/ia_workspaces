@@ -1,4 +1,3 @@
-import { spawn, type IPty } from '@lydell/node-pty'
 import { existsSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
@@ -9,9 +8,12 @@ import { AgentStateRegistry, encodeKey, type AgentReport } from './agentState'
 import { isPhantomExit, isPidAlive, reapPhantom } from './phantomExit'
 import type { ScrollbackStore } from './scrollback'
 import type { PidMap } from './pidMap'
+import type { SessionVault } from './vault'
+import { connectPtyHost, createLocalBackend, type PtyBackend, type PtyBackendHooks } from './ptyHost'
+import { selectOrphans } from './orphans'
 import type { AskResult } from './controlServer'
 import { AGENT_SESSION_TTL_MS } from '../shared/types'
-import { hasQuirk, pathListSeparator, platformKind } from '../shared/platform'
+import { hasQuirk, platformKind, withBinDir } from '../shared/platform'
 import type {
   AgentChoice,
   AgentSession,
@@ -19,6 +21,7 @@ import type {
   PaneStatus,
   PtyExit,
   PtyOutput,
+  SessionHostInfo,
   Settings,
   SpawnRequest,
   TerminalAlert,
@@ -64,7 +67,6 @@ function resumeCommand(session: AgentSession | undefined): string | null {
 interface Session {
   id: string
   workspaceId: string
-  pty: IPty
   scanner: OscScanner
   cwd: string
   title: string
@@ -103,6 +105,15 @@ interface Session {
    */
   pendingCommand: string | null
   pendingCommandTimer: NodeJS.Timeout | null
+  /**
+   * True only while replayed output is being pushed through the scanner.
+   *
+   * Everything the scanner reports during a replay is a fact about the past —
+   * a bell that rang an hour ago, a command that finished before lunch — and
+   * the alert pipeline must stay quiet for all of it. Raised and lowered around
+   * one synchronous `push`, so it never spans a turn of the event loop.
+   */
+  replaying: boolean
 }
 
 export interface PtyManagerHooks {
@@ -126,12 +137,20 @@ export interface PtyManagerDeps {
   binDir: string | null
   scrollback: ScrollbackStore
   pidMap: PidMap
+  /** Keeps a closed pane's transcript, which the scrollback buffer does not. */
+  vault: SessionVault
+  /** Re-executed as plain Node to start the broker. `process.execPath`. */
+  execPath: string
+  /** The broker's bundle, unpacked from the asar like the CLI's. */
+  hostScript: string
 }
 
 export class PtyManager {
   private readonly sessions = new Map<string, Session>()
   private readonly activity: ActivityMonitor
   readonly agents: AgentStateRegistry
+  private backend: PtyBackend | null = null
+  private starting: Promise<PtyBackend> | null = null
 
   constructor(
     private readonly hooks: PtyManagerHooks,
@@ -148,7 +167,132 @@ export class PtyManager {
     this.agents = new AgentStateRegistry((agent) => this.handleAgentState(agent))
   }
 
-  spawn(req: SpawnRequest): { ok: true } | { ok: false; error: string } {
+  /**
+   * Reaches the session broker, starting one if there is none.
+   *
+   * Lazy and memoised rather than done at construction, because it is async and
+   * every caller below needs the same single answer. Nothing forces it early:
+   * the first pane to spawn pays for it, and there is no window in which the
+   * app is up but a terminal cannot be opened.
+   */
+  private host(): Promise<PtyBackend> {
+    if (this.backend) return Promise.resolve(this.backend)
+    if (this.starting) return this.starting
+
+    // Read once, at the moment the first pane needs a shell, and not again.
+    // Flipping this mid-run cannot move shells that are already running from
+    // one owner to the other, so the setting says it takes effect on restart —
+    // except at quit, where `release` honours the current value by ending the
+    // sessions rather than leaving them behind.
+    if (!this.getSettings().keepSessionsAlive) {
+      this.backend = createLocalBackend(this.hostHooks())
+      return Promise.resolve(this.backend)
+    }
+
+    this.starting = connectPtyHost({
+      execPath: this.deps.execPath,
+      hostScript: this.deps.hostScript,
+      hooks: this.hostHooks(),
+    }).then((backend) => {
+      this.backend = backend
+      return backend
+    })
+    return this.starting
+  }
+
+  private hostHooks(): PtyBackendHooks {
+    return {
+      onData: (id, data, backlog) => this.handleData(id, data, backlog),
+      onExit: (id, exit) => this.handleExit(id, exit),
+      onLost: () => this.handleHostLost(),
+    }
+  }
+
+  /** Which kind of host is in use, for the UI to be honest about persistence. */
+  get hostKind(): 'broker' | 'local' | 'connecting' {
+    return this.backend?.kind ?? 'connecting'
+  }
+
+  /**
+   * Every shell being held, and by what.
+   *
+   * Uses a no-launch probe when nothing has needed a shell yet, so opening the
+   * processes pane on a window with no terminals still reports sessions left
+   * over from a previous run — which is exactly the case worth being able to
+   * see — without starting a broker to answer the question.
+   */
+  async hostSnapshot(): Promise<SessionHostInfo> {
+    const host = this.backend ?? (await this.adoptExistingHost())
+    if (!host) return { kind: this.backend?.kind ?? 'connecting', sessions: [] }
+    const sessions = await host.list()
+    return {
+      kind: host.kind,
+      sessions: sessions.map((s) => ({
+        id: s.id,
+        alive: s.alive,
+        pid: s.pid,
+        startedAt: s.startedAt,
+        attached: s.attached,
+      })),
+    }
+  }
+
+  /**
+   * Ends sessions no pane can ever reach again.
+   *
+   * The broker only forgets a session when the user closes its pane, when the
+   * shell exits, or at a reboot — quitting the app deliberately does none of
+   * those. So a pane that stops existing while the app is closed (a workspace
+   * deleted, a different workspace file loaded, a pane removed by another
+   * instance) leaves a shell running that nothing will ever display again. It
+   * is invisible, it costs a shell's worth of memory, and — because idle-exit
+   * requires *zero* sessions — a single one of them keeps the broker alive
+   * indefinitely, and every other orphan with it. That is the one unbounded
+   * case in the design, and this is what bounds it.
+   *
+   * `live` is every pane id in the workspace document, across all workspaces
+   * rather than just the open one, because any of them may be shown again.
+   *
+   * Three conditions, and each rules out a different way of being wrong:
+   *
+   * - **not referenced** — nothing can ever draw it,
+   * - **nobody attached** — no other instance of the app is using it right now,
+   * - **older than the grace period** — a pane created seconds ago may not have
+   *   reached `workspace.json` yet, and killing a shell the user just opened
+   *   would be a far worse bug than the leak this fixes.
+   */
+  async reapOrphans(live: ReadonlySet<string>): Promise<number> {
+    const host = this.backend ?? (await this.adoptExistingHost())
+    if (!host) return 0
+
+    const doomed = selectOrphans(await host.list(), live, Date.now())
+    for (const session of doomed) host.kill(session.id)
+    return doomed.length
+  }
+
+  /**
+   * Connects only if a broker is already running.
+   *
+   * The sweep has to be able to run when this app has no panes of its own —
+   * that is precisely the case where the orphans are — but it must not *start*
+   * a broker to go looking, or every launch would spawn one to find nothing.
+   * A connection made this way is a real one and is kept.
+   */
+  private async adoptExistingHost(): Promise<PtyBackend | null> {
+    const backend = await connectPtyHost({
+      execPath: this.deps.execPath,
+      hostScript: this.deps.hostScript,
+      noLaunch: true,
+      hooks: this.hostHooks(),
+    })
+    // No broker running means no orphans to find. The local backend it fell
+    // back to holds nothing, so dropping it costs nothing.
+    if (backend.kind !== 'broker') return null
+    this.backend = backend
+    return backend
+  }
+
+  async spawn(req: SpawnRequest): Promise<{ ok: true } | { ok: false; error: string }> {
     if (this.sessions.has(req.paneId)) return { ok: true }
 
     const settings = this.getSettings()
@@ -166,24 +310,27 @@ export class PtyManager {
     // rather than failing the spawn and losing the pane.
     const cwd = req.shell === 'ssh' ? os.homedir() : (usableDirectory(req.cwd) ?? os.homedir())
 
-    // Replay before the shell can print anything, so the restored screen is
-    // always above this run's output rather than interleaved with it.
-    this.replayScrollback(req.paneId, req.rows)
-
     // Stamped before the spawn rather than after it, so the value can only ever
     // be earlier than the OS's own creation time — never later, which would
     // make a legitimate process look like a recycled pid.
     const spawnedAt = Date.now()
 
-    let pty: IPty
-    try {
-      pty = spawn(resolved.file, resolved.args, {
-        name: 'xterm-256color',
-        cols: Math.max(req.cols, 2),
-        rows: Math.max(req.rows, 1),
-        cwd,
-        env: {
-          ...(process.env as Record<string, string>),
+    const host = await this.host()
+    const started = await host.spawn({
+      id: req.paneId,
+      file: resolved.file,
+      args: resolved.args,
+      cwd,
+      cols: Math.max(req.cols, 2),
+      rows: Math.max(req.rows, 1),
+      // `withBinDir` wraps the whole block rather than setting a PATH inside
+      // it, and that ordering is load-bearing: it is what guarantees the
+      // child gets exactly one PATH however many of these spreads carry one.
+      // Setting `PATH:` here alongside a spread of `process.env` is what used
+      // to hand every pane two of them — see `withBinDir` for what that broke.
+      env: withBinDir(
+        {
+          ...process.env,
           TERM_PROGRAM: 'ia_workspaces',
           // Claude Code and friends read this to decide colour depth.
           COLORTERM: 'truecolor',
@@ -193,27 +340,29 @@ export class PtyManager {
           IAW_WORKSPACE_ID: req.workspaceId,
           IAW_PIPE: this.deps.notifyPipe(),
           IAW_TOKEN: this.deps.token,
-          // Makes `iaw` callable inside our panes without touching the
-          // user's system PATH. The separator is a semicolon on Windows only,
-          // because the colon was already spoken for by drive letters — get it
-          // wrong and PATH becomes one entry that is every directory at once,
-          // so nothing on it resolves.
-          PATH: this.deps.binDir
-            ? `${this.deps.binDir}${pathListSeparator(PLATFORM)}${process.env.PATH ?? ''}`
-            : (process.env.PATH ?? ''),
           // Last, so a shell that needs its own environment to find our
           // integration gets it. Only zsh does; see `applyIntegration`.
           ...resolved.env,
         },
-      })
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
+        this.deps.binDir,
+        PLATFORM
+      ),
+    })
+    if (!started.ok) return { ok: false, error: started.error }
+
+    // Two very different things can have just happened, and everything below
+    // turns on which. A NEW shell wants the previous run's screen painted above
+    // it, because there is nothing else there. A shell that was ALREADY RUNNING
+    // — the app was restarted and the broker kept it — wants nothing of the
+    // sort: its real output is about to be replayed from the broker's own ring,
+    // and a stale copy from disk on top of that would be a second, older
+    // rendering of the same pane.
+    const reattached = started.existing
+    if (!reattached) this.replayScrollback(req.paneId, req.rows)
 
     const session: Session = {
       id: req.paneId,
       workspaceId: req.workspaceId,
-      pty,
       scanner: null as unknown as OscScanner,
       cwd,
       title: '',
@@ -232,6 +381,7 @@ export class PtyManager {
       // ourselves. A plain shell reopens at an empty prompt.
       pendingCommand: resumeCommand(req.resumeSession),
       pendingCommandTimer: null,
+      replaying: false,
     }
 
     session.scanner = new OscScanner({
@@ -271,74 +421,134 @@ export class PtyManager {
       },
     })
 
-    pty.onData((data) => {
-      session.scanner.push(data)
-      this.activity.feed(session.id, data.length)
-      this.deps.scrollback.push(session.id, data)
-      session.pending += data
-      if (session.pending.length >= FLUSH_BYTES) this.flush(session)
-      else if (!session.flushTimer) session.flushTimer = setTimeout(() => this.flush(session), FLUSH_MS)
-    })
-
-    pty.onExit(({ exitCode, signal }) => {
-      // Typed as a number, but the code-less exit this guard exists for arrives
-      // as null — that mismatch is the bug, so the runtime shape is what gets
-      // inspected here.
-      const code = exitCode as number | null | undefined
-      const phantom = isPhantomExit(code, signal, session.pid, isPidAlive)
-
-      session.exited = true
-
-      // A killed shell still reports its exit, and by then the pane may already
-      // be running a replacement — "Reopen as" kills and respawns under the same
-      // pane id. Everything below is addressed by pane id, so letting a dead
-      // session's exit through would announce the live one as exited, stop its
-      // activity tracking and drop it from the map. Only the session the pane
-      // currently holds gets to speak for it.
-      if (this.sessions.get(session.id) !== session) {
-        if (session.pendingCommandTimer) clearTimeout(session.pendingCommandTimer)
-        if (session.flushTimer) clearTimeout(session.flushTimer)
-        this.deps.pidMap.unregister(session.pid)
-        if (phantom) void this.reapPhantomExit(session)
-        return
-      }
-
-      if (session.pendingCommandTimer) clearTimeout(session.pendingCommandTimer)
-      session.pendingCommandTimer = null
-      session.pendingCommand = null
-      this.flush(session)
-      this.activity.stop(session.id)
-      this.deps.pidMap.unregister(session.pid)
-      // The pane outlives its shell — keep the screen so a restart still has it.
-      void this.deps.scrollback.flush(session.id)
-      this.hooks.onExit({ paneId: session.id, exitCode: code ?? -1, signal })
-
-      if (phantom) {
-        // Reaping is asynchronous — it has to ask the OS who owns that pid
-        // before it is allowed to kill anything — but the pane is finished with
-        // either way, so nothing waits on it.
-        void this.reapPhantomExit(session)
-      } else if (this.getSettings().notifications.onExit) {
-        this.fireAlert(session, 'exit', 'Shell exited', `${this.label(session)} exited with code ${code ?? -1}`)
-      }
-      this.sessions.delete(session.id)
-    })
-
     this.sessions.set(req.paneId, session)
     this.activity.start(req.paneId)
     this.deps.scrollback.track(req.paneId)
-    this.registerPid(session, pty)
+    this.registerPid(session, started.pid)
 
-    // cmd and WSL never emit a prompt marker, and PowerShell only does with
-    // shell integration on. Without a deadline the resume would simply never
-    // happen on those, so wait for the marker but do not depend on it.
-    if (session.pendingCommand) {
+    // Decided BEFORE attaching, because attaching is what starts the backlog
+    // flowing and the backlog carries prompt markers.
+    //
+    // Whether a frame arrives before or after the attach continuation depends
+    // on how the OS coalesces two writes, which varies by transport and payload
+    // size — `tests/host.test.mjs` pins the current answer precisely because it
+    // is not one to depend on. Settling this here puts the decision somewhere
+    // no delivery timing can reach it.
+    if (reattached) {
+      // The resume line exists to put an agent back into a *fresh* shell. This
+      // shell never stopped, and the agent is still sitting in it, so typing
+      // `claude --resume` here would start a second conversation on top of the
+      // one already running.
+      session.pendingCommand = null
+    } else if (session.pendingCommand) {
+      // cmd and WSL never emit a prompt marker, and PowerShell only does with
+      // shell integration on. Without a deadline the resume would simply never
+      // happen on those, so wait for the marker but do not depend on it.
       session.pendingCommandTimer = setTimeout(
         () => this.sendPendingCommand(session),
         RESUME_FALLBACK_MS
       )
     }
+
+    // Subscribing is what starts the output flowing, and for a shell that was
+    // already running it is also what delivers everything printed while this
+    // app was not here to see it — as backlog frames, through `handleData`.
+    const attached = await host.attach(req.paneId)
+
+    // It died while nobody was attached. The broker held the record precisely
+    // so that this could still be reported rather than leaving a pane waiting
+    // on a process that ended hours ago.
+    if (attached && !attached.alive && attached.exit) {
+      this.handleExit(req.paneId, attached.exit)
+    }
+
     return { ok: true }
+  }
+
+  /**
+   * Terminal bytes, live or replayed.
+   *
+   * The `backlog` distinction is not cosmetic. Replayed output is history: it
+   * must reach the screen and the scanner — that is how a reattached pane gets
+   * its title and directory back — but it must not be treated as *activity*, or
+   * a pane that has sat quiet for an hour would flare into life the instant the
+   * app reopened and then fire a "gone quiet" alert a few seconds later. Nor
+   * may it raise alerts of its own: replaying an hour of output through the OSC
+   * scanner would otherwise re-fire every bell and every command-finished
+   * notification the pane ever produced.
+   */
+  private handleData(paneId: string, bytes: Buffer, backlog: boolean): void {
+    const session = this.sessions.get(paneId)
+    if (!session) return
+    const data = bytes.toString('utf8')
+
+    // Synchronous, because `scanner.push` is: the flag is only raised for the
+    // duration of this one replayed chunk's worth of callbacks.
+    session.replaying = backlog
+    session.scanner.push(data)
+    session.replaying = false
+
+    if (!backlog) this.activity.feed(session.id, data.length)
+    this.deps.scrollback.push(session.id, data)
+    session.pending += data
+    if (session.pending.length >= FLUSH_BYTES) this.flush(session)
+    else if (!session.flushTimer) {
+      session.flushTimer = setTimeout(() => this.flush(session), FLUSH_MS)
+    }
+  }
+
+  private handleExit(paneId: string, exit: { exitCode: number; signal?: number }): void {
+    const session = this.sessions.get(paneId)
+    // The broker holds an exit until somebody acknowledges it, so this has to
+    // happen even for a pane we no longer know about — otherwise the record
+    // would outlive every client and keep the broker awake forever.
+    void this.backend?.ackExit(paneId)
+    if (!session) return
+
+    const code = exit.exitCode
+    const signal = exit.signal
+    const phantom = isPhantomExit(code, signal, session.pid, isPidAlive)
+
+    session.exited = true
+
+    if (session.pendingCommandTimer) clearTimeout(session.pendingCommandTimer)
+    session.pendingCommandTimer = null
+    session.pendingCommand = null
+    this.flush(session)
+    this.activity.stop(session.id)
+    this.deps.pidMap.unregister(session.pid)
+    // The pane outlives its shell — keep the screen so a restart still has it.
+    void this.deps.scrollback.flush(session.id)
+    this.hooks.onExit({ paneId: session.id, exitCode: code ?? -1, signal })
+
+    if (phantom) {
+      // Reaping is asynchronous — it has to ask the OS who owns that pid before
+      // it is allowed to kill anything — but the pane is finished with either
+      // way, so nothing waits on it.
+      void this.reapPhantomExit(session)
+    } else if (this.getSettings().notifications.onExit) {
+      this.fireAlert(
+        session,
+        'exit',
+        'Shell exited',
+        `${this.label(session)} exited with code ${code ?? -1}`
+      )
+    }
+    this.sessions.delete(session.id)
+  }
+
+  /**
+   * The broker died or the socket broke, with panes still open.
+   *
+   * Nothing is killed and nothing is announced as exited, because as far as we
+   * know the shells are fine — it is our view of them that is gone. The panes
+   * are marked so the next spawn reconnects rather than assuming it is already
+   * attached.
+   */
+  private handleHostLost(): void {
+    console.error('[pty] lost the session host; panes are detached until the next spawn')
+    this.backend = null
+    this.starting = null
   }
 
   /**
@@ -356,12 +566,18 @@ export class PtyManager {
   private sendPendingCommand(session: Session): void {
     const command = session.pendingCommand
     if (!command || session.exited) return
+    // A prompt marker inside replayed output is a fact about the past, exactly
+    // like a replayed bell — it is not the shell saying it is ready for input
+    // *now*. Acting on one types into a live agent on the strength of a prompt
+    // it drew an hour ago. This is the same guard `fireAlert` carries, and it
+    // should have been here from the start rather than only there.
+    if (session.replaying) return
     session.pendingCommand = null
     if (session.pendingCommandTimer) {
       clearTimeout(session.pendingCommandTimer)
       session.pendingCommandTimer = null
     }
-    session.pty.write(command + '\r')
+    this.backend?.write(session.id, command + '\r')
   }
 
   write(paneId: string, data: string): void {
@@ -380,50 +596,64 @@ export class PtyManager {
         s.commandStartedAt = Date.now()
       }
     }
-    s.pty.write(data)
+    this.backend?.write(paneId, data)
   }
 
   resize(paneId: string, cols: number, rows: number): void {
     const s = this.sessions.get(paneId)
     if (!s || s.exited) return
-    try {
-      s.pty.resize(Math.max(cols, 2), Math.max(rows, 1))
-    } catch {
-      /* the pty can die between the renderer measuring and us resizing */
-    }
+    this.backend?.resize(paneId, Math.max(cols, 2), Math.max(rows, 1))
   }
 
+  /**
+   * The user closed a pane.
+   *
+   * The one path that actually ends a shell. Everything else — quitting the
+   * app, the window closing, the process being killed — now only detaches, so
+   * this is the sole place work gets thrown away and it stays deliberate.
+   */
   kill(paneId: string): void {
     const s = this.sessions.get(paneId)
     this.activity.stop(paneId)
     this.agents.release(paneId)
+    // The last moment the transcript exists. `drop` below is right for the
+    // *buffer* — it exists to restore a pane, and this pane is not coming back
+    // — but the content is a different thing, and throwing it away was the one
+    // place this app deliberately destroyed something the user might want.
+    this.archive(paneId, s)
     // Closed by the user, so unlike an exit its screen is not coming back.
     this.deps.scrollback.drop(paneId)
+    this.backend?.kill(paneId)
     if (!s) return
     this.deps.pidMap.unregister(s.pid)
-    try {
-      s.pty.kill()
-    } catch {
-      /* already gone */
-    }
     if (s.flushTimer) clearTimeout(s.flushTimer)
     this.sessions.delete(paneId)
   }
 
-  killAll(): void {
+  /**
+   * The app is going away; the shells are not.
+   *
+   * This used to kill every pane, and the rename is the feature: quitting now
+   * hangs up on the broker and leaves each session running, so reopening
+   * reattaches to the same live shells rather than starting new ones over a
+   * replayed screenshot. Where no broker could be reached the local backend
+   * still ends them, because there is nothing there to keep them.
+   */
+  release(): void {
+    // Turning the setting off mid-run cannot retroactively move running shells
+    // out of the broker, but it can be honoured here: somebody who has just
+    // said "do not keep my shells running" should not find them running. The
+    // sessions this instance owns are ended; orphans from earlier runs are the
+    // sweep's business.
+    const keep = this.getSettings().keepSessionsAlive
     for (const id of [...this.sessions.keys()]) {
       const s = this.sessions.get(id)
-      if (s) {
-        try {
-          s.pty.kill()
-        } catch {
-          /* already gone */
-        }
-        if (s.flushTimer) clearTimeout(s.flushTimer)
-      }
+      if (s?.flushTimer) clearTimeout(s.flushTimer)
+      if (!keep) this.backend?.kill(id)
       this.activity.stop(id)
       this.sessions.delete(id)
     }
+    this.backend?.release()
   }
 
   /** Pane id -> the shell's pid, for the process panel. Live sessions only. */
@@ -571,7 +801,7 @@ export class PtyManager {
 
     const resolved = this.agents.resolveAnswer(paneId, choiceId)
     if (!resolved) return { ok: false, error: 'pane is not waiting on a declared choice' }
-    session.pty.write(resolved.data)
+    this.backend?.write(session.id, resolved.data)
     this.agents.markAnswered(paneId)
     return { ok: true, label: resolved.choice.label }
   }
@@ -676,15 +906,17 @@ export class PtyManager {
   /**
    * Records the shell's process id once ConPTY has one.
    *
-   * `pty.pid` reads 0 for a moment after spawn on Windows: ConPTY creates the
+   * The pid reads 0 for a moment after spawn on Windows: ConPTY creates the
    * pseudoconsole first and attaches the shell to it asynchronously, so the id
-   * does not exist yet when spawn returns. Registering that 0 is what silently
-   * left the map empty. A few short retries cover the gap without making spawn
-   * wait on anything.
+   * does not exist yet when the call returns. Registering that 0 is what
+   * silently left the map empty. A few short retries cover the gap without
+   * making spawn wait on anything.
+   *
+   * The retry now asks the broker rather than re-reading a local handle — the
+   * pty lives in another process, and `list` is the only view of it we have.
    */
-  private registerPid(session: Session, pty: IPty, attempt = 0): void {
+  private registerPid(session: Session, pid: number, attempt = 0): void {
     if (session.exited) return
-    const pid = pty.pid
     if (pid > 0) {
       session.pid = pid
       this.deps.pidMap.register(pid, {
@@ -696,11 +928,39 @@ export class PtyManager {
       return
     }
     if (attempt >= PID_RETRY_MS.length) return
-    setTimeout(() => this.registerPid(session, pty, attempt + 1), PID_RETRY_MS[attempt])
+    setTimeout(() => {
+      if (session.exited || !this.backend) return
+      void this.backend.list().then((sessions) => {
+        const found = sessions.find((s) => s.id === session.id)
+        this.registerPid(session, found?.pid ?? 0, attempt + 1)
+      })
+    }, PID_RETRY_MS[attempt])
   }
 
   private label(s: Session): string {
     return s.title || s.cwd
+  }
+
+  /**
+   * Files a closing pane's transcript in the vault.
+   *
+   * Reads the same ring `read-screen` does, so a pane whose shell exited a
+   * while ago still archives what it printed — the buffer outlives the shell,
+   * and only closing the pane discards it. Best effort throughout: nothing here
+   * is worth failing a pane close over.
+   */
+  private archive(paneId: string, session: Session | undefined): void {
+    try {
+      const text = this.deps.scrollback.peek(paneId, 100_000)
+      if (!text) return
+      this.deps.vault.archive(text, {
+        label: session ? this.label(session) : paneId,
+        cwd: session?.cwd ?? '',
+        workspace: session?.workspaceId ?? '',
+      })
+    } catch {
+      /* a transcript we could not file is not a reason to keep the pane open */
+    }
   }
 
   /**
@@ -809,6 +1069,11 @@ export class PtyManager {
    * whether it becomes a toast, a sound, or just a tab badge.
    */
   private fireAlert(session: Session, trigger: TerminalAlert['trigger'], title: string, body: string): void {
+    // Everything the scanner reports during a replay already happened, often
+    // long ago. Interrupting someone for a bell that rang before lunch — and
+    // doing it for every one of them at once, the moment the app reopens — is
+    // the failure mode this single guard exists to prevent.
+    if (session.replaying) return
     const now = Date.now()
     if (now - session.lastAlertAt < ALERT_COOLDOWN_MS && trigger === 'bell') return
     session.lastAlertAt = now

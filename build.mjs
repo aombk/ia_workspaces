@@ -44,6 +44,19 @@ const electronTargets = [
     external: nodeExternals,
   },
   {
+    // The session broker. Its own bundle because it is its own process: the
+    // app re-executes this binary with ELECTRON_RUN_AS_NODE pointed at this
+    // file, exactly as the `iaw` shim does, so that quitting the app takes
+    // Chromium down and leaves the shells running here.
+    ...common,
+    entryPoints: [path.join(root, 'src/host/hostEntry.ts')],
+    outfile: path.join(electronOut, 'host/host.js'),
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    external: nodeExternals,
+  },
+  {
     ...common,
     entryPoints: [path.join(root, 'src/preload/preload.ts')],
     outfile: path.join(electronOut, 'preload/preload.js'),

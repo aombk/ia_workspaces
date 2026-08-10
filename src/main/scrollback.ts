@@ -3,6 +3,13 @@ import { rename, unlink, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { hasQuirk, platformKind } from '../shared/platform'
+// One ring, two users: this store rings a pane so its last screen survives to
+// disk, and the broker rings a session so a reconnecting client can be given
+// what it missed. Re-exported because the tests and `main` have always taken
+// `RingBuffer` from here.
+import { RingBuffer } from '../host/ring'
+
+export { RingBuffer } from '../host/ring'
 
 const PLATFORM = platformKind(process.platform)
 
@@ -17,14 +24,6 @@ const PLATFORM = platformKind(process.platform)
  * exact stream it already rendered once. Anything that filters or re-encodes
  * would lose colour and cursor positioning.
  */
-
-/** Ceiling per pane. Reached only by panes that actually print this much. */
-const CAPACITY_BYTES = 2 * 1024 * 1024
-/**
- * Buffers start here and double toward the ceiling, so twenty idle panes cost
- * about a megabyte between them rather than forty.
- */
-const INITIAL_BYTES = 64 * 1024
 
 /** Written by the dump, and briefly present between the write and the rename. */
 const TMP_SUFFIX = /\.tmp\.[0-9a-f]+$/
@@ -48,77 +47,6 @@ const RETRY_BACKOFF_MS = [20, 50, 100, 200]
  * destination — the resource actually shared — makes the newest one win.
  */
 const chains = new Map<string, Promise<void>>()
-
-export class RingBuffer {
-  private buffer: Buffer
-  private physical: number
-  private writePos = 0
-  private length = 0
-
-  constructor(private readonly capacity = CAPACITY_BYTES) {
-    this.physical = Math.min(INITIAL_BYTES, capacity)
-    this.buffer = Buffer.alloc(this.physical)
-  }
-
-  get size(): number {
-    return this.length
-  }
-
-  write(data: Buffer): void {
-    if (data.length === 0) return
-    this.grow(this.length + data.length)
-
-    // A single write larger than the whole ring: keep only its tail.
-    if (data.length >= this.physical) {
-      data.copy(this.buffer, 0, data.length - this.physical, data.length)
-      this.writePos = 0
-      this.length = this.physical
-      return
-    }
-
-    const toEnd = this.physical - this.writePos
-    if (data.length <= toEnd) {
-      data.copy(this.buffer, this.writePos)
-    } else {
-      data.copy(this.buffer, this.writePos, 0, toEnd)
-      data.copy(this.buffer, 0, toEnd, data.length)
-    }
-    this.writePos = (this.writePos + data.length) % this.physical
-    this.length = Math.min(this.length + data.length, this.physical)
-  }
-
-  /** Oldest byte first. A copy — the ring itself is never handed out. */
-  readAll(): Buffer {
-    if (this.length === 0) return Buffer.alloc(0)
-    if (this.length < this.physical) return Buffer.from(this.buffer.subarray(0, this.length))
-    // Full and wrapped: writePos is the oldest byte.
-    return Buffer.concat([
-      this.buffer.subarray(this.writePos, this.physical),
-      this.buffer.subarray(0, this.writePos),
-    ])
-  }
-
-  /**
-   * Grows the allocation toward the ceiling by doubling. Copying in logical
-   * order also un-wraps the ring, which is safe because after a grow the stored
-   * length is strictly below the new size.
-   */
-  private grow(needed: number): void {
-    if (this.physical >= this.capacity || needed <= this.physical) return
-    let next = this.physical
-    while (next < needed && next < this.capacity) next *= 2
-    next = Math.min(next, this.capacity)
-    if (next === this.physical) return
-
-    const existing = this.readAll()
-    const grown = Buffer.alloc(next)
-    existing.copy(grown, 0)
-    this.buffer = grown
-    this.physical = next
-    this.writePos = existing.length
-    this.length = existing.length
-  }
-}
 
 export class ScrollbackStore {
   private readonly rings = new Map<string, RingBuffer>()

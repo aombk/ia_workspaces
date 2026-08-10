@@ -76,6 +76,59 @@ export function pathListSeparator(p: PlatformKind): string {
   return isWindows(p) ? ';' : ':'
 }
 
+/**
+ * An environment block with exactly one PATH, our bin directory in front of it.
+ *
+ * The de-duplication is the whole point, and it is a Windows problem. Windows
+ * spells the variable `Path` and looks it up case-insensitively; Node's
+ * `process.env` is an ordinary object that reports the key as the OS wrote it.
+ * So spreading `process.env` and then setting `PATH` produces **two keys for one
+ * variable**, and `CreateProcess` passes both to the child. Nothing rejects
+ * that, and nothing warns: consumers simply disagree about which one is real.
+ *
+ * Two failures came out of exactly that, and neither looked like a PATH bug:
+ *
+ * - PowerShell and cmd read `Path`, which is the copy *without* our bin
+ *   directory, so `iaw` was not on the PATH in any PowerShell pane. It appeared
+ *   to work only because Git Bash resolves the other key, and Claude Code runs
+ *   its hooks through `sh`.
+ * - `git` prepends its own `usr/bin` to the PATH it hands to the MSYS `sh` it
+ *   spawns for `git-submodule` and friends. That prepend landed on one key
+ *   while `sh` read the other, so those helpers ran with no POSIX utilities at
+ *   all — `git fetch` and `git pull` died on a missing `basename`, printing
+ *   nothing and exiting 128, while `git --version` and `git status` (pure C
+ *   builtins that shell out to nothing) worked perfectly.
+ *
+ * The name is preserved rather than normalised: a child that has always seen
+ * `Path` should keep seeing `Path`. Only the duplication is removed.
+ */
+export function withBinDir(
+  base: Record<string, string | undefined>,
+  binDir: string | null,
+  p: PlatformKind
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  // Windows writes `Path`; POSIX writes `PATH`. Either is only a default — a
+  // block that already carries one keeps whatever spelling it used.
+  let key = isWindows(p) ? 'Path' : 'PATH'
+  let value = ''
+
+  for (const [name, entry] of Object.entries(base)) {
+    if (entry === undefined) continue
+    if (/^path$/i.test(name)) {
+      // A block that somehow arrives already doubled collapses here too, which
+      // is the case this function exists to make impossible downstream.
+      key = name
+      value = entry
+      continue
+    }
+    out[name] = entry
+  }
+
+  out[key] = binDir ? `${binDir}${pathListSeparator(p)}${value}` : value
+  return out
+}
+
 /** Joins without `node:path`, which this module cannot import. */
 export function joinPath(p: PlatformKind, ...parts: string[]): string {
   const sep = pathSeparator(p)
@@ -206,6 +259,84 @@ export function processTableCommand(p: PlatformKind): { file: string; args: stri
   // `=` empties each column header, so there is no banner line to skip and the
   // output is the same shape as the Windows branch produces.
   return { file: 'ps', args: ['-Ax', '-o', 'pid=,ppid='] }
+}
+
+// ----------------------------------------------------------------------- ipc
+
+/**
+ * A conservative ceiling on the length of a unix socket path.
+ *
+ * `sockaddr_un.sun_path` is 104 bytes on macOS and 108 on Linux, NUL included,
+ * and the failure is not a graceful one: `bind` truncates or fails with
+ * ENAMETOOLONG, so the server ends up listening somewhere other than where it
+ * said it would. The limit is bytes rather than characters, and a home
+ * directory can hold multi-byte names, so the check leaves room to be wrong.
+ */
+const SOCKET_PATH_MAX = 100
+
+/**
+ * The directory a POSIX socket of ours belongs in.
+ *
+ * Linux has a place designed for exactly this — `$XDG_RUNTIME_DIR` is per-user,
+ * tmpfs, mode 0700, and emptied when the session ends, so a socket left behind
+ * by a crash cannot outlive the login. macOS has no equivalent that is both
+ * short and durable, so the data directory does the job there.
+ *
+ * Windows never reaches this: a named pipe lives in a kernel namespace and has
+ * no path on disk at all.
+ */
+export function ipcRuntimeDir(
+  p: PlatformKind,
+  env: Record<string, string | undefined>,
+  home: string
+): string {
+  if (p === 'linux' && env.XDG_RUNTIME_DIR) {
+    return joinPath(p, env.XDG_RUNTIME_DIR, 'ia_workspaces')
+  }
+  return dataDir(p, env, home)
+}
+
+/**
+ * Where one of our IPC servers listens, and what a client should connect to.
+ *
+ * The two platforms do not merely spell this differently — they are different
+ * mechanisms. Windows has a named pipe, which is a kernel object with no
+ * presence on the filesystem; POSIX has a socket, which is a file, in a
+ * directory, subject to a path length limit and to whatever cleans that
+ * directory out.
+ *
+ * This exists because the control server spelled the Windows form
+ * unconditionally. On macOS and Linux `net.listen()` took that literally and
+ * created a socket file *named* `\\.\pipe\iaw-electron-1234`, relative to
+ * whatever the process's working directory happened to be — which worked only
+ * for as long as every `iaw` caller shared that directory.
+ *
+ * `tmp` is the fallback for a home directory deep enough to overrun the socket
+ * path limit. It is second choice rather than first because the temp directory
+ * is the one place something else may delete the socket out from under a
+ * running server.
+ */
+export function ipcAddress(
+  p: PlatformKind,
+  name: string,
+  dirs: { runtime: string; tmp: string }
+): string {
+  if (isWindows(p)) return `\\\\.\\pipe\\iaw-${name}`
+  const preferred = joinPath(p, dirs.runtime, `${name}.sock`)
+  if (preferred.length <= SOCKET_PATH_MAX) return preferred
+  return joinPath(p, dirs.tmp, `iaw-${name}.sock`)
+}
+
+/**
+ * Whether an address names a Windows pipe rather than a file.
+ *
+ * The difference matters to exactly two callers: a stale socket *file* has to
+ * be unlinked before a server can bind over it, and a pipe must never be — the
+ * path does not exist on disk, so an unlink would either fail or delete
+ * something else entirely.
+ */
+export function isPipeAddress(address: string): boolean {
+  return address.startsWith('\\\\.\\pipe\\') || address.startsWith('//./pipe/')
 }
 
 // ------------------------------------------------------------------ keyboard

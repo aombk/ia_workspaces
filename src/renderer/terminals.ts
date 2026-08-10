@@ -22,6 +22,7 @@ import { showContextMenu } from './ui/contextMenu'
 import { beginDrag, draggingTab, endDrag } from './ui/dragState'
 import { isMac, isPrimary } from './ui/keys'
 import { DomZoom, UnavailablePane, type AuxPane, type PaneZoom } from './auxPane'
+import { bufferWhileHidden, clearPending, drainPending } from './paneBuffer'
 import { fallbackCwd } from '../shared/platform'
 import type { DropSide } from './state'
 import { isTerminalPane } from '../shared/types'
@@ -67,6 +68,26 @@ interface Instance {
   /** Last size sent to the PTY, to avoid redundant resize round-trips. */
   lastCols: number
   lastRows: number
+  /**
+   * True while this pane's tab is not the one on screen.
+   *
+   * A hidden pane costs exactly as much as a visible one — measured at ~86 ms
+   * of main thread per megabyte, with no discount at all for being invisible,
+   * because `hidden` stops the painting and nothing stops the parsing. Three
+   * hidden panes taking a build's output between them cost 161 ms of the same
+   * thread the pane you *are* looking at needs.
+   *
+   * So while this is set the bytes are buffered instead of parsed. Nothing
+   * observable is lost: the pane's title, folder, activity state, alerts and
+   * scrollback are all produced in the main process from the byte stream, not
+   * read off the screen, so they stay live for a pane that is not rendering.
+   */
+  deferred: boolean
+  /** Bytes that arrived while deferred, replayed on reveal. See `PENDING_CAP`. */
+  pending: string[]
+  pendingBytes: number
+  /** Set when the buffer overflowed and the oldest output had to be dropped. */
+  pendingTruncated: boolean
 }
 
 export class TerminalManager {
@@ -123,14 +144,20 @@ export class TerminalManager {
 
     backend().on.ptyData(({ paneId, data }) => {
       const inst = this.instances.get(paneId)
-      if (inst && !inst.disposed) inst.term.write(data)
+      if (!inst || inst.disposed) return
+      if (inst.deferred) bufferWhileHidden(inst, data)
+      else inst.term.write(data)
     })
 
     backend().on.ptyExit(({ paneId, exitCode }) => {
       const inst = this.instances.get(paneId)
       if (!inst || inst.disposed) return
       inst.spawned = false
-      inst.term.write(`\r\n\x1b[38;5;244m[process exited with code ${exitCode}]\x1b[0m\r\n`)
+      const note = `\r\n\x1b[38;5;244m[process exited with code ${exitCode}]\x1b[0m\r\n`
+      // Through the same gate as ordinary output, so it lands *after* whatever
+      // the shell printed on its way out rather than ahead of it.
+      if (inst.deferred) bufferWhileHidden(inst, note)
+      else inst.term.write(note)
     })
 
     backend().on.ptyMeta(({ paneId, cwd, title, agentSession, lastCommand }) => {
@@ -300,6 +327,12 @@ export class TerminalManager {
       disposed: false,
       lastCols: 0,
       lastRows: 0,
+      // A pane is created for the tab being mounted, so it starts awake. The
+      // next tab change decides properly for every pane at once.
+      deferred: false,
+      pending: [],
+      pendingBytes: 0,
+      pendingTruncated: false,
     }
     this.instances.set(paneId, inst)
     return inst
@@ -456,6 +489,11 @@ export class TerminalManager {
     // hidden tree measure zero, and `fit` already declines to resize a terminal
     // it cannot measure, so nothing downstream needs to know about this.
     for (const [id, other] of this.trees) other.element.hidden = id !== tab.id
+
+    // `hidden` stops the painting; this stops the parsing, which is the part
+    // that actually costs. Done here rather than inside the loop above because
+    // a pane's tree and its instances are separate maps.
+    this.setDeferred(tab.id)
 
     for (const pane of tab.panes) {
       this.elementOf(pane.id)?.classList.toggle('active', pane.id === tab.activePaneId)
@@ -949,6 +987,10 @@ export class TerminalManager {
     await backend().pty.kill(paneId)
     inst.spawned = false
     inst.term.reset()
+    // The old session's buffered output belongs to the shell being replaced.
+    // Replaying it above the new one is exactly the "PowerShell prompt sitting
+    // over a bash one" this method exists to avoid.
+    clearPending(inst)
     const tab = store.tabOfPane(paneId)
     if (tab) await this.startPanes(workspaceId, tab)
     this.focusActive()
@@ -1164,6 +1206,47 @@ export class TerminalManager {
     }
     inst.element.remove()
     this.instances.delete(paneId)
+  }
+
+  /**
+   * Marks every pane outside the visible tab as deferred, and wakes the rest.
+   *
+   * Called on every tab change, so it must be cheap and idempotent: a pane
+   * already in the right state does nothing at all, and only a pane crossing
+   * from hidden to visible pays for its backlog.
+   */
+  private setDeferred(visibleTabId: string): void {
+    for (const inst of this.instances.values()) {
+      if (inst.disposed) continue
+      const hidden = store.tabOfPane(inst.paneId)?.id !== visibleTabId
+      if (hidden === inst.deferred) continue
+      if (hidden) inst.deferred = true
+      else this.wake(inst)
+    }
+  }
+
+  /**
+   * Puts a pane back on screen, with whatever it printed while nobody looked.
+   *
+   * The backlog goes in as one write rather than chunk by chunk — xterm parses
+   * a single large string appreciably faster than the same bytes in pieces, and
+   * there is no reason to yield to a frame we are about to redraw anyway.
+   *
+   * A truncated buffer says so, because the alternative is splicing the tail of
+   * an hour's output onto the head of it and presenting the join as if nothing
+   * were missing. The note is dim and one line; the ring in the main process
+   * still holds more, and `iaw read-screen` can still reach it.
+   */
+  private wake(inst: Instance): void {
+    inst.deferred = false
+    if (!inst.pending.length) return
+
+    const { text: backlog, truncated } = drainPending(inst)
+
+    if (truncated) {
+      inst.term.write('\r\n\x1b[38;5;244m── earlier output trimmed ──\x1b[0m\r\n')
+    }
+    inst.term.write(backlog)
   }
 
   closeMany(paneIds: string[]): void {

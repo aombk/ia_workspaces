@@ -16,7 +16,7 @@ import { DomBrowserView, type BrowserView } from './browserView'
 import { stepZoom, ZOOM_DEFAULT, type AuxPane, type PaneZoom } from './auxPane'
 
 /** Where a new browser pane starts. */
-export const DEFAULT_URL = 'https://iraisynn.attinom.net/'
+export const DEFAULT_URL = 'https://github.com/aombk/ia_workspaces'
 
 export interface BrowserPaneHooks {
   /** Records the page a pane is on, so reopening comes back to it. */

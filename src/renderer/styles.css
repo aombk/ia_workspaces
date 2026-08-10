@@ -2378,6 +2378,43 @@ kbd {
   color: var(--text);
 }
 
+/* Shells the session broker is holding that no pane on screen claims. Set
+   apart from the grouped-by-pane list below it because they belong to nowhere
+   you can jump to — the point of showing them is that they are otherwise
+   invisible. */
+.ports-held-head {
+  padding: 8px 12px 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.ports-held-row {
+  color: var(--text-faint);
+}
+
+.ports-action {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ports-action:hover {
+  border-color: var(--danger);
+  color: var(--text);
+}
+
+.ports-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* A one-line "what is this pane" note under a panel's header. */
 .pane-about {
   flex: none;

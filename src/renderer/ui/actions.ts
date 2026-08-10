@@ -5,6 +5,8 @@ export interface UiActions {
   selectWorkspace(workspaceId: string): void
   /** `parentId` nests the new workspace inside that one. */
   addWorkspace(parentId?: string): void
+  /** Creates a git worktree and a workspace sitting in it, nested under this one. */
+  newWorktree(workspaceId: string): void
   changeWorkspaceFolder(workspaceId: string): void
   removeWorkspace(workspaceId: string): void
 
@@ -24,7 +26,8 @@ export interface UiActions {
    */
   openCompare(workspaceId: string, left?: string, right?: string): void
   /** Focus this workspace's search tab, opening it if it isn't already. */
-  openSearch(workspaceId: string): void
+  /** `cwd` searches somewhere other than the workspace — the vault, say. */
+  openSearch(workspaceId: string, cwd?: string): void
   /** Focus the running-processes pane, opening it if none is open. */
   openPorts(workspaceId: string): void
   /**

@@ -1,9 +1,19 @@
 import net from 'node:net'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import type { PaneSummary, TreeSnapshot } from './controlSurface'
 import type { AgentChoice, PaneAgentState } from '../shared/types'
+import type { EventPage } from './events'
+import { ipcAddress, ipcRuntimeDir, isPipeAddress, platformKind } from '../shared/platform'
+
+const PLATFORM = platformKind(process.platform)
+
+/** The two directories `ipcAddress` chooses between on POSIX. */
+export function ipcDirs(): { runtime: string; tmp: string } {
+  return { runtime: ipcRuntimeDir(PLATFORM, process.env, os.homedir()), tmp: os.tmpdir() }
+}
 
 /**
  * The control channel between a pane's shell and the app.
@@ -33,6 +43,7 @@ export type Method =
   | 'send'
   | 'send-key'
   | 'read-screen'
+  | 'events'
 
 export interface ControlRequest {
   method: Method
@@ -66,6 +77,14 @@ export interface ControlRequest {
   alt?: boolean
   /** `read-screen`: how many lines of the tail to return. */
   lines?: number
+  /** `events`: the last seq this reader saw. Omitted means "from the start". */
+  after?: number
+  /** `events`: the boot id the cursor came from, so a restart is detectable. */
+  boot?: string
+  /** `events`: comma-separated category filter. */
+  categories?: string
+  /** `events`: hold the connection open this long waiting for one. */
+  follow?: number
 }
 
 export interface ControlResponse {
@@ -78,6 +97,7 @@ export interface ControlResponse {
     | TreeSnapshot
     | PaneSummary[]
     | { text: string }
+    | EventPage
 }
 
 /** What `ask` resolves to once a human has picked, or given up on it. */
@@ -171,10 +191,27 @@ export function startControlServer(runtime: string, handle: ControlHandler): Con
 
   server.on('error', (err) => console.error('[control] server failed', err))
 
-  const pipeName = `\\\\.\\pipe\\iaw-${runtime}-${process.pid}`
+  // Scoped by pid, because two copies of the app each run one of these and each
+  // pane must reach its own. The broker is the opposite case — one per user,
+  // under a stable name — which is why the naming is the caller's to decide and
+  // only the platform mechanism is shared.
+  const pipeName = ipcAddress(PLATFORM, `${runtime}-${process.pid}`, ipcDirs())
   let address = pipeName
 
   try {
+    // A socket is a file, and a crash leaves it behind: `bind` then fails
+    // EADDRINUSE against a socket nothing is listening on. Removing it first is
+    // safe because the name carries our pid, so the only process that could
+    // legitimately own it is this one. A named pipe has no path on disk and
+    // must never be unlinked.
+    if (!isPipeAddress(pipeName)) {
+      mkdirSync(path.dirname(pipeName), { recursive: true })
+      try {
+        rmSync(pipeName, { force: true })
+      } catch {
+        /* nothing there, or not ours to remove — listen will say so */
+      }
+    }
     server.listen(pipeName)
   } catch {
     address = ''
@@ -211,6 +248,7 @@ const PANELESS: ReadonlySet<Method> = new Set<Method>([
   'agent-state',
   'tree',
   'list-panes',
+  'events',
 ])
 
 async function respond(

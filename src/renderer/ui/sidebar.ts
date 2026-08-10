@@ -460,6 +460,7 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
     'separator',
     { label: 'Rename…', shortcut: 'F2', onClick: () => startRename(workspaceId) },
     { label: 'Change folder…', onClick: () => actions.changeWorkspaceFolder(workspaceId) },
+    { label: 'New worktree…', onClick: () => actions.newWorktree(workspaceId) },
     { label: 'Reveal in Explorer', onClick: () => actions.openInExplorer(workspace.cwd) },
     {
       kind: 'swatches',

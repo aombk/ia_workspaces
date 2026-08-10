@@ -73,6 +73,15 @@ has been tested with.
 
   ![The hex view](docs/screenshots/hex-editor.png)
 
+- **Worktrees, for an agent per branch.** Right-click a workspace → *New
+  worktree…*, give it a branch, and you get a git worktree beside the
+  repository plus a workspace nested under the original sitting in it. There is
+  no new concept and nothing new persisted: a worktree is a workspace whose
+  folder happens to be one, so the file tree, Changes, search and the branch
+  under the name all work on it unchanged. Removing that workspace asks whether
+  to remove the worktree too — and if the checkout is dirty git refuses, which
+  is reported rather than forced.
+
 - **A Changes tab** (`Ctrl+Shift+D`) — every uncommitted change in the
   workspace's repository, file list on the left and the diff on the right, with
   the same status markers the file tree uses.
@@ -111,10 +120,31 @@ has been tested with.
   the split tree — so a file is a couple of kilobytes, reads cleanly in an
   editor, and can be committed next to the code it opens. Loading adds beside
   what is already open and never replaces it.
-- **Remembers what each pane was showing.** A reopened pane replays its last
-  screen before its new shell starts. The shell itself is fresh — a PTY dies
-  with its app — but the build output or stack trace you were reading is still
-  there. Settings → Behaviour turns it off.
+- **Shells outlive the app.** The pseudo-terminals are owned by a small
+  background process — the *session broker* — not by the window. Quit
+  ia_workspaces with a build running, an SSH session open or an agent
+  mid-answer, reopen it, and you are back in the same shells with the same
+  processes still running, not looking at a picture of them. Closing a pane is
+  the one action that ends a shell, which is the point: it is the only place
+  work is thrown away, and it stays deliberate. See
+  [The session broker](#the-session-broker).
+- **Remembers what each pane was showing.** For the case a broker cannot cover —
+  a machine restart, which ends every process on it — a reopened pane still
+  replays its last screen before its new shell starts. The build output or stack
+  trace you were reading is there even when the process behind it is not.
+  Settings → Behaviour turns it off.
+- **Every command you have typed**, in the same box as the palette
+  (`Ctrl+Alt+H`). Collected for free — the shell integration already reports
+  each submitted line so a restored agent pane can resume, and this keeps more
+  than the last one. Picking one *types it without submitting*: what you last
+  ran might be a build, a push or a delete, and putting that in front of the
+  Enter key on your behalf is not this app's decision to make.
+- **Transcripts of panes you have closed** (`Ctrl+Alt+V`). Closing a pane used
+  to delete its scrollback outright — right for the buffer, which exists to
+  restore a pane that is not coming back, and wrong for the content. Now it is
+  written to a text file first. There is no new pane to learn: picking one opens
+  it in the editor, which already has find, and the last entry points the search
+  pane at the whole folder. The newest 200 are kept.
 - **Tells you when a terminal needs you** — desktop notification when the window
   is in the background, in-app toast when it isn't, a chime, a ring around the
   pane, a dot on the tab and workspace, and a notification panel (`Ctrl+I`) with
@@ -437,9 +467,22 @@ tool-agnostic — anything that can run a command can declare itself, and the
 activity detection needs no cooperation at all — but **Claude Code is the only
 agent it has been tested against.** What that means in practice:
 
-- The **hook installer** in Settings writes Claude Code's configuration and
-  nothing else. Another agent works by calling `iaw` from whatever hook or
-  wrapper it offers; there is no turnkey button for it.
+- The **hook installer** in Settings covers Claude Code and, under *Other
+  agents*, Gemini CLI — the same `iaw notify` protocol, installed into
+  `~/.gemini/settings.json`, backed up first and removable again from the same
+  button. Anything else works by calling `iaw` from whatever hook or wrapper it
+  offers; there is no turnkey button for it yet.
+
+  **Codex** is installed the same way, with one deliberate difference. Since
+  0.129 it checks every hook against a `trusted_hash` in
+  `~/.codex/config.toml`, and an unapproved hook silently never fires. We write
+  the hook and let Codex ask — one `/hooks` in Codex and it is live. We do not
+  write the trust entry ourselves: the hash is an undocumented canonical form of
+  the hook definition, other projects obtain it by reading Codex's source, and
+  it is free to change in any release. Getting it wrong does not fail loudly —
+  it leaves a hook that never runs while Settings says it is installed, which
+  for a feature whose entire job is "tell me when the agent needs me" is the
+  worst failure available.
 - **Resuming a conversation** in a restored pane is Claude Code only. The
   recorded session carries `tool: 'claude'` and the line it re-enters with is
   `claude --resume <id>`, so another tool records nothing and reopens fresh.
@@ -480,7 +523,40 @@ iaw list-panes               # the same panes, flat
 iaw read-screen --lines 50   # what a pane has printed lately, as text
 iaw send "npm test" --enter  # type into a pane
 iaw send-key c --ctrl        # send one key
+iaw events --follow          # what has happened, as it happens
 ```
+
+### Watching, rather than asking
+
+Every verb above is an instruction. `events` is the one that observes: panes
+starting and exiting, agents blocking and unblocking, alerts firing, panes going
+active and quiet. Terminal output is deliberately *not* in it — that is three
+orders of magnitude more data, it has a ring of its own, and `read-screen`
+already serves it.
+
+```bash
+iaw events                                   # everything still held, as JSON
+iaw events --after 42 --categories agent     # only what an agent did since 42
+iaw events --cursor-file ~/.iaw-cursor --follow 60
+```
+
+Each reply carries a `cursor` to pass back and a `boot` id identifying the
+process that issued it. Both matter for the same reason: a cursor is meaningless
+against a different run, so a reader that reconnects after a restart is told
+`gap: true` and handed everything still held, rather than being told "nothing
+new" by a log that has started counting again. The same flag appears when a
+reader was away long enough for the ring to discard what it asked for. Events
+were missed either way, and saying so beats presenting a subset as continuous.
+
+`--cursor-file` makes that a flag rather than a client: point it at a path and
+loop, and reconnection is handled. Everything is also appended to
+`events.jsonl` in the data folder, which is what makes catching up beyond the
+in-memory ring possible at all, and leaves something to read after a crash.
+
+`--follow` holds the connection open until something happens or the deadline
+passes — a long poll rather than a stream, because this protocol is one request
+and one reply, and it means "three events arrived at once" behaves exactly like
+"one did".
 
 `read-screen` strips the escape sequences out of the same buffer the restore
 feature keeps. For a full-screen program that means every frame it drew rather
@@ -557,6 +633,107 @@ stream, because an Enter keystroke also happens inside every full-screen program
 `-EncodedCommand` both suppress PowerShell's startup banner. `-File` is the only
 launch form that runs a script *and* keeps it.
 
+## The session broker
+
+The shells do not belong to the window. They belong to a small background
+process that the app starts on demand and then talks to over a named pipe
+(Windows) or a unix socket (macOS, Linux):
+
+```
+ia_workspaces.exe                     iaw-ptyhost  (detached, one per user)
+  PtyManager                            node-pty handles
+    OSC scanner, activity monitor,      a byte ring + cursor per session
+    agent state, alerts, notifications  exit records, held until acknowledged
+      │                                        │
+      └──────── frames over the pipe ──────────┘
+```
+
+The split is deliberately lopsided. The broker holds file descriptors and
+remembers bytes; it has no opinions. Everything that decides anything — reading
+OSC sequences, noticing a pane has gone quiet, tracking declared agent state,
+choosing whether something becomes a toast — stays in the app, where it already
+worked. A process whose job is to still be running tomorrow is the worst
+possible home for policy, because changing policy would mean restarting it.
+
+Three consequences worth knowing:
+
+- **Quitting detaches; it does not kill.** The app hangs up and the shells carry
+  on. Reopening re-attaches to the same processes and replays whatever they
+  printed in the meantime, so a pane comes back mid-scroll rather than blank.
+- **A reattached pane is live, not restored.** It gets no *"restored from last
+  session"* marker, because nothing was restored — and the replayed output is
+  fed through a fresh OSC scanner to recover the pane's title and folder without
+  re-firing an hour of stale bells and command-finished alerts.
+- **An agent is not resumed twice.** The `claude --resume` line exists to put a
+  conversation back into a *new* shell. A reattached shell never stopped and the
+  agent is still sitting in it, so the line is dropped.
+
+### It is the app's own executable, and that has consequences
+
+The broker is `ia_workspaces.exe` re-run as Node — the same trick the `iaw` shim
+uses. Two things follow, and both are worth knowing before they surprise you:
+
+- **It looks exactly like the app in Task Manager**, because it is the same
+  binary. `iaw host` tells you which process it is and what it is holding.
+- **It holds that executable open**, so an installer cannot replace it. Quitting
+  the app is no longer enough to release the file.
+
+So it leaves quickly when it has nothing to hold — a few seconds after the last
+window closes, rather than the five minutes it waits when sessions are running.
+When you *do* have shells running and want to install an update anyway:
+
+```bash
+iaw host          # what is it, and what is it holding
+iaw host stop     # stop it — this ends every shell it holds
+```
+
+There is no gentler stop. The shells are its children and they go with it, which
+is why `stop` says how many first.
+
+The broker exits on its own five minutes after the last session closes, and it
+is one per user: two copies of the app race to start one, the loser's process
+sees `EADDRINUSE` and exits quietly, and both then talk to the winner.
+
+### What ends a shell, and what does not
+
+| | |
+| --- | --- |
+| Close a pane or tab (`Ctrl+W`) | **killed** |
+| Remove a workspace | **killed** — every pane under it, and it says how many first |
+| Quit ia_workspaces | **kept**, and reattached next time |
+| Restart the machine | ended, like everything else |
+
+Settings → Behaviour → **Keep shells running after you quit** turns the whole
+thing off; shells then run in-process and end with the window, exactly as they
+did before. It is read when the first pane starts, so the switch takes effect on
+the next launch — with one exception that matters: turning it *off* and then
+quitting ends this window's shells rather than leaving them behind, because
+somebody who has just said "stop keeping my terminals" should not find them
+still running.
+
+Shells being held with no pane to show them are listed at the top of the
+**Running processes** tab, with their age and an **End** button. A shell nobody
+can see is a shell nobody can close.
+
+Because quitting keeps them, a session can outlive the pane that owned it: delete
+a workspace while the app is closed, or load a different workspace file, and its
+shells are left running with nothing able to display them. They would sit there
+invisibly, and since the broker only retires when it holds *no* sessions, one of
+them would keep it — and every other orphan — alive indefinitely.
+
+So the app sweeps twenty seconds after launch. A session is ended only when all
+three are true: no workspace in the document names its pane, no other instance
+is attached to it, and it is more than five minutes old. Each condition rules
+out a different way of being wrong — a workspace that is merely closed, a second
+window using the shell, and a pane created before the document caught up. An
+empty document sweeps nothing at all, because a store that failed to load looks
+exactly like a fresh install and the cost of confusing them is every shell you
+have open.
+
+`node tests/host.smoke.mjs` exercises the whole path against a real shell —
+start it, detach, print something with nobody listening, reattach, and check the
+prompt still answers.
+
 ## Shared state
 
 Every instance reads and writes one `workspace.json` in the app's data folder,
@@ -569,8 +746,9 @@ that folder is comes from `dataDir()` in `src/shared/platform.ts`:
 | macOS | `~/Library/Application Support/ia_workspaces` |
 | Linux | `$XDG_CONFIG_HOME/ia_workspaces`, or `~/.config/ia_workspaces` |
 
-Live processes are never shared or restored — a PTY dies with its app. A
-restored pane is a fresh shell in the folder that pane was last in.
+Live processes are not shared *between instances* — two windows attached to one
+pane is not something the UI offers, though the broker itself allows it. They do
+survive the app closing; see [The session broker](#the-session-broker).
 
 If you run two instances at once and edit in both, the file is last-write-wins as
 a whole document. The watcher makes that rare, but two simultaneous edits to
@@ -592,6 +770,8 @@ different things can still lose one.
 | `Ctrl` `Shift` `E` | file tree |
 | `Ctrl` `Shift` `G` | images |
 | `F2` / `Shift` `F2` | rename tab / workspace |
+| `Ctrl` `Alt` `H` | commands you have typed before |
+| `Ctrl` `Alt` `V` | transcripts of panes you have closed |
 | `Ctrl` `I` | notification panel |
 | `Ctrl` `Shift` `U` | jump to oldest unread |
 | `Ctrl` `F` | find in terminal |
@@ -615,7 +795,10 @@ src/
   renderer/    all UI. Imports backend(), never Electron directly.
                Owns the persisted schema and normalises it on load.
   main/        Electron main: PTY manager, OSC scanner, store, control server,
-               activity monitor, declared agent state, scrollback, pid map
+               activity monitor, declared agent state, scrollback, pid map,
+               and the client half of the session broker
+  host/        the session broker — its own process, no Electron. Owns the
+               pseudo-terminals so they outlive the window.
   preload/     Electron context bridge
 resources/     shells.json and the integration scripts — read by the host,
                shipped with the app, the single source for both
@@ -676,8 +859,14 @@ document written by a newer build of the other.
   and works on all three platforms.
 - Nothing is signed on Windows or Linux. macOS builds are, because Gatekeeper
   leaves no real choice.
-- Live processes still die with the app. A restored pane replays its last screen
-  and reopens in the right folder, but it is a new shell.
+- **A machine restart still ends every session**, as it does under tmux or
+  anything else — no process survives a reboot. That case falls back to what it
+  always did: the pane replays its last screen, reopens in the right folder, and
+  gets a fresh shell.
+- If the session broker cannot be started — a policy that forbids the pipe
+  namespace, a sandbox, something that eats the detached child — the app says so
+  and runs its shells in-process instead, which is exactly the old behaviour.
+  Terminals work; they just do not survive a quit.
 - A pane that loses its console while its shell is still running cannot be
   reattached — by the time we hear about it the stream is already destroyed. The
   shell and its children are stopped instead, so nothing is left orphaned, but

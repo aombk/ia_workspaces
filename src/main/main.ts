@@ -39,8 +39,21 @@ import {
   type ControlServer,
 } from './controlServer'
 import { buildTree, flattenPanes } from './controlSurface'
+import { readAgentHooks, setAgentHooks } from './agentHooks'
+import {
+  addWorktree,
+  listWorktrees,
+  removeWorktree,
+  repoRoot,
+  suggestWorktreeDir,
+  worktreeAt,
+} from './worktrees'
+import { AGENTS, agentById } from './agents'
 import { isCliVerb, runCli } from './cli'
 import { ScrollbackStore } from './scrollback'
+import { EventLog, parseCategories } from './events'
+import { CommandHistory } from './history'
+import { SessionVault } from './vault'
 import { PidMap } from './pidMap'
 import { directoryFromArgv, isContextMenuInstalled, setContextMenu } from './explorerMenu'
 import { IPC } from '../shared/ipc'
@@ -93,6 +106,14 @@ const APP_ID = 'dev.iaworkspaces.terminal'
 const PLATFORM = platformKind(process.platform)
 
 /**
+ * How long after launch the orphan sweep runs.
+ *
+ * Long enough for the renderer to have spawned every restored pane, so that a
+ * session on its way back to a pane is never mistaken for one nothing wants.
+ */
+const ORPHAN_SWEEP_DELAY_MS = 20_000
+
+/**
  * Where the workspace file lives.
  *
  * `%APPDATA%` on Windows, `~/Library/Application Support` on macOS, and
@@ -143,6 +164,14 @@ function bootApp(): void {
   let ptys: PtyManager
   let scrollback: ScrollbackStore
   let pidMap: PidMap
+  /**
+   * What happened, for anything watching. Created before the control server so
+   * a handler can close over it, and mirrored to disk once the data directory
+   * is known.
+   */
+  const events = new EventLog()
+  let history: CommandHistory
+  let vault: SessionVault
   let control: ControlServer | null = null
   /** Set at window creation; see `wantsTransparentWindow`. */
   let transparentWindow = false
@@ -567,6 +596,36 @@ function bootApp(): void {
       searchWorkspace(cwd, query, caseSensitive)
     )
     ipcMain.handle(IPC.processes, () => listProcesses(ptys.panePids()))
+    ipcMain.handle(IPC.commandHistory, () => history.recent(300))
+    ipcMain.handle(IPC.vaultList, () => vault.list())
+    ipcMain.handle(IPC.vaultFolder, () => vault.folder)
+    ipcMain.handle(IPC.sessionHost, () => ptys.hostSnapshot())
+    // Every agent but Claude Code, which keeps its own handler above because it
+    // also carries a bell setting and a prior-state record.
+    ipcMain.handle(IPC.agentHooks, () => AGENTS.map((a) => readAgentHooks(a)))
+
+    ipcMain.handle(IPC.worktreeList, (_e, cwd: string) => listWorktrees(cwd))
+    ipcMain.handle(IPC.worktreeAt, (_e, cwd: string) => worktreeAt(cwd))
+    ipcMain.handle(IPC.worktreeAdd, async (_e, cwd: string, branch: string, dir: string) => {
+      // Every worktree command runs from the main checkout: `worktree add` from
+      // inside another worktree works, but relative paths would then resolve
+      // against the wrong root.
+      const root = (await repoRoot(cwd)) ?? cwd
+      return addWorktree(root, { branch, dir })
+    })
+    ipcMain.handle(IPC.worktreeRemove, async (_e, cwd: string, dir: string, force: boolean) => {
+      const root = (await repoRoot(cwd)) ?? cwd
+      return removeWorktree(root, dir, force)
+    })
+    ipcMain.handle(IPC.worktreeSuggest, async (_e, cwd: string, branch: string) => {
+      const root = await repoRoot(cwd)
+      return root ? suggestWorktreeDir(root, branch) : null
+    })
+    ipcMain.handle(IPC.setAgentHooks, (_e, id: string, enabled: boolean) => {
+      const spec = agentById(id)
+      if (!spec) return { ok: false, error: `unknown agent: ${id}`, path: '' }
+      return setAgentHooks(spec, enabled, cliShimPath(SHARED_DATA_DIR, 'electron'))
+    })
     ipcMain.handle(IPC.wslDistros, () => listWslDistros())
     ipcMain.handle(IPC.sshHosts, () => listSshHosts())
     ipcMain.handle(IPC.claudeUsage, () => readClaudeUsage())
@@ -847,6 +906,11 @@ function bootApp(): void {
       .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`)
     const binDir = writeCliShim(userData, 'electron', process.execPath, cliScript)
 
+    history = new CommandHistory(path.join(userData, 'command-history.json'))
+    vault = new SessionVault(path.join(userData, 'vault'))
+    events.mirrorTo(path.join(userData, 'events.jsonl'))
+    events.emit('host', 'started', { data: { pid: process.pid, version: app.getVersion() } })
+
     scrollback = new ScrollbackStore(
       path.join(userData, 'scrollback-electron'),
       () => store.settings.restoreScrollback
@@ -912,6 +976,28 @@ function bootApp(): void {
             shift: req.shift,
             alt: req.alt,
           })
+        case 'events': {
+          const categories = parseCategories(req.categories)
+          const cursor = typeof req.after === 'number' ? req.after : undefined
+          // Follow is a long poll rather than a stream: this protocol is one
+          // request and one reply, and `ask` already established that a handler
+          // may answer later. A follower simply asks again with the cursor it
+          // was handed, which also makes "three events arrived at once" behave
+          // exactly like "one did".
+          if (req.follow && cursor !== undefined) {
+            return events
+              .wait(cursor, Math.min(req.follow, 120_000), ctx.onAbort)
+              .then(() => ({
+                ok: true,
+                data: events.since(cursor, { boot: req.boot, categories, limit: req.lines }),
+              }))
+          }
+          return {
+            ok: true,
+            data: events.since(cursor, { boot: req.boot, categories, limit: req.lines }),
+          }
+        }
+
         case 'read-screen': {
           const text = ptys.readScreen(req.paneId!, req.lines ?? 100)
           return text === null
@@ -924,22 +1010,113 @@ function bootApp(): void {
     ptys = new PtyManager(
       {
         onData: (p) => send(IPC.onPtyData, p),
-        onExit: (p) => send(IPC.onPtyExit, p),
-        onMeta: (p) => send(IPC.onPtyMeta, p),
-        onAlert: (a) => send(IPC.onAlert, a),
-        onStatus: (s) => send(IPC.onPaneStatus, s),
+        onExit: (p) => {
+          send(IPC.onPtyExit, p)
+          events.emit('pane', 'exit', {
+            paneId: p.paneId,
+            data: { exitCode: p.exitCode, signal: p.signal },
+          })
+        },
+        onMeta: (p) => {
+          send(IPC.onPtyMeta, p)
+          // The shell integration already reports every submitted line so a
+          // restored agent pane can be resumed; keeping more than the last one
+          // is the whole of the history feature.
+          if (p.lastCommand) history.add(p.lastCommand, p.cwd ?? '', p.paneId)
+        },
+        onAlert: (a) => {
+          send(IPC.onAlert, a)
+          events.emit('alert', a.trigger, {
+            paneId: a.paneId,
+            workspaceId: a.workspaceId,
+            data: { title: a.title, body: a.body },
+          })
+        },
+        onStatus: (s) => {
+          send(IPC.onPaneStatus, s)
+          // Two different facts arrive on one channel. Split them, because a
+          // reader watching for "an agent needs me" should not have to wade
+          // through a throughput detector's opinion of every pane.
+          if (s.activity) {
+            events.emit('activity', s.activity, { paneId: s.paneId })
+          }
+          if (s.agent) {
+            events.emit('agent', s.agent.state, {
+              paneId: s.paneId,
+              data: {
+                blockedReason: s.agent.blockedReason,
+                choices: s.agent.choices?.map((c) => ({ id: c.id, label: c.label })),
+                answeredAt: s.agent.answeredAt,
+              },
+            })
+          }
+        },
       },
       () => store.settings,
-      { notifyPipe: () => control!.address, token: control.token, binDir, scrollback, pidMap }
+      {
+        notifyPipe: () => control!.address,
+        token: control.token,
+        binDir,
+        scrollback,
+        pidMap,
+        vault,
+        execPath: process.execPath,
+        // Same unpacking dance as the CLI above, and for the same reason: the
+        // broker runs with ELECTRON_RUN_AS_NODE, where asar support is not
+        // guaranteed, so a path inside app.asar may simply not resolve.
+        hostScript: path
+          .join(__dirname, '../host/host.js')
+          .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`),
+      }
     )
 
     registerIpc()
     createWindow()
+    scheduleOrphanSweep()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
   })
+
+  /**
+   * Clears out what nothing can reach any more: broker sessions and the
+   * scrollback files behind panes the workspace document no longer mentions.
+   *
+   * Delayed rather than immediate, because "no pane references this" is only
+   * true once the restored panes have actually been restored — the renderer
+   * spawns them as it loads, and sweeping first would look at a broker full of
+   * sessions whose panes are still on their way. The delay is belt to the
+   * grace period's braces: `reapOrphans` also refuses to touch anything with a
+   * client attached or anything younger than a few minutes.
+   *
+   * Both halves take the same set. `prune` has existed since scrollback did and
+   * had no caller, so its files have been accumulating on every install.
+   */
+  function scheduleOrphanSweep(): void {
+    setTimeout(() => {
+      let live: Set<string>
+      try {
+        live = new Set(flattenPanes(buildTree(store.state, () => false)).map((p) => p.id))
+      } catch {
+        // A document we cannot read is not evidence that anything is an orphan.
+        // Sweeping on a guess would kill live shells.
+        return
+      }
+      // An empty document is the one shape that cannot be trusted here: a store
+      // that failed to load looks identical to a fresh install, and acting on it
+      // would reap every session the user has.
+      if (live.size === 0) return
+
+      scrollback.prune(live)
+      void ptys
+        .reapOrphans(live)
+        .then((n) => {
+          if (n > 0) console.log(`[pty] ended ${n} session(s) no pane refers to any more`)
+        })
+        .catch((err) => console.error('[pty] orphan sweep failed', err))
+    }, ORPHAN_SWEEP_DELAY_MS)
+  }
 
   /**
    * A line in `shutdown.log`, next to the workspace file.
@@ -966,7 +1143,12 @@ function bootApp(): void {
    *
    * Idempotent, because both quit paths call it and either may get there first.
    * Order matters: the panes' screens are dumped while their buffers still
-   * exist, and killAll drops them.
+   * exist, and `release` drops them.
+   *
+   * `release` rather than the kill this used to be. The shells outlive us now —
+   * hanging up on the broker is the whole of the work, and the scrollback dump
+   * above stops being the only thing that survives and becomes a fallback for
+   * the one case that still ends them: a machine restart.
    */
   let shutdownRan = false
   function shutdown(): void {
@@ -975,9 +1157,12 @@ function bootApp(): void {
     try {
       scrollback?.shutdownSync()
       scrollback?.dispose()
-      ptys?.killAll()
+      ptys?.release()
+      // The entries name this app's control pipe, which is about to stop
+      // answering. A surviving session re-registers when a pane reattaches.
       pidMap?.clear()
       control?.close()
+      history?.dispose()
       store?.dispose()
       store?.flush()
       noteShutdown('cleanup ok')

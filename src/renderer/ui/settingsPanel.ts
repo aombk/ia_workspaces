@@ -6,6 +6,7 @@ import { showToast } from './toast'
 import { DEFAULT_URL } from '../browserPane'
 import { refreshUsageNow } from './usageMonitor'
 import { appVersion, checkForUpdates, describeUpdate } from '../updates'
+import type { AgentConfigInfo } from '../../shared/types'
 import type { ShellProfile, Settings, SoundName } from '../../shared/types'
 
 let onChange: (() => void) | null = null
@@ -359,9 +360,20 @@ async function render(): Promise<void> {
         toggle(s.showTabCount, (v) => patch({ showTabCount: v }))
       ),
       field(
+        'Keep shells running after you quit',
+        'A small background process owns the terminals, so quitting detaches ' +
+          'instead of killing and reopening puts you back in the same shells ' +
+          'with the same processes still running. Closing a pane, a tab or a ' +
+          'workspace still ends its shells, and nothing survives a restart of ' +
+          'the machine. Turn this off and shells end with the window, as they ' +
+          'used to. Takes effect the next time the app starts.',
+        toggle(s.keepSessionsAlive, (v) => patch({ keepSessionsAlive: v }))
+      ),
+      field(
         'Restore what each pane was showing',
-        'Keeps the last screen on disk so a reopened pane comes back with it. ' +
-          'The shell itself is still fresh — a running process dies with the app.',
+        'Keeps the last screen on disk, for the times the shell itself did not ' +
+          'survive — after a machine restart, or with the setting above off. ' +
+          'A reopened pane comes back with the output you were reading.',
         toggle(s.restoreScrollback, (v) => patch({ restoreScrollback: v }))
       ),
       field(
@@ -482,6 +494,7 @@ async function render(): Promise<void> {
   )
 
   body.appendChild(section('Claude Code', await claudeSection()))
+  body.appendChild(section('Other agents', await agentsSection()))
   body.appendChild(section('About', await aboutSection()))
   panel.scrollTop = scroll
 }
@@ -536,6 +549,72 @@ async function aboutSection(): Promise<HTMLElement> {
  * on Windows terminals it is otherwise silent, so bell-based alerts would
  * never fire. Offer to set it, but show exactly what will change first.
  */
+/**
+ * Hook installers for the agents that are not Claude Code.
+ *
+ * Deliberately plainer than the Claude section above, and the difference is
+ * honest rather than cosmetic: Claude Code is the one this app has actually
+ * been tested against, and it is the only one that can resume a conversation in
+ * a restored pane. Everything here installs the same tool-agnostic
+ * notification protocol — `iaw notify`, which learns its pane from the
+ * environment and has never known which agent called it.
+ *
+ * An agent whose settings file does not exist is listed anyway, with the path,
+ * because "install it and see" is a worse answer than saying where it would go.
+ */
+async function agentsSection(): Promise<HTMLElement> {
+  const wrap = document.createElement('div')
+  let agents: AgentConfigInfo[] = []
+  try {
+    agents = await backend().agents.list()
+  } catch {
+    // A failure here costs a settings row, not a session.
+  }
+
+  if (!agents.length) {
+    const none = document.createElement('div')
+    none.className = 'field-hint'
+    none.textContent = 'No other agents are known to this build.'
+    wrap.appendChild(none)
+    return wrap
+  }
+
+  for (const agent of agents) {
+    const where = agent.exists
+      ? `Writes ${agent.path}. Backed up first, and removable again from here.`
+      : `Not installed yet — this would create ${agent.path}.`
+    const hint = agent.note ? `${where} ${agent.note}` : where
+
+    const button = document.createElement('button')
+    button.className = 'btn'
+    const paint = (installed: boolean) => {
+      button.textContent = installed ? 'Remove' : 'Install'
+      button.classList.toggle('danger', installed)
+    }
+    paint(agent.hooksInstalled)
+
+    let installed = agent.hooksInstalled
+    button.addEventListener('click', async () => {
+      button.disabled = true
+      const res = await backend().agents.set(agent.id, !installed)
+      button.disabled = false
+      if (!res.ok) {
+        showToast(`Could not update ${agent.label}`, res.error ?? 'Unknown error')
+        return
+      }
+      installed = !installed
+      paint(installed)
+      showToast(
+        installed ? `${agent.label} notifications on` : `${agent.label} notifications removed`,
+        res.path
+      )
+    })
+
+    wrap.appendChild(field(`${agent.label} notifications`, hint, button))
+  }
+  return wrap
+}
+
 async function claudeSection(): Promise<HTMLElement> {
   const wrap = document.createElement('div')
   const info = await backend().claude.readConfig()

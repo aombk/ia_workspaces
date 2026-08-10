@@ -1,9 +1,19 @@
 import net from 'node:net'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { resolveByAncestry, type PaneIdentity } from './pidMap'
 import type { ControlRequest, ControlResponse, Method } from './controlServer'
 import type { AgentChoice, PaneAgentState } from '../shared/types'
+import { hostPaths } from '../host/paths'
+import {
+  FRAME_JSON,
+  FrameReader,
+  PROTOCOL_VERSION,
+  decodeJson,
+  encodeJson,
+  type HostMessage,
+  type SessionSummary,
+} from '../host/protocol'
 
 /**
  * `iaw` — the command a pane's shell (or an agent hook running inside it) uses
@@ -37,6 +47,44 @@ looking around
   iaw read-screen [--lines N]           what a pane has printed lately, as text
   iaw send --text "npm test"            type into a pane (add --enter to run it)
   iaw send-key <key> [--ctrl] [--alt]   send one key, e.g. send-key c --ctrl
+  iaw events [--after N] [--follow]     what has happened, as JSON
+
+the session host
+
+  iaw host                              is it running, and what is it holding
+  iaw host stop                         stop it — ends every shell it holds
+
+  Shells outlive the app because a small background process owns them. It is
+  this app's own executable re-run as Node, so it shows up under the same name
+  and holds that file open — which is what stops an installer replacing it.
+  It exits by itself once it holds nothing; stop it by hand when you want to
+  install an update without waiting.
+
+reaching another machine's instance
+  iaw bridge [--port N]                 relay this app's control channel onto
+                                        127.0.0.1:N, so the whole CLI works
+                                        against it through an ssh -L tunnel
+  iaw token                             print the token a remote caller needs
+
+  The relay binds to loopback only and adds no authority of its own: every
+  request still carries the token, and the app still refuses without it. What
+  it does change is who can try — anything able to reach that port can attempt
+  calls, and "send" will type into a shell for whoever holds the token. Forward
+  it over ssh rather than exposing the port, and treat the token as the password
+  it is.
+
+events options
+  --after N             only events after this seq (from a previous reply)
+  --boot ID             the boot the cursor came from, so a restart is detected
+  --categories a,b      pane, agent, alert, activity, host
+  --lines N             most events to return (default 500)
+  --follow [SECONDS]    wait for one rather than returning an empty page
+  --cursor-file PATH    read --after/--boot from here, and write them back
+
+  A reader that keeps its place gets reconnection for free: point
+  --cursor-file at a file and loop. "gap": true in the reply means the ring had
+  already discarded what you asked for and events were missed — which is worth
+  knowing, and is why it is reported rather than papered over.
 
 ask options
   --question "text"     what the human is being asked
@@ -80,14 +128,27 @@ const VERBS: Method[] = [
   'send',
   'send-key',
   'read-screen',
+  'events',
 ]
 
 /** How long `ask` waits by default, and the most it will ever wait. */
 const ASK_TIMEOUT_DEFAULT_S = 120
 const ASK_TIMEOUT_MAX_S = 3600
 
+/**
+ * Verbs this process handles itself rather than forwarding.
+ *
+ * Kept apart from `VERBS` because those are typed as control-server methods and
+ * these are not: nothing on the far end knows the words `bridge` or `token`.
+ */
+const LOCAL_VERBS = ['bridge', 'token', 'host'] as const
+type LocalVerb = (typeof LOCAL_VERBS)[number]
+
 export function isCliVerb(arg: string | undefined): boolean {
-  return Boolean(arg) && VERBS.includes(arg as Method)
+  return (
+    Boolean(arg) &&
+    (VERBS.includes(arg as Method) || LOCAL_VERBS.includes(arg as LocalVerb))
+  )
 }
 
 export async function runCli(argv: string[], userDataPath: string): Promise<number> {
@@ -103,6 +164,10 @@ export async function runCli(argv: string[], userDataPath: string): Promise<numb
   if (verb === 'session' && !args.id) {
     args.id = (await readHookField('session_id')) ?? undefined
   }
+  // Before identity: this one talks to the broker rather than the app, and its
+  // whole purpose is to work when the app is not running.
+  if ((verb as string) === 'host') return runHost(args)
+
   const identity = resolveIdentity(args, userDataPath)
   if (!identity) {
     // `--quiet` is what the installed agent hooks use. A hook fires on every
@@ -115,6 +180,13 @@ export async function runCli(argv: string[], userDataPath: string): Promise<numb
     return 1
   }
 
+  // Handled here, because the far end has never heard of them.
+  if ((verb as string) === 'token') {
+    process.stdout.write(identity.token + '\n')
+    return 0
+  }
+  if ((verb as string) === 'bridge') return runBridge(identity, args)
+
   const request = buildRequest(verb, args, identity)
   if ('error' in request) {
     process.stderr.write(`iaw: ${request.error}\n`)
@@ -123,7 +195,16 @@ export async function runCli(argv: string[], userDataPath: string): Promise<numb
 
   // `ask` parks on the far end until a human answers, so it must not be held
   // to the ordinary reply deadline — its whole job is to wait.
-  const deadline = verb === 'ask' ? askTimeoutMs(args) + 10_000 : undefined
+  // Two verbs park on the far end rather than answering at once, and neither
+  // may be held to the ordinary reply deadline — waiting is their whole job.
+  // `ask` waits for a human; `events --follow` waits for something to happen.
+  const followMs = request.value.follow
+  const deadline =
+    verb === 'ask'
+      ? askTimeoutMs(args) + 10_000
+      : followMs
+        ? followMs + 10_000
+        : undefined
   const res = await send(identity, request.value, deadline)
   if (!res.ok) {
     // Same bargain as above: a pane that has since closed, or an app that has
@@ -135,6 +216,15 @@ export async function runCli(argv: string[], userDataPath: string): Promise<numb
 
   if (verb === 'agent-state' || verb === 'tree' || verb === 'list-panes') {
     process.stdout.write(JSON.stringify(res.data ?? [], null, 2) + '\n')
+  } else if (verb === 'events') {
+    const page = res.data as
+      | { boot?: string; cursor?: number; gap?: boolean; events?: unknown[] }
+      | undefined
+    // The cursor is written back before printing, so a reader whose pipe closes
+    // mid-write — `iaw events | head` — still records where it got to rather
+    // than replaying the same page on its next run.
+    writeCursorFile(args['cursor-file'], page?.boot, page?.cursor)
+    process.stdout.write(JSON.stringify(page ?? { events: [] }, null, 2) + '\n')
   } else if (verb === 'read-screen') {
     const text = (res.data as { text?: string } | undefined)?.text ?? ''
     // No trailing newline of our own when the capture already ends in one.
@@ -159,6 +249,34 @@ export async function runCli(argv: string[], userDataPath: string): Promise<numb
   return 0
 }
 
+/**
+ * Where a follower left off, so reconnection is a flag rather than a client.
+ *
+ * The boot id travels with the cursor because a cursor alone is meaningless
+ * against a different process — a reader holding seq 900 across a restart would
+ * otherwise be told "nothing new" by a log that has only reached 12.
+ */
+function readCursorFile(file: string | undefined): { cursor: number; boot?: string } | null {
+  if (!file) return null
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { cursor?: number; boot?: string }
+    return typeof parsed.cursor === 'number' ? { cursor: parsed.cursor, boot: parsed.boot } : null
+  } catch {
+    // Absent or unreadable means "start from the beginning", which is the right
+    // answer for a first run and a harmless one for a corrupt file.
+    return null
+  }
+}
+
+function writeCursorFile(file: string | undefined, boot: string | undefined, cursor: number | undefined): void {
+  if (!file || typeof cursor !== 'number') return
+  try {
+    writeFileSync(file, JSON.stringify({ boot, cursor }) + '\n', 'utf8')
+  } catch {
+    // A cursor we cannot persist costs a replay, not a run.
+  }
+}
+
 /** The ask deadline in milliseconds, clamped to something sane. */
 function askTimeoutMs(args: Args): number {
   const raw = Number(args.timeout)
@@ -177,6 +295,170 @@ function askTimeoutMs(args: Args): number {
  * detached child or a task runner can lose it too. Those processes are still
  * *descendants* of the pane's shell, which is what the pid map records.
  */
+/**
+ * Reports on the session broker, and stops it.
+ *
+ * Talks to the broker directly rather than through the app: it is a separate
+ * process with its own socket and its own token, and the whole point of it is
+ * that it is there when the app is not.
+ *
+ * `stop` exists because of a problem the broker creates. It is this app's own
+ * executable re-run as Node, so it appears in Task Manager under the same name
+ * as the app and — the part that actually bites — it holds that executable open,
+ * which stops an installer replacing it. Quitting the app is no longer enough
+ * to release it, and "kill the thing that looks like your app" is not an
+ * instruction anybody should have to work out for themselves.
+ *
+ * Stopping ends every shell it holds. There is no gentler version: the shells
+ * are its children and they go with it. So it says how many first.
+ */
+async function runHost(args: Args): Promise<number> {
+  const { address, tokenPath } = hostPaths()
+
+  let token: string
+  try {
+    token = readFileSync(tokenPath, 'utf8').trim()
+  } catch {
+    process.stdout.write('no session host is running\n')
+    return 0
+  }
+
+  const socket = await new Promise<net.Socket | null>((resolve) => {
+    const s = connect(address)
+    s.once('connect', () => resolve(s))
+    s.once('error', () => {
+      s.destroy()
+      resolve(null)
+    })
+  })
+  if (!socket) {
+    // A token file with nothing behind it is what a crash leaves. Saying so
+    // beats reporting a connection error nobody can act on.
+    process.stdout.write('no session host is running\n')
+    return 0
+  }
+
+  const replies = new Map<number, (m: HostMessage) => void>()
+  let ref = 0
+  const reader = new FrameReader((kind, payload) => {
+    if (kind !== FRAME_JSON) return
+    const message = decodeJson(payload) as HostMessage | null
+    if (!message) return
+    const settle = replies.get((message as { ref?: number }).ref ?? -1)
+    if (settle) settle(message)
+  }, () => socket.destroy())
+  socket.on('data', (chunk) => reader.push(chunk))
+
+  const ask = (message: Record<string, unknown>): Promise<HostMessage> =>
+    new Promise((resolve) => {
+      const id = ++ref
+      replies.set(id, resolve)
+      socket.write(encodeJson({ ...message, ref: id } as never))
+      // A broker that stops mid-request is the expected outcome of `stop`, not
+      // a fault: it answers and then closes, and the close can win the race.
+      socket.once('close', () => resolve({ t: 'ok', ref: id }))
+    })
+
+  const hello = await ask({ t: 'hello', token, protocol: PROTOCOL_VERSION })
+  if (hello.t !== 'hello') {
+    process.stderr.write(`iaw: ${hello.t === 'error' ? hello.message : 'unexpected greeting'}\n`)
+    socket.destroy()
+    return 1
+  }
+  const pid = hello.pid
+
+  const listed = await ask({ t: 'list' })
+  const sessions = (listed.t === 'ok' ? (listed.data as SessionSummary[]) : []) ?? []
+  const alive = sessions.filter((s) => s.alive)
+
+  if ((args._ ?? 'status') !== 'stop') {
+    process.stdout.write(
+      `session host running — pid ${pid}, ${alive.length} shell${alive.length === 1 ? '' : 's'}\n` +
+        `  ${address}\n` +
+        (alive.length
+          ? alive.map((s) => `  ${s.id}  pid ${s.pid || '—'}\n`).join('')
+          : '  nothing held; it will exit on its own\n')
+    )
+    socket.destroy()
+    return 0
+  }
+
+  await ask({ t: 'shutdown' })
+  socket.destroy()
+  process.stdout.write(
+    alive.length
+      ? `session host stopped — ended ${alive.length} shell${alive.length === 1 ? '' : 's'}\n`
+      : 'session host stopped\n'
+  )
+  return 0
+}
+
+/** Where the relay listens when `--port` is not given. */
+const BRIDGE_PORT = 7717
+
+/**
+ * Relays the app's control channel onto loopback TCP.
+ *
+ * The control channel is a named pipe on Windows and a unix socket on POSIX,
+ * and neither travels down an `ssh -L` tunnel — that forwards TCP. So this is a
+ * pipe-to-socket splice and nothing more: bytes in, bytes out, in both
+ * directions, one upstream connection per inbound one.
+ *
+ * It deliberately adds no authority. Every request still carries the token and
+ * the app still refuses without it, so the relay cannot do anything a local
+ * caller could not. What it changes is *who can try*, which is why it binds to
+ * 127.0.0.1 and says so: the intended use is `ssh -L 7717:127.0.0.1:7717`,
+ * where the tunnel is the authentication and the port is never on a network.
+ *
+ * Runs until interrupted. There is nothing to poll and nothing to clean up —
+ * closing the terminal takes it with it.
+ */
+function runBridge(identity: PaneIdentity, args: Args): Promise<number> {
+  const port = Number(args.port) || BRIDGE_PORT
+  return new Promise((resolve) => {
+    const server = net.createServer((inbound) => {
+      inbound.setNoDelay(true)
+      const upstream = connect(identity.pipe)
+      upstream.setNoDelay(true)
+      // Either half failing takes the pair down: a half-open splice would leave
+      // a caller waiting for a reply that can never arrive.
+      const drop = () => {
+        inbound.destroy()
+        upstream.destroy()
+      }
+      inbound.on('error', drop)
+      upstream.on('error', drop)
+      inbound.pipe(upstream)
+      upstream.pipe(inbound)
+    })
+
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      const why =
+        err.code === 'EADDRINUSE'
+          ? `port ${port} is already in use — pass --port to pick another`
+          : err.message
+      process.stderr.write(`iaw: ${why}\n`)
+      resolve(1)
+    })
+
+    server.listen(port, '127.0.0.1', () => {
+      process.stderr.write(
+        `iaw: relaying ${identity.pipe} on 127.0.0.1:${port}\n` +
+          `     forward it with:  ssh -L ${port}:127.0.0.1:${port} <host>\n` +
+          `     then on the far side:  IAW_PIPE=tcp:127.0.0.1:${port} IAW_TOKEN=$(iaw token) iaw tree\n` +
+          `     loopback only, token still required. Ctrl+C to stop.\n`
+      )
+    })
+
+    const stop = () => {
+      server.close()
+      resolve(0)
+    }
+    process.on('SIGINT', stop)
+    process.on('SIGTERM', stop)
+  })
+}
+
 function resolveIdentity(args: Args, userDataPath: string): PaneIdentity | null {
   const pipe = args.pipe ?? process.env.IAW_PIPE
   const token = process.env.IAW_TOKEN
@@ -243,6 +525,25 @@ function buildRequest(method: Method, args: Args, identity: PaneIdentity): Built
 
     case 'read-screen':
       return { value: { ...base, lines: Number(args.lines) || 100 } }
+
+    case 'events': {
+      const saved = readCursorFile(args['cursor-file'])
+      const after = args.after !== undefined ? Number(args.after) : saved?.cursor
+      // `--follow` with no cursor would return the entire ring and then claim
+      // to be following from the end of it. Asking for the current position
+      // first is one extra round trip and removes the surprise.
+      const follow = 'follow' in args ? Math.max(1, Number(args.follow) || 30) * 1000 : undefined
+      return {
+        value: {
+          ...base,
+          after: Number.isFinite(after) ? after : undefined,
+          boot: args.boot ?? saved?.boot,
+          categories: args.categories,
+          lines: args.lines ? Number(args.lines) : undefined,
+          follow: after === undefined ? undefined : follow,
+        },
+      }
+    }
 
     case 'send': {
       const text = args.text ?? args._

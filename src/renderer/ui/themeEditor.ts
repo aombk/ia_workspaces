@@ -1,3 +1,4 @@
+import { backend } from '../../backend'
 import { store } from '../state'
 import {
   fromGhosttyTheme,
@@ -332,6 +333,7 @@ function renderEditor(container: HTMLElement): void {
     // Terminal-only: a Ghostty or Windows Terminal file is a terminal palette
     // and says nothing about a sidebar. Both can carry several palettes, so
     // they arrive as new themes rather than overwriting this one.
+    files.appendChild(button('Use my Ghostty palette', () => void importGhosttyConfig()))
     files.appendChild(button('Import Ghostty…', () => void importGhostty()))
     files.appendChild(button('Import Windows Terminal…', () => void importWindowsTerminal()))
   }
@@ -539,6 +541,52 @@ function exportTheme(theme: { name: string }): void {
  * collection is the normal case, and doing it one file at a time would be a
  * chore rather than a feature.
  */
+/**
+ * The palette out of the user's own Ghostty configuration, wherever it lives.
+ *
+ * Ghostty's config is the same `key = value` / `palette = N=#rrggbb` shape as a
+ * theme file, so the parser is already written — the only thing missing was
+ * knowing where to look, which is a file picker's worth of friction for the one
+ * palette somebody is most likely to want.
+ *
+ * Both documented locations are tried and the first readable one wins. Nothing
+ * is written and nothing is watched: this is an import, so the palette becomes
+ * a theme of yours that Ghostty cannot subsequently change under you.
+ */
+async function importGhosttyConfig(): Promise<void> {
+  const home = await backend().homeDir()
+  const candidates = [
+    // XDG on Linux, and Ghostty honours it on macOS too when it is set.
+    `${home}/.config/ghostty/config`,
+    // The macOS application-support location.
+    `${home}/Library/Application Support/com.mitchellh.ghostty/config`,
+  ]
+
+  for (const candidate of candidates) {
+    let text: string
+    try {
+      text = await backend().readText(candidate)
+    } catch {
+      continue
+    }
+    const theme = fromGhosttyTheme(text, crypto.randomUUID(), 'Ghostty')
+    if (!theme) {
+      showToast('Nothing to import', `${candidate} sets no background and foreground.`, {
+        kind: 'warn',
+      })
+      return
+    }
+    theme.name = uniqueNameFor('terminal', theme.name)
+    store.upsertCustomTerminalTheme(theme)
+    selectImported(theme.id)
+    onChanged()
+    showToast('Imported your Ghostty palette', candidate)
+    return
+  }
+
+  showToast('No Ghostty config found', `Looked in ${candidates.join(' and ')}.`, { kind: 'warn' })
+}
+
 async function importGhostty(): Promise<void> {
   const files = await pickFiles('.theme,.conf,.txt,*/*')
   if (!files.length) return

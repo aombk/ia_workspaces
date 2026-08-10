@@ -56,7 +56,8 @@
     ],
     "asarUnpack": [
       "**/node_modules/@lydell/node-pty*/**",
-      "out/electron/cli/**"
+      "out/electron/cli/**",
+      "out/electron/host/**"
     ],
     "extraResources": [
       {

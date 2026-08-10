@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { mergeHooks, stripHooks, type AgentHookSpec } from './agentHooks'
 
 /**
  * Claude Code only rings the terminal bell when this is set; without it, it
@@ -36,7 +37,7 @@ const NOTIF_VALUE = 'terminal_bell'
  * `--quiet` is the other half; see `cli.ts`. A notification that cannot be
  * delivered is not an error worth interrupting an agent for.
  */
-function hookEvents(iawPath: string): Record<string, string> {
+export function hookEvents(iawPath: string): Record<string, string> {
   // Forward slashes: `sh` treats a backslash inside double quotes as an escape,
   // so a Windows path written the Windows way would not survive the trip.
   const iaw = `"${iawPath.replace(/\\/g, '/')}"`
@@ -56,51 +57,25 @@ function hookEvents(iawPath: string): Record<string, string> {
   }
 }
 
-/**
- * Recognises our own handler so re-running never duplicates it — and so that
- * turning the integration off still finds the ones installed by builds that
- * wrote a bare `iaw`.
- */
-function isOurHook(command: unknown): boolean {
-  return typeof command === 'string' && /(^|[\s"/\\])iaw(\.cmd)?"? (notify|session)\b/.test(command)
-}
-
-/**
- * Adds our handler to each event, leaving any hooks the user already has in
- * place — this is their config, and Claude Code runs every matching handler.
- */
-function mergeHooks(
-  existing: unknown,
-  iawPath: string
-): { hooks: Record<string, unknown[]>; added: number } {
-  const hooks: Record<string, unknown[]> =
-    existing && typeof existing === 'object' ? { ...(existing as Record<string, unknown[]>) } : {}
-  let added = 0
-
-  for (const [event, command] of Object.entries(hookEvents(iawPath))) {
-    const groups = Array.isArray(hooks[event]) ? [...(hooks[event] as unknown[])] : []
-
-    const alreadyThere = groups.some((group) => {
-      const handlers = (group as { hooks?: unknown[] })?.hooks
-      return Array.isArray(handlers) && handlers.some((h) => isOurHook((h as { command?: unknown })?.command))
-    })
-    if (alreadyThere) continue
-
-    // Every group carries an empty matcher. `SessionStart` is a
-    // matcher-based event — startup, resume, clear, compact — and a group
-    // with no matcher key never fires, which is why the session id was
-    // never recorded while the Notification and Stop hooks worked fine.
-    // Those two are not matcher-based, so the field is harmless there.
-    groups.push({ matcher: '', hooks: [{ type: 'command', command }] })
-    hooks[event] = groups
-    added++
-  }
-
-  return { hooks, added }
-}
-
 function settingsPath(): string {
   return path.join(os.homedir(), '.claude', 'settings.json')
+}
+
+/**
+ * Claude Code as the generic installer sees it.
+ *
+ * `matcherGroups` is true because Claude has matcher-based events —
+ * `SessionStart` fires for startup, resume, clear and compact — and a group
+ * with no matcher key never fires at all. That is precisely how the session id
+ * went unrecorded for a while, while the Notification and Stop hooks, which are
+ * not matcher-based, worked perfectly and hid it.
+ */
+const CLAUDE: AgentHookSpec = {
+  id: 'claude',
+  label: 'Claude Code',
+  settingsPath,
+  matcherGroups: true,
+  commands: hookEvents,
 }
 
 export interface ClaudeConfigInfo {
@@ -120,7 +95,7 @@ export function readClaudeSettings(): ClaudeConfigInfo {
     const raw = readFileSync(file, 'utf8')
     const parsed = JSON.parse(raw) as Record<string, unknown>
     // Only used to count what is missing, so the path does not matter here.
-    const { added } = mergeHooks(parsed.hooks, '')
+    const { added } = mergeHooks(CLAUDE, parsed.hooks, '')
     return {
       path: file,
       exists: true,
@@ -132,47 +107,6 @@ export function readClaudeSettings(): ClaudeConfigInfo {
   } catch {
     return { path: file, exists: true, bellEnabled: false, hooksInstalled: false, raw: '' }
   }
-}
-
-/**
- * Strips our handler back out of the user's hooks.
- *
- * Groups we added contain only our handler and go entirely; a group the user
- * merged us into keeps its other handlers. An event left with no groups, and a
- * `hooks` object left with no events, are removed rather than left as empty
- * husks — the aim is a file indistinguishable from one we never touched.
- */
-function stripHooks(existing: unknown): { hooks: Record<string, unknown[]> | null; removed: number } {
-  if (!existing || typeof existing !== 'object') return { hooks: null, removed: 0 }
-  const hooks = { ...(existing as Record<string, unknown[]>) }
-  let removed = 0
-
-  // The path is irrelevant here: only the event names are read.
-  for (const event of Object.keys(hookEvents(''))) {
-    const groups = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : null
-    if (!groups) continue
-
-    const kept: unknown[] = []
-    for (const group of groups) {
-      const handlers = (group as { hooks?: unknown[] })?.hooks
-      if (!Array.isArray(handlers)) {
-        kept.push(group)
-        continue
-      }
-      const survivors = handlers.filter((h) => !isOurHook((h as { command?: unknown })?.command))
-      if (survivors.length === handlers.length) {
-        kept.push(group)
-        continue
-      }
-      removed += handlers.length - survivors.length
-      if (survivors.length) kept.push({ ...(group as object), hooks: survivors })
-    }
-
-    if (kept.length) hooks[event] = kept
-    else delete hooks[event]
-  }
-
-  return { hooks: Object.keys(hooks).length ? hooks : null, removed }
 }
 
 /**
@@ -251,7 +185,7 @@ export function setClaudeIntegration(
         }
       }
       config[NOTIF_KEY] = NOTIF_VALUE
-      config.hooks = mergeHooks(config.hooks, iawPath).hooks
+      config.hooks = mergeHooks(CLAUDE, config.hooks, iawPath).hooks
     } else {
       const prior = readPriorState(stateDir)
       // Only ever touch the key if it still holds the value we put there — the
@@ -260,7 +194,7 @@ export function setClaudeIntegration(
         if (prior?.notifChannel) config[NOTIF_KEY] = prior.notifChannel
         else delete config[NOTIF_KEY]
       }
-      const { hooks } = stripHooks(config.hooks)
+      const { hooks } = stripHooks(CLAUDE, config.hooks)
       if (hooks) config.hooks = hooks
       else delete config.hooks
       try {

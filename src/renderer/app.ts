@@ -32,7 +32,14 @@ import type { WorkspaceFile } from '../shared/workspaceFile'
 import type { UiActions } from './ui/actions'
 import { DEFAULT_SETTINGS, isTerminalPane } from '../shared/types'
 import type { NotificationRecord, PaneState, TerminalAlert } from '../shared/types'
-import { initPalette, hidePalette, paletteIsOpen, togglePalette } from './ui/palette'
+import {
+  initPalette,
+  hidePalette,
+  paletteIsOpen,
+  showHistory,
+  showVault,
+  togglePalette,
+} from './ui/palette'
 import { isNavigation, isPrimary } from './ui/keys'
 import { fallbackCwd } from '../shared/platform'
 import { DomZoom } from './auxPane'
@@ -409,6 +416,64 @@ const actions: UiActions = {
     startRename(workspace.id)
   },
 
+  /**
+   * A worktree, and a workspace sitting in it.
+   *
+   * One gesture, because they are one intention: "give me somewhere to work on
+   * this branch". The workspace is nested under the one it came from, so the
+   * sidebar shows the relationship without needing a concept for it — and it is
+   * an ordinary workspace in every other respect. Nothing about worktrees is
+   * persisted; the folder simply *is* one, which `git worktree list` can always
+   * be asked about later.
+   */
+  async newWorktree(workspaceId) {
+    const workspace = store.workspaces.find((w) => w.id === workspaceId)
+    if (!workspace) return
+
+    const branch = await promptDialog({
+      title: 'New worktree',
+      body:
+        'A branch, and a folder beside the repository to check it out into. ' +
+        'An existing branch is checked out; a new name is created from where ' +
+        'you are now.',
+      placeholder: 'feature/thing',
+      confirmLabel: 'Create',
+    })
+    if (!branch?.trim()) return
+
+    const suggested = await backend().worktrees.suggest(workspace.cwd, branch.trim())
+    if (!suggested) {
+      showToast('Not a git repository', `${workspace.cwd} has no repository to branch from.`)
+      return
+    }
+
+    const dir = await promptDialog({
+      title: 'Where should it go?',
+      body: 'A sibling of the repository, so nothing walks the same project twice.',
+      initial: suggested,
+      confirmLabel: 'Create worktree',
+    })
+    if (!dir?.trim()) return
+
+    const res = await backend().worktrees.add(workspace.cwd, branch.trim(), dir.trim())
+    if (!res.ok || !res.path) {
+      // git's own message, which for this command is genuinely the best one
+      // available — "already checked out at …" names the other worktree.
+      showToast('Could not create the worktree', res.error ?? 'Unknown error')
+      return
+    }
+
+    const created = store.addWorkspace(branch.trim(), res.path)
+    store.setWorkspaceParent(created.id, workspaceId)
+    store.addTab(created.id)
+    void syncMountedTab()
+    void refreshBranch(created.id, res.path)
+    showToast(
+      res.created ? `Branch ${branch.trim()} created` : `Checked out ${branch.trim()}`,
+      res.path
+    )
+  },
+
   async changeWorkspaceFolder(workspaceId) {
     const workspace = store.workspaces.find((w) => w.id === workspaceId)
     if (!workspace) return
@@ -432,6 +497,33 @@ const actions: UiActions = {
       danger: true,
     })
     if (!ok) return
+
+    // A workspace sitting in a worktree leaves one behind when it goes: the
+    // checkout stays on disk and stays registered with the repository, which is
+    // how `git worktree list` fills up with entries for folders nobody
+    // remembers making. Asked rather than assumed — the branch may be the point
+    // and the workspace merely how it was reached.
+    const worktree = await backend().worktrees.at(workspace.cwd)
+    if (worktree) {
+      const alsoRemove = await confirmDialog({
+        title: `Also remove the worktree?`,
+        body:
+          `${workspace.cwd} is a git worktree${worktree.branch ? ` on ${worktree.branch}` : ''}. ` +
+          'Removing it deletes the folder and unregisters it; the branch itself stays. ' +
+          'Keeping it leaves the folder exactly as it is.',
+        confirmLabel: 'Remove the worktree too',
+        danger: true,
+      })
+      if (alsoRemove) {
+        const res = await backend().worktrees.remove(workspace.cwd, worktree.path, false)
+        // Refused because the checkout is dirty. That refusal is the feature —
+        // it is the only thing standing between "close a tab" and "lose an
+        // afternoon" — so it is reported and the folder is left alone.
+        if (!res.ok) showToast('Worktree kept', res.error ?? 'git would not remove it')
+        else showToast('Worktree removed', worktree.path)
+      }
+    }
+
     disposeDockedTree(workspaceId)
     terminals.closeMany(store.removeWorkspace(workspaceId))
     void syncMountedTab()
@@ -515,13 +607,19 @@ const actions: UiActions = {
     void syncMountedTab()
   },
 
-  openSearch(workspaceId) {
-    const existing = findPane((p) => p.kind === 'search', workspaceId)
-    if (existing) {
-      actions.jumpToPane(existing.workspaceId, existing.paneId)
-      return
+  openSearch(workspaceId, cwd) {
+    // A folder given explicitly opens a *new* pane rather than reusing one: the
+    // caller is asking to search somewhere specific, and quietly jumping to a
+    // pane pointed at the workspace instead would look like the request was
+    // ignored.
+    if (!cwd) {
+      const existing = findPane((p) => p.kind === 'search', workspaceId)
+      if (existing) {
+        actions.jumpToPane(existing.workspaceId, existing.paneId)
+        return
+      }
     }
-    store.addTab(workspaceId, undefined, 'search')
+    store.addTab(workspaceId, cwd, 'search')
     void syncMountedTab()
   },
 
@@ -1185,6 +1283,23 @@ function wireKeyboard(): void {
       if (ctrl && key === 'p') {
         e.preventDefault()
         togglePalette()
+        return
+      }
+      // Ctrl+Alt+H — everything you have typed before, in the same box. Alt
+      // rather than Shift because Ctrl+Shift+H is find-and-replace in every
+      // editor the rest of these shortcuts borrow from.
+      if (ctrl && e.altKey && key === 'h') {
+        e.preventDefault()
+        void showHistory()
+        return
+      }
+      // Ctrl+Alt+V — transcripts of panes you have closed. Picking one opens it
+      // in the editor; the last entry searches the whole folder. Alt rather
+      // than Shift because Ctrl+Shift+V is paste in every Linux terminal, and
+      // claiming it would break the reflex of anyone who has one.
+      if (ctrl && e.altKey && key === 'v') {
+        e.preventDefault()
+        void showVault()
         return
       }
       // Ctrl+Shift+E — file tree beside the current panes (editor convention).

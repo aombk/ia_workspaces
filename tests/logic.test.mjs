@@ -21,6 +21,11 @@ await build({
     browserPane: 'src/renderer/browserPane.ts',
     // The zoom ladder moved here when every pane learned to use it.
     auxPane: 'src/renderer/auxPane.ts',
+    platform: 'src/shared/platform.ts',
+    orphans: 'src/main/orphans.ts',
+    events: 'src/main/events.ts',
+    vault: 'src/main/vault.ts',
+    paneBuffer: 'src/renderer/paneBuffer.ts',
   },
   bundle: true,
   platform: 'node',
@@ -38,6 +43,13 @@ const { isPhantomExit, classifyReapIdentity, mayReap } = await import(
 const { buildTree, flattenPanes } = await import(`file://${out}/controlSurface.js`)
 const { normalise } = await import(`file://${out}/browserPane.js`)
 const { stepZoom } = await import(`file://${out}/auxPane.js`)
+const { withBinDir, ipcAddress, isPipeAddress } = await import(`file://${out}/platform.js`)
+const { isOrphan, selectOrphans, ORPHAN_GRACE_MS } = await import(`file://${out}/orphans.js`)
+const { EventLog, parseCategories } = await import(`file://${out}/events.js`)
+const { SessionVault } = await import(`file://${out}/vault.js`)
+const { bufferWhileHidden, drainPending, clearPending } = await import(
+  `file://${out}/paneBuffer.js`
+)
 
 let passed = 0
 const check = (name, fn) => {
@@ -577,6 +589,349 @@ console.log('Browser zoom steps')
     // 1.13 is nearest 1.1, so it steps from there rather than from 1.25.
     assert.equal(stepZoom(1.13, 'in'), 1.25)
     assert.equal(stepZoom(1.13, 'out'), 1)
+  })
+}
+
+// ------------------------------------------------------------- withBinDir
+{
+  // The regression these guard is not hypothetical: spreading `process.env`
+  // and then setting `PATH` handed every Windows pane two PATH keys, which
+  // took `iaw` off the PATH in PowerShell and broke every git command that
+  // shells out. See `withBinDir`'s comment.
+  check('windows keeps the OS spelling and emits exactly one PATH', () => {
+    const env = withBinDir({ Path: 'C:\\one;C:\\two', WINDIR: 'C:\\WINDOWS' }, 'C:\\bin', 'windows')
+    const keys = Object.keys(env).filter((k) => /^path$/i.test(k))
+    assert.deepEqual(keys, ['Path'])
+    assert.equal(env.Path, 'C:\\bin;C:\\one;C:\\two')
+    assert.equal(env.WINDIR, 'C:\\WINDOWS')
+  })
+
+  check('a block that already carries both cases collapses to one', () => {
+    // Belt and braces: whatever upstream hands us, the child gets one.
+    const env = withBinDir({ Path: 'C:\\a', PATH: 'C:\\b' }, 'C:\\bin', 'windows')
+    assert.equal(Object.keys(env).filter((k) => /^path$/i.test(k)).length, 1)
+  })
+
+  check('posix uses a colon and the posix spelling', () => {
+    const env = withBinDir({ PATH: '/usr/bin:/bin' }, '/home/u/.bin', 'linux')
+    assert.deepEqual(Object.keys(env).filter((k) => /^path$/i.test(k)), ['PATH'])
+    assert.equal(env.PATH, '/home/u/.bin:/usr/bin:/bin')
+  })
+
+  check('no bin directory leaves the value untouched', () => {
+    assert.equal(withBinDir({ PATH: '/usr/bin' }, null, 'linux').PATH, '/usr/bin')
+  })
+
+  check('a missing PATH still yields one, not undefined', () => {
+    const env = withBinDir({ HOME: '/home/u' }, '/home/u/.bin', 'macos')
+    assert.equal(env.PATH, '/home/u/.bin:')
+  })
+
+  check('undefined entries are dropped rather than stringified', () => {
+    // `process.env` reads back undefined for a variable that is not set, and
+    // 'undefined' is a plausible-looking directory name.
+    const env = withBinDir({ PATH: '/bin', NOPE: undefined }, null, 'linux')
+    assert.equal('NOPE' in env, false)
+  })
+}
+
+// ------------------------------------------------------------- ipcAddress
+{
+  check('windows gets a named pipe, posix a socket file', () => {
+    const dirs = { runtime: '/run/user/1000/ia_workspaces', tmp: '/tmp' }
+    assert.equal(ipcAddress('windows', 'ptyhost', dirs), '\\\\.\\pipe\\iaw-ptyhost')
+    assert.equal(ipcAddress('linux', 'ptyhost', dirs), '/run/user/1000/ia_workspaces/ptyhost.sock')
+  })
+
+  check('an over-long socket path falls back to the temp directory', () => {
+    // sun_path is 104 bytes on macOS; a deep home must not silently truncate.
+    const deep = `/Users/${'x'.repeat(90)}/Library/Application Support/ia_workspaces`
+    const addr = ipcAddress('macos', 'ptyhost', { runtime: deep, tmp: '/tmp' })
+    assert.equal(addr, '/tmp/iaw-ptyhost.sock')
+  })
+
+  check('pipe addresses are recognised, socket paths are not', () => {
+    assert.equal(isPipeAddress('\\\\.\\pipe\\iaw-ptyhost'), true)
+    assert.equal(isPipeAddress('/run/user/1000/ia_workspaces/ptyhost.sock'), false)
+  })
+}
+
+// --------------------------------------------------------------- orphans
+{
+  // The only judgement in the app that ends a process the user did not ask to
+  // end, so every one of these is a case where it must NOT fire.
+  const NOW = 1_000_000_000
+  const old = NOW - ORPHAN_GRACE_MS - 1
+  const session = (over) => ({ id: 'p1', attached: 0, startedAt: old, ...over })
+
+  check('an unreferenced, unattached, old session is an orphan', () => {
+    assert.equal(isOrphan(session(), new Set(['other']), NOW), true)
+  })
+
+  check('a referenced pane is never an orphan', () => {
+    // Referenced by ANY workspace, not just the open one — a closed workspace
+    // can be reopened and must find its shells.
+    assert.equal(isOrphan(session(), new Set(['p1']), NOW), false)
+  })
+
+  check('a session another instance is attached to is never an orphan', () => {
+    assert.equal(isOrphan(session({ attached: 1 }), new Set(['other']), NOW), false)
+  })
+
+  check('a session younger than the grace period is never an orphan', () => {
+    // The pane exists; the document just has not caught up yet.
+    assert.equal(isOrphan(session({ startedAt: NOW - 1000 }), new Set(['other']), NOW), false)
+  })
+
+  check('the boundary of the grace period is not an orphan', () => {
+    assert.equal(isOrphan(session({ startedAt: NOW - ORPHAN_GRACE_MS }), new Set(['x']), NOW), false)
+  })
+
+  check('an empty live set reaps nothing at all', () => {
+    // A workspace document that failed to load is indistinguishable from a
+    // fresh install, and acting on it would kill every shell the user has.
+    assert.deepEqual(selectOrphans([session(), session({ id: 'p2' })], new Set(), NOW), [])
+  })
+
+  check('a sweep picks out only the abandoned ones', () => {
+    const sessions = [
+      session({ id: 'referenced' }),
+      session({ id: 'attached-elsewhere', attached: 2 }),
+      session({ id: 'just-created', startedAt: NOW - 5 }),
+      session({ id: 'abandoned' }),
+    ]
+    const live = new Set(['referenced', 'some-other-pane'])
+    assert.deepEqual(
+      selectOrphans(sessions, live, NOW).map((s) => s.id),
+      ['abandoned']
+    )
+  })
+}
+
+// ------------------------------------------------------------- event log
+console.log('Event log')
+{
+  check('events are numbered from one and come back in order', () => {
+    const log = new EventLog()
+    log.emit('pane', 'exit', { paneId: 'p1' })
+    log.emit('agent', 'blocked', { paneId: 'p2' })
+    const page = log.since(0)
+    assert.deepEqual(page.events.map((e) => e.seq), [1, 2])
+    assert.deepEqual(page.events.map((e) => e.type), ['exit', 'blocked'])
+    assert.equal(page.cursor, 2)
+    assert.equal(page.gap, false)
+  })
+
+  check('a cursor returns only what came after it', () => {
+    const log = new EventLog()
+    log.emit('pane', 'a')
+    log.emit('pane', 'b')
+    log.emit('pane', 'c')
+    assert.deepEqual(log.since(2).events.map((e) => e.type), ['c'])
+  })
+
+  check('a caught-up reader gets an empty page, not a gap', () => {
+    const log = new EventLog()
+    log.emit('pane', 'a')
+    const page = log.since(1)
+    assert.deepEqual(page.events, [])
+    assert.equal(page.gap, false)
+  })
+
+  check('a cursor from another boot is a gap, not silence', () => {
+    // The failure this prevents: a reader holding seq 900 across a restart
+    // being told "nothing new" by a log that has only reached 2 — forever.
+    const log = new EventLog()
+    log.emit('pane', 'a')
+    log.emit('pane', 'b')
+    const page = log.since(900, { boot: 'a-previous-run' })
+    assert.equal(page.gap, true)
+    assert.equal(page.events.length, 2, 'and it is given everything still held')
+    assert.notEqual(page.boot, 'a-previous-run')
+  })
+
+  check('the matching boot is not a gap', () => {
+    const log = new EventLog()
+    log.emit('pane', 'a')
+    assert.equal(log.since(0, { boot: log.boot }).gap, false)
+  })
+
+  check('categories filter without renumbering', () => {
+    const log = new EventLog()
+    log.emit('pane', 'exit')
+    log.emit('agent', 'blocked')
+    log.emit('alert', 'bell')
+    const page = log.since(0, { categories: ['agent', 'alert'] })
+    assert.deepEqual(page.events.map((e) => e.seq), [2, 3])
+    assert.equal(page.cursor, 3, 'the cursor tracks the log, not the filtered view')
+  })
+
+  check('a limit keeps the newest, not the oldest', () => {
+    const log = new EventLog()
+    for (let i = 0; i < 10; i++) log.emit('pane', `e${i}`)
+    const page = log.since(0, { limit: 3 })
+    assert.deepEqual(page.events.map((e) => e.type), ['e7', 'e8', 'e9'])
+  })
+
+  check('unknown categories are dropped rather than matching nothing', () => {
+    assert.deepEqual(parseCategories('agent,nonsense,alert'), ['agent', 'alert'])
+    assert.equal(parseCategories('nonsense'), undefined)
+    assert.equal(parseCategories(''), undefined)
+    assert.equal(parseCategories(undefined), undefined)
+  })
+
+  await (async () => {
+    const log = new EventLog()
+    log.emit('pane', 'already here')
+    const t0 = Date.now()
+    await log.wait(0, 5000, () => {})
+    passed++
+    console.log('  ok', 'waiting returns at once when something is already newer')
+    assert.ok(Date.now() - t0 < 200)
+  })()
+
+  await (async () => {
+    const log = new EventLog()
+    const waited = log.wait(0, 5000, () => {})
+    setTimeout(() => log.emit('agent', 'blocked'), 40)
+    await waited
+    passed++
+    console.log('  ok', 'waiting wakes when an event arrives')
+    assert.equal(log.lastSeq, 1)
+  })()
+
+  await (async () => {
+    const log = new EventLog()
+    const t0 = Date.now()
+    // The deadline timer is unref'd on purpose — in the app a follower's own
+    // socket is what keeps the loop alive, and a pending poll should never be
+    // the reason the process cannot exit. Here there is no socket, so the test
+    // supplies the reference itself.
+    const keepAlive = setTimeout(() => {}, 5000)
+    await log.wait(0, 60, () => {})
+    clearTimeout(keepAlive)
+    passed++
+    console.log('  ok', 'waiting gives up at its deadline')
+    assert.ok(Date.now() - t0 >= 50)
+  })()
+
+  await (async () => {
+    // A caller that hangs up must not leave a waiter holding the connection
+    // until its deadline.
+    const log = new EventLog()
+    let abort = () => {}
+    const waited = log.wait(0, 60_000, (fn) => (abort = fn))
+    abort()
+    await waited
+    passed++
+    console.log('  ok', 'a caller hanging up releases the waiter')
+  })()
+}
+
+// ------------------------------------------------------------ session vault
+console.log('Session vault')
+{
+  const dir = path.join(out, 'vault')
+  const vault = new SessionVault(dir)
+  const meta = { label: 'npm run build', cwd: 'C:\proj', workspace: 'w1' }
+
+  check('a substantial transcript is written', () => {
+    const file = vault.archive('x'.repeat(500), meta)
+    assert.ok(file, 'a path comes back')
+    const text = fs.readFileSync(file, 'utf8')
+    assert.match(text, /^# npm run build/, 'the label is the first line')
+    assert.match(text, /# folder:\s+C:\proj/)
+    assert.ok(text.includes('x'.repeat(500)), 'and the body survives intact')
+  })
+
+  check('a trivial one is not', () => {
+    // A pane opened and closed by accident should not leave a file behind.
+    assert.equal(vault.archive('hi', meta), null)
+    assert.equal(vault.archive('', meta), null)
+  })
+
+  check('listing reads the label back out of the file', () => {
+    const entries = vault.list()
+    assert.ok(entries.length >= 1)
+    assert.equal(entries[0].label, 'npm run build')
+    assert.ok(entries[0].bytes > 500)
+  })
+
+  check('a label that is a path does not become one', () => {
+    // The label reaches a filename, and a pane titled with a path would
+    // otherwise try to write into directories that do not exist.
+    const file = vault.archive('y'.repeat(400), {
+      label: 'C:/rootCloud/dev/../x?*|',
+      cwd: '',
+      workspace: '',
+    })
+    assert.ok(file)
+    assert.equal(path.dirname(file), dir, 'it stays in the vault folder')
+    assert.equal(/[?*|]/.test(path.basename(file)), false)
+  })
+
+  check('an unwritable folder degrades rather than throwing', () => {
+    // A read-only data directory should cost the feature, not the app.
+    const nope = new SessionVault(path.join(out, 'vault', 'file-not-a-dir', 'deeper'))
+    assert.doesNotThrow(() => nope.list())
+  })
+}
+
+// ----------------------------------------------------------- hidden panes
+{
+  const buf = () => ({ pending: [], pendingBytes: 0, pendingTruncated: false })
+
+  check('output is held rather than dropped', () => {
+    const b = buf()
+    bufferWhileHidden(b, 'one ')
+    bufferWhileHidden(b, 'two')
+    assert.deepEqual(drainPending(b), { text: 'one two', truncated: false })
+  })
+
+  check('draining empties the buffer', () => {
+    const b = buf()
+    bufferWhileHidden(b, 'x')
+    drainPending(b)
+    assert.deepEqual(drainPending(b), { text: '', truncated: false })
+    assert.equal(b.pendingBytes, 0)
+  })
+
+  check('the cap drops the oldest and says so', () => {
+    // The tail is what a revealed pane shows; the head is what nobody reads
+    // first. So overflow costs the middle, and the pane admits it.
+    const b = buf()
+    for (const c of ['aaaa', 'bbbb', 'cccc']) bufferWhileHidden(b, c, 8)
+    const out = drainPending(b)
+    assert.equal(out.text, 'bbbbcccc')
+    assert.equal(out.truncated, true)
+  })
+
+  check('a single chunk larger than the cap is kept, not discarded', () => {
+    // Dropping it would leave a revealed pane blank rather than merely
+    // trimmed, which is a worse answer than showing too much.
+    const b = buf()
+    bufferWhileHidden(b, 'x'.repeat(50), 8)
+    assert.equal(drainPending(b).text.length, 50)
+  })
+
+  check('an empty write changes nothing', () => {
+    const b = buf()
+    bufferWhileHidden(b, '')
+    assert.equal(b.pending.length, 0)
+  })
+
+  check('bytes are counted, not chunks', () => {
+    const b = buf()
+    bufferWhileHidden(b, 'abc')
+    bufferWhileHidden(b, 'de')
+    assert.equal(b.pendingBytes, 5)
+  })
+
+  check('clearing forgets a replaced shell output', () => {
+    const b = buf()
+    bufferWhileHidden(b, 'from the old shell', 4)
+    clearPending(b)
+    assert.deepEqual(drainPending(b), { text: '', truncated: false })
   })
 }
 

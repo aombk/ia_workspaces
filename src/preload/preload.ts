@@ -16,6 +16,11 @@ import type {
   TerminalMeta,
   SearchHit,
   ProcessInfo,
+  AgentConfigInfo,
+  HistoryEntry,
+  VaultEntry,
+  Worktree,
+  SessionHostInfo,
   UsageReport,
 } from '../shared/types'
 
@@ -91,6 +96,25 @@ const api = {
   search: (cwd: string, query: string, caseSensitive: boolean): Promise<SearchHit[]> =>
     ipcRenderer.invoke(IPC.search, cwd, query, caseSensitive),
   processes: (): Promise<ProcessInfo[]> => ipcRenderer.invoke(IPC.processes),
+  sessionHost: (): Promise<SessionHostInfo> => ipcRenderer.invoke(IPC.sessionHost),
+  agentHooks: (): Promise<AgentConfigInfo[]> => ipcRenderer.invoke(IPC.agentHooks),
+  commandHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.commandHistory),
+  vaultList: (): Promise<VaultEntry[]> => ipcRenderer.invoke(IPC.vaultList),
+  vaultFolder: (): Promise<string> => ipcRenderer.invoke(IPC.vaultFolder),
+  worktreeList: (cwd: string): Promise<Worktree[]> => ipcRenderer.invoke(IPC.worktreeList, cwd),
+  worktreeAt: (cwd: string): Promise<Worktree | null> => ipcRenderer.invoke(IPC.worktreeAt, cwd),
+  worktreeAdd: (
+    cwd: string,
+    branch: string,
+    dir: string
+  ): Promise<{ ok: boolean; path?: string; created?: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC.worktreeAdd, cwd, branch, dir),
+  worktreeRemove: (cwd: string, dir: string, force: boolean): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC.worktreeRemove, cwd, dir, force),
+  worktreeSuggest: (cwd: string, branch: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.worktreeSuggest, cwd, branch),
+  setAgentHooks: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string; path: string }> =>
+    ipcRenderer.invoke(IPC.setAgentHooks, id, enabled),
   wslDistros: (): Promise<string[]> => ipcRenderer.invoke(IPC.wslDistros),
   sshHosts: (): Promise<SshHost[]> => ipcRenderer.invoke(IPC.sshHosts),
   claudeUsage: (): Promise<UsageReport> => ipcRenderer.invoke(IPC.claudeUsage),

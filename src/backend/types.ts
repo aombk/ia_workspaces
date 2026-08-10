@@ -15,6 +15,11 @@ import type {
   SearchHit,
   ProcessInfo,
   UsageReport,
+  SessionHostInfo,
+  AgentConfigInfo,
+  Worktree,
+  HistoryEntry,
+  VaultEntry,
 } from '../shared/types'
 
 /**
@@ -186,6 +191,72 @@ export interface Backend {
   search(cwd: string, query: string, caseSensitive: boolean): Promise<SearchHit[]>
   /** Everything running under this app's panes, with its listening ports. */
   processes(): Promise<ProcessInfo[]>
+  /**
+   * What is holding the shells, and which ones it holds.
+   *
+   * Includes sessions no pane in this window claims — the ones left behind by
+   * a workspace removed while the app was closed. They are invisible
+   * otherwise, and a shell nobody can see is a shell nobody can end.
+   */
+  sessionHost(): Promise<SessionHostInfo>
+  /**
+   * Hook installers for agents other than Claude Code.
+   *
+   * The agent protocol takes no tool name and never did — `iaw notify` learns
+   * which pane it is in from the environment, not from the caller. This is what
+   * makes that a fact rather than a claim: a second installer, with nothing
+   * agent-specific in it beyond the event names.
+   */
+  /**
+   * Every command line submitted in any pane, newest first, deduplicated.
+   *
+   * Collected for free from the `133;E` marker the shell integration already
+   * emits — the app was recording the most recent one per pane so a restored
+   * agent pane could be resumed, and this simply keeps more of them.
+   */
+  commandHistory(): Promise<HistoryEntry[]>
+
+  /**
+   * Transcripts of panes that have been closed.
+   *
+   * Plain text files, so nothing new is needed to use them: the editor pane
+   * opens one, and the search pane searches the whole folder. Written at the
+   * one moment the content would otherwise be discarded — closing a pane, which
+   * is also the moment its scrollback buffer is deleted.
+   */
+  vault: {
+    list(): Promise<VaultEntry[]>
+    /** The folder they live in — point the search pane at it. */
+    folder(): Promise<string>
+  }
+
+  /**
+   * Git worktrees, for running an agent per branch.
+   *
+   * No new concept in the workspace model: a worktree is a workspace whose
+   * folder happens to be one, so the file tree, changes pane, search and branch
+   * display all work on it already. Only making one and cleaning one up need a
+   * host.
+   */
+  worktrees: {
+    list(cwd: string): Promise<Worktree[]>
+    /** The worktree containing this folder, or null. Never the main checkout. */
+    at(cwd: string): Promise<Worktree | null>
+    add(
+      cwd: string,
+      branch: string,
+      dir: string
+    ): Promise<{ ok: boolean; path?: string; created?: boolean; error?: string }>
+    /** Refused when the checkout is dirty unless `force`; the error says why. */
+    remove(cwd: string, dir: string, force: boolean): Promise<{ ok: boolean; error?: string }>
+    /** A sibling folder named for the branch, or null outside a repository. */
+    suggest(cwd: string, branch: string): Promise<string | null>
+  }
+
+  agents: {
+    list(): Promise<AgentConfigInfo[]>
+    set(id: string, enabled: boolean): Promise<{ ok: boolean; error?: string; path: string }>
+  }
   /** Installed WSL distributions, for the workspace shell picker. */
   wslDistros(): Promise<string[]>
   /** Hosts from `~/.ssh/config`, for the shell menus. Empty if there is none. */
