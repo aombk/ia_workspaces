@@ -173,6 +173,51 @@ begin
     ExpandConstant('{tmp}\wizard-finish.bmp'));
 end;
 
+// Ends the session broker, so that the files it is holding can be replaced.
+//
+// The broker outlives the app deliberately — it is what keeps shells running
+// between launches — and it is this app's own executable re-run as Node. So
+// while it lives, Windows holds that file open and nothing can overwrite it.
+// `CloseApplications` above cannot reach it: Restart Manager closes windows,
+// and this process has none. Left alone it would fail the install on a file in
+// use, having quietly outlived the app the user did close.
+//
+// `iaw host stop` is the graceful end — the broker flushes what its shells
+// printed on the way out, where killing it would lose that. It ends every shell
+// it holds, which is the cost of installing over a running one and is why the
+// CLI prints the count when a person runs it by hand.
+//
+// Run through cmd.exe because the CLI needs ELECTRON_RUN_AS_NODE set and `Exec`
+// cannot set an environment variable, and against {app} rather than the `iaw`
+// shim in %APPDATA% — that path belongs to whichever account is elevating,
+// which for an all-users install is not necessarily the user with the broker.
+//
+// Both callers run it unconditionally: with nothing installed yet the files are
+// missing and this returns, and with nothing running the CLI is a no-op.
+procedure StopSessionHost();
+var
+  Exe, Cli: String;
+  ResultCode: Integer;
+begin
+  Exe := ExpandConstant('{app}\{#MyAppExeName}');
+  Cli := ExpandConstant('{app}\resources\app.asar.unpacked\out\electron\cli\cli.js');
+  if not FileExists(Exe) or not FileExists(Cli) then
+    Exit;
+  Exec(ExpandConstant('{cmd}'),
+       '/C set ELECTRON_RUN_AS_NODE=1 && "' + Exe + '" "' + Cli + '" host stop',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// Before a single file is written, and the last point at which aborting is
+// still free. Returning '' is "carry on" — a failed stop is not fatal here,
+// because the install may well be to a different directory than the broker is
+// holding, and Inno's own file-in-use handling is still behind this.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopSessionHost();
+  Result := '';
+end;
+
 // The app keeps everything it remembers — workspaces, settings, themes,
 // scrollback — in %APPDATA%\ia_workspaces, deliberately outside the program
 // directory so that reinstalling, moving or deleting it cannot cost you a
@@ -187,6 +232,10 @@ var
   DataDir: String;
 begin
   Result := True;
+  // First, so that the uninstaller is not trying to delete files out from under
+  // a live broker — and before the prompt below, which can sit unanswered for
+  // as long as the user likes.
+  StopSessionHost();
   DataDir := ExpandConstant('{userappdata}\ia_workspaces');
   if DirExists(DataDir) then
   begin

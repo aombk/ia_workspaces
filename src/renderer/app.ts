@@ -13,6 +13,7 @@ import {
   initSettingsPanel,
   openSettings,
   closeSettings,
+  clearSettingsSearch,
   isSettingsOpen,
   refreshSettings,
 } from './ui/settingsPanel'
@@ -41,7 +42,7 @@ import {
   togglePalette,
 } from './ui/palette'
 import { isNavigation, isPrimary } from './ui/keys'
-import { fallbackCwd } from '../shared/platform'
+import { fallbackCwd, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
 import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
@@ -98,6 +99,13 @@ export async function start(): Promise<void> {
     openHit: (target) => actions.openReader(target),
     openInEditor: (target) => openInEditor(target),
   })
+
+  // Each git pane can send you to the other, and a workspace that has neither
+  // open gets one made rather than a link that does nothing.
+  terminals.setGitHooks(
+    { openHistory: (workspaceId) => actions.openHistory(workspaceId || store.activeWorkspace?.id || '') },
+    { openChanges: (workspaceId) => actions.openDiff(workspaceId || store.activeWorkspace?.id || '') }
+  )
 
   terminals.setPortsHooks({
     jumpToPane: (workspaceId, paneId) => actions.jumpToPane(workspaceId, paneId),
@@ -640,6 +648,18 @@ const actions: UiActions = {
       return
     }
     store.addTab(workspaceId, undefined, 'diff')
+    void syncMountedTab()
+  },
+
+  // One per workspace, like the changes pane: it is one question about one
+  // repository, so a second would draw exactly the same picture.
+  openHistory(workspaceId) {
+    const existing = findPane((p) => p.kind === 'history', workspaceId)
+    if (existing) {
+      actions.jumpToPane(existing.workspaceId, existing.paneId)
+      return
+    }
+    store.addTab(workspaceId, undefined, 'history')
     void syncMountedTab()
   },
 
@@ -1189,7 +1209,9 @@ function wireKeyboard(): void {
           return
         }
         if (isSettingsOpen()) {
-          closeSettings()
+          // A search in progress is the innermost thing Escape can undo, so it
+          // goes first and the panel stays up.
+          if (!clearSettingsSearch()) closeSettings()
           e.preventDefault()
         }
         return
@@ -1340,6 +1362,34 @@ function wireKeyboard(): void {
         if (workspace) actions.openDiff(workspace.id)
         return
       }
+      // Ctrl+Shift+H — every save in this project, and the lines they sit on.
+      //
+      // The other H is Ctrl+Alt+H, which is the commands you have typed. Two
+      // kinds of history on one letter is a real cost, and it is paid because
+      // no other key says "history" and because the two are told apart by the
+      // thing they list. The editor's find-and-replace is the other claimant
+      // and it takes the unshifted Ctrl+H, as it does in an editor.
+      if (ctrl && e.shiftKey && key === 'h') {
+        e.preventDefault()
+        if (workspace) actions.openHistory(workspace.id)
+        return
+      }
+      // Ctrl+Alt+D — a diff of any two files you pick, next door to the
+      // Ctrl+Shift+D that diffs this workspace against its last commit. Alt
+      // rather than another letter because the two are the same idea at
+      // different scopes, and the pairing is easier to remember than a
+      // mnemonic would be.
+      if (ctrl && e.altKey && key === 'd') {
+        e.preventDefault()
+        if (workspace) void actions.openCompare(workspace.id)
+        return
+      }
+      // Ctrl+Shift+R — what every pane has running, and what is holding a port.
+      if (ctrl && e.shiftKey && key === 'r') {
+        e.preventDefault()
+        if (workspace) actions.openPorts(workspace.id)
+        return
+      }
       // Ctrl+Shift+B — a web page beside the terminal building it.
       if (ctrl && e.shiftKey && key === 'b') {
         e.preventDefault()
@@ -1469,6 +1519,19 @@ function wireStatusbar(): void {
 
 function wireWindowControls(): void {
   const controls = document.getElementById('window-controls') as HTMLElement
+
+  // macOS draws its traffic lights over the top-left of the page, whatever else
+  // is going on — they are there with or without the overlay Windows has, and
+  // with or without transparency. So the inset is decided by the platform and
+  // nothing else, before either branch below.
+  if (backend().capabilities.platform === 'macos') {
+    document.documentElement.classList.add('mac-caption')
+    document.documentElement.style.setProperty(
+      '--mac-titlebar-inset',
+      `${MAC_TRAFFIC_LIGHTS.inset}px`
+    )
+  }
+
   if (backend().window.usesNativeOverlay) {
     // The OS paints its buttons *over* the page rather than in it, so the bar
     // has to be told to stop short of them — see `.native-caption` in

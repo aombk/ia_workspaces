@@ -2004,6 +2004,7 @@ export function paneLabel(pane: PaneState): string {
   if (pane.kind === 'reader') return fileName(pane.file) || 'File'
   if (pane.kind === 'editor') return `e: ${fileName(pane.file) || 'Untitled'}`
   if (pane.kind === 'diff') return 'Changes'
+  if (pane.kind === 'history') return 'History'
   // Both names, because which two files this pane holds is the whole of what it
   // is — and a workspace can hold several compares at once.
   if (pane.kind === 'compare') {

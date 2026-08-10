@@ -116,6 +116,24 @@ html.native-caption .titlebar {
   padding-right: calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px));
 }
 
+/*
+ * The same hole, at the other end, for macOS.
+ *
+ * Its close/minimise/zoom buttons sit at the *left* and are composited over the
+ * page exactly as Windows' are over on the right — so without this the app mark,
+ * the name and the workspace context are all drawn underneath them. There is no
+ * `env()` to ask, because the buttons are a fixed size at a position the app
+ * itself sets: `MAC_TRAFFIC_LIGHTS` in `shared/platform.ts` places them and
+ * supplies this inset, so the two cannot disagree.
+ *
+ * On the drag region rather than on `.titlebar`, so the space the buttons sit
+ * in still drags the window — which is what it does in every Mac app, and what
+ * padding the bar itself would have taken away.
+ */
+html.mac-caption .titlebar-drag {
+  padding-left: var(--mac-titlebar-inset, 76px);
+}
+
 .titlebar-drag {
   flex: 1;
   display: flex;
@@ -936,12 +954,43 @@ kbd {
 
 .settings-head h2 {
   margin: 0;
+  flex: none;
   font-size: 15px;
   font-weight: 600;
 }
 
+/* Between the title and Done, taking whatever the two of them leave. Capped so
+   it does not become a search field with a heading stuck to either end. */
+.settings-search {
+  flex: 1;
+  min-width: 0;
+  max-width: 260px;
+  margin: 0 12px;
+}
+
+/* Chromium's own clear button, which is a grey X on a white pill in a dark
+   panel. The Escape key does the same job and says so in the code. */
+.settings-search::-webkit-search-cancel-button {
+  appearance: none;
+}
+
 .settings-body {
   padding: 8px 20px 20px;
+}
+
+/*
+ * Filtered out by the search box.
+ *
+ * `!important` because the rows this lands on set their own `display` — a
+ * `.field` is a flex row, and a plain `display: none` here would lose to it. */
+.settings-filtered-out {
+  display: none !important;
+}
+
+.settings-empty {
+  padding: 24px 0;
+  color: var(--text-faint);
+  text-align: center;
 }
 
 .settings-section {
@@ -1867,6 +1916,631 @@ kbd {
 }
 .diff-line--ctx {
   color: var(--text-dim);
+}
+
+/* ------------------------------------------------------- git words and panes
+
+   A git word with its plain meaning beside it. Dotted underline rather than a
+   solid one, because it is not a link and does not go anywhere — it is a word
+   that will tell you what it means if you rest on it. */
+
+.gw {
+  border-bottom: 1px dotted var(--border-strong);
+  cursor: help;
+}
+
+.gw-alt {
+  color: var(--text-faint);
+}
+
+/* The git command a button runs, riding along beside its label.
+
+   Monospace and dim so it reads as machinery rather than as part of the label —
+   the eye can skip it entirely on the hundredth press, which is what stops a
+   teaching device becoming clutter. It is the half of the vocabulary you
+   eventually have to type. */
+.gw-cmd {
+  margin-left: 7px;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.85em;
+  color: var(--text-faint);
+  opacity: 0.85;
+}
+
+button:disabled .gw-cmd {
+  opacity: 0.6;
+}
+
+/* The changes pane's file groups. A heading and a sentence, because a list
+   headed "Staged" tells you nothing you did not already fail to understand. */
+
+.diff-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 6px 2px;
+}
+
+.diff-group__title {
+  flex: 1;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+.diff-group__action {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.diff-group__action:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.diff-group__action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.diff-group__note {
+  padding: 0 6px 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* Wider than the list it replaced. The old one held a letter and a path; this
+   one holds two headings that are sentences, and at 220px "Not picked —
+   changed, and staying out" wrapped to three lines with the button beside it. */
+.diff-pane .diff-files {
+  width: 300px;
+}
+
+/* A file row is no longer one button: the tick and the name do different
+   things, and a checkbox nested in a button is a checkbox you cannot reach
+   with a keyboard. */
+.diff-files .diff-file {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 6px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.diff-files .diff-file.conflict {
+  background: rgba(209, 106, 99, 0.12);
+}
+
+.diff-tick {
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.diff-tick:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.diff-file .diff-file__name {
+  flex: 1;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* The end of a path is the useful end. */
+  direction: rtl;
+}
+
+/* One line above the diff saying which of the three places it is showing. Without
+   it, two identical-looking patches are indistinguishable and one of them is
+   going into the next save. */
+.diff-caption {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* The save box. Pinned to the bottom, because the three steps read downwards:
+   the files at the top left, what they contain in the middle, and what to do
+   with them at the bottom. */
+.diff-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.diff-message {
+  width: 100%;
+  resize: vertical;
+  min-height: 40px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.diff-message:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.diff-foot__buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.diff-foot__note {
+  flex: 1 1 100%;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+.diff-btn.primary:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.diff-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.diff-btn:disabled:hover {
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
+/* ------------------------------------------------------------- history pane */
+
+.history-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.history-where {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.history-where strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.history-where.detached {
+  color: var(--warn);
+}
+
+.history-band {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.history-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.history-note.ok {
+  color: var(--text-faint);
+}
+
+.history-note.warn {
+  color: var(--warn);
+}
+
+.history-warn {
+  color: var(--warn);
+}
+
+.history-note-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.history-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* The lines of saves, as chips. Horizontal rather than a left rail: this pane
+   is already two columns wide and a third would leave the picture too narrow
+   to be a picture. */
+.history-branches {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.history-branches__label {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.history-branch {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.history-branch:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.history-branch.current {
+  border-color: var(--accent);
+  color: var(--text);
+  cursor: default;
+}
+
+.history-branch.remote {
+  background: none;
+  border-style: dashed;
+}
+
+.history-branch:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.history-branch.new {
+  background: none;
+  border-style: dotted;
+  color: var(--text-faint);
+}
+
+.history-branch__counts {
+  color: var(--text-faint);
+  font-family: 'Cascadia Mono', Consolas, monospace;
+}
+
+.history-split {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.history-list {
+  flex: 1 1 55%;
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding: 2px 0;
+}
+
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 10px 0 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-row:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.history-row.active {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.history-graph {
+  flex: none;
+  display: block;
+  overflow: visible;
+}
+
+/* The picture's colours. Eight, cycling: enough that two lines running beside
+   each other are never the same colour, few enough that they stay distinct. */
+.history-line {
+  fill: none;
+  stroke-width: 1.6;
+}
+
+.history-dot {
+  stroke: var(--bg);
+  stroke-width: 1.5;
+}
+
+.lane-0 { stroke: #7aa2f7; }
+.lane-1 { stroke: #9ece6a; }
+.lane-2 { stroke: #e0af68; }
+.lane-3 { stroke: #bb9af7; }
+.lane-4 { stroke: #7dcfff; }
+.lane-5 { stroke: #f7768e; }
+.lane-6 { stroke: #b8bb9e; }
+.lane-7 { stroke: #ff9e64; }
+
+circle.lane-0 { fill: #7aa2f7; }
+circle.lane-1 { fill: #9ece6a; }
+circle.lane-2 { fill: #e0af68; }
+circle.lane-3 { fill: #bb9af7; }
+circle.lane-4 { fill: #7dcfff; }
+circle.lane-5 { fill: #f7768e; }
+circle.lane-6 { fill: #b8bb9e; }
+circle.lane-7 { fill: #ff9e64; }
+
+.history-overflow {
+  fill: var(--text-faint);
+  font-size: 11px;
+}
+
+.history-row__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+}
+
+.history-row__subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-ref {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.history-ref--head {
+  border-color: #7aa2f7;
+  color: #7aa2f7;
+}
+
+.history-ref--branch {
+  border-color: #9ece6a;
+  color: #9ece6a;
+}
+
+.history-ref--remote {
+  border-style: dashed;
+  color: var(--text-faint);
+}
+
+.history-ref--tag {
+  border-color: #e0af68;
+  color: #e0af68;
+}
+
+/* The one thing no other git client says out loud. */
+.history-unsent {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(224, 175, 104, 0.16);
+  color: var(--warn);
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.history-row__meta,
+.history-row__sha {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.history-row__sha {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+}
+
+.history-detail {
+  flex: 1 1 45%;
+  min-width: 0;
+  overflow: auto;
+}
+
+.history-detail__head {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-detail__subject {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.history-detail__who {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.history-detail__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.history-detail__body {
+  margin: 8px 0 0;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+}
+
+.history-detail__files {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ------------------------------------------------------------- the glossary */
+
+.glossary-panel {
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 96px);
+}
+
+.glossary-body {
+  overflow-y: auto;
+}
+
+.glossary-rule {
+  margin: 0 0 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.glossary-group {
+  margin-bottom: 18px;
+}
+
+.glossary-group h3 {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.glossary-note {
+  margin: 3px 0 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.glossary-row {
+  display: flex;
+  gap: 14px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.glossary-row.destroys .glossary-term code {
+  color: var(--danger);
+}
+
+.glossary-term {
+  flex: none;
+  width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.glossary-term code {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.glossary-plain {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.glossary-meaning {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  white-space: pre-wrap;
 }
 
 /* --------------------------------------------------------------- compare pane
@@ -3148,6 +3822,20 @@ thead .csv-cell {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #484f58;
+}
+
+/*
+ * The square where a horizontal and a vertical scrollbar meet.
+ *
+ * It is a separate pseudo-element from the track, and Chromium paints it the
+ * default *light* scheme's colour — white — no matter how dark the track above
+ * it is. Every pane that can scroll both ways was lighting a 10x10 white block
+ * in its bottom-right corner because of it. The resizer is the same story for
+ * anything with `resize:` set, and is cleared here for the same reason.
+ */
+::-webkit-scrollbar-corner,
+::-webkit-resizer {
+  background: transparent;
 }
 
 .xterm .xterm-viewport::-webkit-scrollbar-thumb {

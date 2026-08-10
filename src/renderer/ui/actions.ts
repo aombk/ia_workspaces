@@ -19,6 +19,11 @@ export interface UiActions {
   /** Focus this workspace's working-tree diff, opening it if it isn't already. */
   openDiff(workspaceId: string): void
   /**
+   * Focus this workspace's history — the picture of every save and the lines
+   * they sit on — opening it if it isn't already.
+   */
+  openHistory(workspaceId: string): void
+  /**
    * Open a compare tab. Files can be given, or dropped onto the pane after.
    *
    * Always a new tab: a compare is about one specific pair, so reusing an open

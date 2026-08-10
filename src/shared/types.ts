@@ -143,6 +143,7 @@ export const PANE_KINDS = [
   'search',
   'editor',
   'diff',
+  'history',
   'ports',
   'browser',
   'compare',
@@ -809,6 +810,135 @@ export interface Worktree {
   locked: boolean
   /** Git thinks the directory is gone. Still registered, still removable. */
   prunable: boolean
+}
+
+/**
+ * One changed file, as the changes pane needs it.
+ *
+ * `picked` and `changed` are deliberately separate rather than one status
+ * letter, because a file can be both at once: pick it, edit it again, and part
+ * of it is going into the next save while part of it is not. Git's own
+ * porcelain says this with two columns, and flattening them to one is how a
+ * changes pane ends up quietly lying about what is about to be saved.
+ */
+export interface ChangedFile {
+  /** Absolute path on disk. */
+  path: string
+  /** Path relative to the repository root, with forward slashes, as git says it. */
+  repoPath: string
+  /** What is picked (staged) for the next save: git's first porcelain letter. */
+  picked: GitChange
+  /** What is changed and *not* picked: git's second porcelain letter. */
+  changed: GitChange
+  /** Git has never been told about this file. */
+  untracked: boolean
+  /** Both sides changed the same lines, and git is waiting for an answer. */
+  conflicted: boolean
+  /** Where it came from, for a rename or a copy. */
+  from?: string
+}
+
+/**
+ * What happened to a file, in git's porcelain letters.
+ *
+ * Kept as git's own letters rather than translated here: this is data, the
+ * translation is presentation, and a pane that receives "M" can decide whether
+ * it has room for "changed" or only for one character.
+ */
+export type GitChange = '' | 'M' | 'A' | 'D' | 'R' | 'C' | 'T' | 'U' | '?'
+
+/** Where a repository stands: everything the panes' headline says. */
+export interface RepoStatus {
+  /** Absolute path of the repository root, or '' when this folder is not in one. */
+  root: string
+  /** The line of saves (branch) you are on, or undefined when off to one side. */
+  branch?: string
+  /** True when sitting on one save rather than on a branch — a detached HEAD. */
+  detached: boolean
+  /** The short number (hash) of the save you are on. */
+  head?: string
+  /** The branch on GitHub this one is paired with, like `origin/main`. */
+  upstream?: string
+  /** Saves you have that GitHub has not. */
+  ahead: number
+  /** Saves GitHub has that you have not. */
+  behind: number
+  /** Whether the repository has a copy elsewhere (a remote) at all. */
+  hasRemote: boolean
+  /** The URL of `origin`, shown so "GitHub" is never a guess. */
+  remoteUrl?: string
+  files: ChangedFile[]
+  /**
+   * The saves you have made that GitHub has not got, by full number (hash).
+   *
+   * The count alone would have done for the headline, but not for the picture:
+   * this is what lets the history pane mark the exact rows that exist only on
+   * this machine, which is the single most useful thing that pane can say and
+   * the one people most often get wrong about git.
+   */
+  unsent: string[]
+  /**
+   * A rebase, merge or cherry-pick that stopped part-way and is waiting.
+   *
+   * The panes refuse to save or send while this is set, because a save made in
+   * the middle of one of these means something different from an ordinary save
+   * and the buttons would be lying about what they do.
+   */
+  inProgress?: 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect'
+}
+
+/** One save (commit), as the history pane draws it. */
+export interface Commit {
+  sha: string
+  short: string
+  parents: string[]
+  subject: string
+  body: string
+  author: string
+  email: string
+  /** Epoch milliseconds, so the renderer can say "2 hours ago" itself. */
+  at: number
+  /** Branch names, tags and HEAD pointing at this save. */
+  refs: CommitRef[]
+}
+
+export interface CommitRef {
+  name: string
+  kind: 'head' | 'branch' | 'remote' | 'tag'
+}
+
+/** One line of saves (branch), local or on the copy elsewhere. */
+export interface Branch {
+  name: string
+  /** True for the one you are on. */
+  current: boolean
+  /** True for a branch that lives on GitHub rather than here. */
+  remote: boolean
+  upstream?: string
+  ahead: number
+  behind: number
+  /** The newest save on it, so the list can say when it was last touched. */
+  head?: string
+  at?: number
+  subject?: string
+  /** The folder a worktree has this branch checked out in, if one does. */
+  checkedOutAt?: string
+}
+
+/**
+ * What came back from an operation that changes something.
+ *
+ * `error` carries git's own message rather than one of ours — "contains
+ * modified or untracked files, use --force to delete it" is precisely what the
+ * user needs to read, and nothing we compose would beat it. `hint` is the
+ * plain-English sentence the pane adds *beside* it, never instead of it.
+ */
+export interface GitResult {
+  ok: boolean
+  error?: string
+  hint?: string
+  /** Anything git said on the way, shown when it is worth reading. */
+  output?: string
 }
 
 /** One agent whose hooks Settings can install, and whether they are in place. */

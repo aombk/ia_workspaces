@@ -418,3 +418,33 @@ export function hasQuirk(
 export function supportsBackdrop(p: PlatformKind): boolean {
   return p !== 'linux'
 }
+
+/**
+ * Where macOS puts its close/minimise/zoom buttons, and how much room to leave.
+ *
+ * `titleBarStyle: 'hidden'` keeps the traffic lights and composites them *over*
+ * the page rather than in it — the same arrangement Windows has with its
+ * caption buttons, and the same problem: content laid out at that corner ends
+ * up underneath them. Windows publishes the strip's geometry through
+ * `env(titlebar-area-*)` so the CSS can leave a hole that stays correct across
+ * DPI and resizes. macOS publishes nothing, because the buttons are a fixed
+ * size at a position the app itself chooses.
+ *
+ * So the app chooses it, here, once. The main process places the buttons and the
+ * renderer insets the bar by the same numbers; two hard-coded values in two
+ * files is exactly how a title bar comes to overlap its own title again.
+ *
+ * The three buttons are 12pt across and 20pt apart, centre to centre, which is
+ * fixed by the platform and not ours to change — so the group is 52pt wide from
+ * `x`, and `INSET` is where it is safe to start drawing.
+ */
+export const MAC_TRAFFIC_LIGHTS = {
+  /** Left edge of the leftmost button. */
+  x: 12,
+  /** Top edge. Centres the 12pt buttons in a 36px bar: (36 − 12) / 2. */
+  y: 12,
+  /** 12pt button + two 20pt steps. */
+  width: 52,
+  /** Where the bar's own content may begin: past the buttons, plus breathing room. */
+  inset: 76,
+} as const

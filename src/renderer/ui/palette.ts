@@ -12,6 +12,7 @@
 import { backend } from '../../backend'
 import { store, tabLabel } from '../state'
 import type { HistoryEntry, VaultEntry } from '../../shared/types'
+import { showGlossary } from './gitWord'
 import type { UiActions } from './actions'
 
 interface Command {
@@ -263,7 +264,7 @@ function collect(): Command[] {
       {
         kind: 'Action',
         label: 'Compare files…',
-        detail: 'Diff any two files',
+        detail: 'Diff any two files — Ctrl+Alt+D',
         run: () => void actions.openCompare(id),
       },
       {
@@ -289,6 +290,24 @@ function collect(): Command[] {
         label: 'Images',
         detail: 'Ctrl+Shift+G',
         run: () => actions.openImages(id),
+      },
+      {
+        kind: 'Action',
+        label: 'History',
+        detail: 'every save in this project, and the lines they sit on — Ctrl+Shift+H',
+        run: () => actions.openHistory(id),
+      },
+      {
+        kind: 'Action',
+        label: 'Running processes',
+        detail: 'what each pane is running, and what is holding a port — Ctrl+Shift+R',
+        run: () => actions.openPorts(id),
+      },
+      {
+        kind: 'Action',
+        label: 'Git words, in plain words',
+        detail: 'what staged, commit, origin, HEAD and the rest actually mean',
+        run: () => showGlossary(),
       },
       {
         kind: 'Action',

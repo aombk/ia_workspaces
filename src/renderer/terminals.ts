@@ -11,7 +11,8 @@ import { isEditing } from './ui/editing'
 import { FilesPane, type FilesPaneHooks } from './filesPane'
 import { ReaderPane, type ReaderPaneHooks } from './readerPane'
 import { EditorPane, type EditorPaneHooks } from './editorPane'
-import { DiffPane, diffRoot } from './diffPane'
+import { DiffPane, diffRoot, type DiffPaneHooks } from './diffPane'
+import { HistoryPane, historyRoot, type HistoryPaneHooks } from './historyPane'
 import { ComparePane } from './comparePane'
 import { SearchPane, type SearchPaneHooks } from './searchPane'
 import { PortsPane, type PortsPaneHooks } from './portsPane'
@@ -99,6 +100,8 @@ export class TerminalManager {
   private editorHooks: EditorPaneHooks | null = null
   private portsHooks: PortsPaneHooks | null = null
   private imagesHooks: ImagesPaneHooks | null = null
+  private diffHooks: DiffPaneHooks | null = null
+  private historyHooks: HistoryPaneHooks | null = null
   private searchHooks: SearchPaneHooks | null = null
   private paneHooks: PaneHooks | null = null
   /** Pane being dragged by its header, so drop targets know what to expect. */
@@ -280,9 +283,25 @@ export class TerminalManager {
       e.preventDefault()
       if (term.hasSelection()) {
         void this.copy(term).then(() => term.clearSelection())
-      } else {
-        void this.paste(paneId)
+        return
       }
+      // A program that has turned mouse reporting on has *already been sent
+      // this click* by xterm, before this listener ever runs. If it pastes on
+      // right-click — Claude Code does — the clipboard is in the pane before we
+      // decide to put it there, and ours lands as a second copy. That is the
+      // double paste, and it is why it only happens inside a full-screen
+      // program and never at a bare prompt.
+      //
+      // So the click belongs to whoever asked for it. This is what Windows
+      // Terminal does too: the application wins the mouse while it wants it.
+      //
+      // Shift is the override, and it is the same override every terminal has:
+      // a shifted mouse event is never reported to the program, so there is
+      // nothing to collide with and the pane can paste after all. That matters
+      // for the full-screen program that grabs the mouse and has no paste of
+      // its own — without it, right-click paste would simply vanish in there.
+      if (!e.shiftKey && term.modes.mouseTrackingMode !== 'none') return
+      void this.paste(term, paneId)
     })
 
     // Ctrl+wheel zooms, as in every browser and terminal.
@@ -365,7 +384,7 @@ export class TerminalManager {
       return false
     }
     if (pasteCombo) {
-      void this.paste(paneId)
+      void this.paste(term, paneId)
       return false
     }
 
@@ -380,14 +399,27 @@ export class TerminalManager {
         }
         return true // no selection: let SIGINT through
       }
-      // Ctrl+V and Shift+Insert are handled by the browser's own paste event,
-      // which xterm already listens for. Returning false only stops xterm
-      // sending the raw control character — pasting here as well would insert
-      // the clipboard twice.
-      if (e.ctrlKey && !e.shiftKey && e.code === 'KeyV') return false
+      // Ctrl+V and Shift+Insert used to be left to the browser's own paste
+      // event, which xterm already listens for. That event only ever carries
+      // *text*: with an image on the clipboard it fires empty and the paste
+      // silently does nothing, which is why a screenshot could not be pasted
+      // into a pane with the key everyone reaches for. They go through `paste`
+      // now, like every other route into it.
+      //
+      // `preventDefault` is what makes that safe — without it the browser
+      // raises its paste event too and the clipboard lands twice.
+      if (e.ctrlKey && !e.shiftKey && e.code === 'KeyV') {
+        e.preventDefault()
+        void this.paste(term, paneId)
+        return false
+      }
     }
 
-    if (e.shiftKey && e.code === 'Insert') return false
+    if (e.shiftKey && e.code === 'Insert') {
+      e.preventDefault()
+      void this.paste(term, paneId)
+      return false
+    }
     return true
   }
 
@@ -402,33 +434,61 @@ export class TerminalManager {
   }
 
   /**
-   * Paste, with an image on the clipboard becoming a file path.
+   * Paste, with an image on the clipboard becoming something the pane can use.
    *
-   * An agent cannot do anything with pixels sitting on the clipboard, but it
-   * can read a file. So a screenshot from Win+Shift+S, Print Screen or the
-   * Snipping Tool is written to a temp file and its path is typed into the
-   * pane — the same gesture as dropping an image into a chat, from any Windows
-   * capture tool.
+   * Text is text. An image is the interesting case, and there are two ways to
+   * hand one over:
+   *
+   * **The program reads the clipboard itself.** Every agent CLI worth the name
+   * does — Claude Code binds Ctrl+V to its own image paste and shells out to
+   * PowerShell for the bitmap, which is how a screenshot becomes an attachment
+   * rather than a filename. All it needs is to *see* the keystroke, so for a
+   * pane running an agent the raw `Ctrl+V` byte is forwarded and we get out of
+   * the way. This pane used to swallow that key, which is exactly why pasting
+   * a screenshot into an agent did nothing at all.
+   *
+   * **Otherwise, a path.** A plain shell has no idea what a bitmap is, so the
+   * image is written to a temp file and its path is typed in — the same
+   * gesture as dropping an image into a chat, from any Windows capture tool.
    */
-  private async paste(paneId: string): Promise<void> {
-    // Text first. It is the overwhelmingly common case and it is free, whereas
-    // asking the host for an image costs a round trip — and on some hosts
-    // a process spawn — that would otherwise be paid on every single paste.
+  private async paste(term: Terminal, paneId: string): Promise<void> {
+    // Through `term.paste`, never `pty.write`. The difference is bracketed
+    // paste: a shell that has turned it on expects pasted text wrapped in
+    // `ESC [200~ … ESC [201~`, which is how it knows to take the whole thing as
+    // one literal insertion. Written raw, the bytes arrive as if typed — so a
+    // two-line command pasted at a prompt *runs its first line*, and a TUI gets
+    // a burst of keystrokes rather than a paste.
+    //
+    // `term.paste` applies that wrapping, normalises the line endings, and
+    // emits through the same `onData` that carries typing, so it still reaches
+    // this pane's shell by the one path everything else uses.
     try {
       const text = await navigator.clipboard.readText()
+      // Text first. It is the overwhelmingly common case and it is free,
+      // whereas asking the host for an image costs a round trip — and on some
+      // hosts a process spawn — that would otherwise be paid on every paste.
       if (text) {
-        await backend().pty.write(paneId, text)
+        term.paste(text)
         return
       }
     } catch {
       /* clipboard can be denied; the image path may still work */
     }
 
+    // No text. An agent handles its own clipboard, and does it better than we
+    // can: it gets the pixels, where we could only ever get it a filename.
+    // Sent through `pty.write` rather than `term.paste`, because this is a
+    // keystroke and not a paste — bracketing it would hide it.
+    if (store.paneAgent(paneId)) {
+      void backend().pty.write(paneId, '\x16')
+      return
+    }
+
     try {
       const imagePath = await backend().pasteImage()
       // Quoted because a temp path can contain spaces, with a trailing space so
       // whatever the user types next doesn't run into it.
-      if (imagePath) await backend().pty.write(paneId, `"${imagePath}" `)
+      if (imagePath) term.paste(`"${imagePath}" `)
     } catch {
       /* nothing pasteable */
     }
@@ -544,6 +604,21 @@ export class TerminalManager {
   }
 
   /**
+   * Wired by the app shell once, so each git pane can reach the other.
+   *
+   * The two answer different halves of one question — what is different now,
+   * and what has happened — and each of them has a moment where the answer is
+   * in the other. A link rather than a merged pane: one pane doing both would
+   * be a pane where the buttons that change things sit next to four hundred
+   * rows of history, and the thing you are about to press would depend on where
+   * you last scrolled.
+   */
+  setGitHooks(diff: DiffPaneHooks, history: HistoryPaneHooks): void {
+    this.diffHooks = diff
+    this.historyHooks = history
+  }
+
+  /**
    * Mounts the non-shell pane for a state, making it if it isn't there yet.
    *
    * The dispatch lives here and nowhere else: a new pane kind is a case in this
@@ -561,7 +636,10 @@ export class TerminalManager {
         pane = new EditorPane(state.id, workspaceIdOf(state.id), this.editorHooks!)
         break
       case 'diff':
-        pane = new DiffPane(state.id, diffRoot(state.id))
+        pane = new DiffPane(state.id, diffRoot(state.id), this.diffHooks!)
+        break
+      case 'history':
+        pane = new HistoryPane(state.id, historyRoot(state.id), this.historyHooks!)
         break
       case 'compare':
         pane = new ComparePane(state.id)

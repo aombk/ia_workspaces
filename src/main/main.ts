@@ -10,6 +10,7 @@ import { Store } from './store'
 import { prepareIntegrationScript, listShells, listWslDistros, listSshHosts } from './shells'
 import { readClaudeSettings, setClaudeIntegration } from './claudeConfig'
 import { currentBranch } from './gitBranch'
+import * as git from './git'
 import { registerImageScheme, serveImages } from './imageProtocol'
 import {
   readDirectory,
@@ -57,7 +58,12 @@ import { SessionVault } from './vault'
 import { PidMap } from './pidMap'
 import { directoryFromArgv, isContextMenuInstalled, setContextMenu } from './explorerMenu'
 import { IPC } from '../shared/ipc'
-import { dataDir as platformDataDir, isWindows, platformKind } from '../shared/platform'
+import {
+  dataDir as platformDataDir,
+  isWindows,
+  platformKind,
+  MAC_TRAFFIC_LIGHTS,
+} from '../shared/platform'
 import { DEFAULT_THEME_ID, findInterfaceTheme, type InterfaceTheme } from '../shared/themes'
 import type { SpawnRequest } from '../shared/types'
 
@@ -486,6 +492,13 @@ function bootApp(): void {
       ...(transparentWindow && process.platform === 'win32'
         ? { frame: false }
         : { titleBarStyle: 'hidden' as const }),
+      // Placed rather than left to the default, so the renderer knows exactly
+      // how much of the bar's left end is spoken for — see `MAC_TRAFFIC_LIGHTS`.
+      // The default sits them for a full-height title bar and leaves them
+      // riding high in a 36px one.
+      ...(process.platform === 'darwin'
+        ? { trafficLightPosition: { x: MAC_TRAFFIC_LIGHTS.x, y: MAC_TRAFFIC_LIGHTS.y } }
+        : {}),
       ...(transparentWindow
         ? {}
         : { titleBarOverlay: { ...captionColors(), height: CAPTION_H } }),
@@ -621,6 +634,29 @@ function bootApp(): void {
       const root = await repoRoot(cwd)
       return root ? suggestWorktreeDir(root, branch) : null
     })
+    // The git panes. Every one of these is a thin forward: the module owns the
+    // decisions, including which of them are allowed to exist at all.
+    ipcMain.handle(IPC.gitRepoStatus, (_e, cwd: string) => git.repoStatus(cwd))
+    ipcMain.handle(IPC.gitHistory, (_e, cwd: string, limit?: number) => git.history(cwd, limit))
+    ipcMain.handle(IPC.gitBranches, (_e, cwd: string) => git.branches(cwd))
+    ipcMain.handle(
+      IPC.gitFileDiff,
+      (_e, cwd: string, repoPath: string, opts: { picked?: boolean; untracked?: boolean }) =>
+        git.fileDiff(cwd, repoPath, opts ?? {})
+    )
+    ipcMain.handle(IPC.gitPickedDiff, (_e, cwd: string) => git.pickedDiff(cwd))
+    ipcMain.handle(IPC.gitCommitDiff, (_e, cwd: string, sha: string, repoPath?: string) =>
+      git.commitDiff(cwd, sha, repoPath)
+    )
+    ipcMain.handle(IPC.gitCommitFiles, (_e, cwd: string, sha: string) => git.commitFiles(cwd, sha))
+    ipcMain.handle(IPC.gitPick, (_e, cwd: string, paths: string[]) => git.pick(cwd, paths ?? []))
+    ipcMain.handle(IPC.gitUnpick, (_e, cwd: string, paths: string[]) => git.unpick(cwd, paths ?? []))
+    ipcMain.handle(IPC.gitSave, (_e, cwd: string, message: string) => git.save(cwd, message))
+    ipcMain.handle(IPC.gitSend, (_e, cwd: string) => git.send(cwd))
+    ipcMain.handle(IPC.gitPeek, (_e, cwd: string) => git.peek(cwd))
+    ipcMain.handle(IPC.gitBringIn, (_e, cwd: string) => git.bringIn(cwd))
+    ipcMain.handle(IPC.gitGoTo, (_e, cwd: string, branch: string) => git.goTo(cwd, branch))
+    ipcMain.handle(IPC.gitStartBranch, (_e, cwd: string, name: string) => git.startBranch(cwd, name))
     ipcMain.handle(IPC.setAgentHooks, (_e, id: string, enabled: boolean) => {
       const spec = agentById(id)
       if (!spec) return { ok: false, error: `unknown agent: ${id}`, path: '' }

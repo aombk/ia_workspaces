@@ -84,9 +84,19 @@ has been tested with.
 
 - **A Changes tab** (`Ctrl+Shift+D`) — every uncommitted change in the
   workspace's repository, file list on the left and the diff on the right, with
-  the same status markers the file tree uses.
+  the same status markers the file tree uses. Tick the files you want and it
+  does the three steps: **pick**, **save**, **send**. See [Git, in plain
+  words](#git-in-plain-words).
 
-  ![The Changes tab](docs/screenshots/changes-pane.png)
+  ![The Changes tab](docs/screenshots/git-changes.png)
+
+- **A History tab** — every save in the project as the picture of it: a dot per
+  save, a coloured line per line of saves, forking where somebody started
+  something and rejoining where it came back. Pick a save to read its message
+  and its changed lines; the lines of saves are chips along the top, and
+  clicking one goes there. It marks the saves that are **only on this machine**.
+
+  ![The History tab](docs/screenshots/git-history.png)
 
 - **Themes** covering both the window chrome and the terminal, with a built-in
   editor: six presets (Graphite, Mono, Ember, Claude, Campbell, PowerShell
@@ -420,6 +430,113 @@ scheme streams the file instead, so decoding and caching are Chromium's and a
 60 MB panorama costs no more renderer memory than a thumbnail. The CSP gains
 that one scheme and nothing else.
 
+## Git, in plain words
+
+Two panes, answering the two different questions. **Changes** is "what is
+different right now, and how do I keep it". **History** is "what has happened,
+and where am I in it". Both speak the same way, and that is the point of them.
+
+### The three steps, kept as three
+
+```
+pick (stage)  →  save (commit)  →  send (push)
+```
+
+Each is its own motion behind its own gate, in that order. Tick the files to
+pick them; write a line and save; send when you mean to. There is no button that
+does two of them, deliberately: the whole confusion about git is that those
+three are three and not one — *picked* is not *saved*, and *saved* is not *on
+GitHub* — and a "Commit and push" button teaches the opposite of the only thing
+you have to understand.
+
+So the pane keeps them apart everywhere. Files are in two groups, **picked** and
+**not picked**, and a file can be in both at once — pick it, edit it again, and
+part of it is going into the next save while part of it is not, which is what
+git means by two status columns and what a single letter would quietly lie
+about. The diff pane shows one half at a time and says which. After a save the
+toast says GitHub has not got it yet.
+
+### Both languages, at the same time
+
+*Picked (staged) — going into the next save*. *Not picked (not staged)*. *8
+saves (commits)*. *You are on main (HEAD)*. *Lines of saves (branches)*. In
+brackets, in the heading, on screen — not in a tooltip. A word you have to hover
+for is a word you never learn; hovering is for the whole explanation, and there
+is a panel with all of them (**Words** in either pane's header, or "Git words,
+in plain words" in the palette).
+
+And every button carries the command it runs, dim and in monospace beside its
+label:
+
+| the button | what it runs |
+| --- | --- |
+| Pick all | `git add -A` |
+| Unpick all | `git reset` |
+| Save 2 picked files | `git commit` |
+| Send to GitHub | `git push` |
+| Bring in GitHub's saves | `git pull --rebase` |
+| Peek at GitHub | `git fetch` |
+| + new line of saves | `git switch -c` |
+
+That is the half of the vocabulary you eventually have to type, and there is
+exactly one moment you are guaranteed to care what `git commit` means: the
+moment you are about to press the button that does it. `git_ia` does the same
+thing at the prompt — print the command, then ask.
+
+One rule, and it is the rule that makes the difference: **never explain jargon
+with jargon.** Every git word appearing inside another word's explanation is
+itself translated on the spot, because a glossary that defines "commit" in terms
+of "the index" is a closed loop with extra steps.
+
+The alternative was to hide git's vocabulary behind friendly buttons, which is
+what most git clients do, and it produces somebody who can use that one client
+and cannot read a single sentence git prints or follow a single answer online.
+The vocabulary is [`git_ia`](https://github.com/aombk/git_ia)'s.
+
+### The picture
+
+A dot per save, a coloured line per line of saves, worked out from which saves
+came before which — the shape is not stored anywhere, so it has to be derived
+(`src/shared/gitGraph.ts`, which is arithmetic and has its own tests). A line
+that splits is somebody starting from where you were; two lines meeting is that
+work coming back. Nobody has to be told that, which is why every git client
+draws it.
+
+What this one adds is the badge: **this machine only**, on every save that is on
+no line GitHub has. Not "ahead of my upstream" — a save on a branch you are not
+standing on is just as absent, and the count in the headline would never mention
+it. "Have I actually sent this" is the thing people get wrong about git more
+than anything else, and no client answers it out loud.
+
+### When git says no
+
+The plain sentence and git's own message, together, never one instead of the
+other. A refused push explains that GitHub has saves you do not, that pushing
+would mean GitHub throwing its own away, that git is protecting you, that
+nothing is lost, and what to do next. Missing credentials, an unset name and
+email, a conflict, a branch that would be overwritten, a stopped rebase and a
+lock held by another git process get the same.
+
+Git's text stays because it is the text that matches every answer written about
+it anywhere. A pane that hides it is a dead end.
+
+### What these panes will not do
+
+No discard, no undo of a save, no `reset --hard`, no force push, no deleting a
+branch. The worst outcome of any button here is a save you did not mean to
+make — which you can then undo. That is a deliberate ceiling: a pane you can
+press every button in without fear is worth more than a complete one, and the
+operations that bin work are one pane away in a terminal, where they read as
+what they are.
+
+Both panes also refuse while a rebase or a merge has stopped part-way, and say
+so. A save made in the middle of one of those means something other than what
+the button says.
+
+Git runs with `GIT_TERMINAL_PROMPT=0`, so it can never stop and ask a process
+with no terminal behind it for a password — it fails immediately and the pane
+explains that it needs you to sign in once from the shell beside it.
+
 ## Knowing which pane needs you
 
 Six signals feed one alert pipeline, and they answer two different questions.
@@ -678,9 +795,18 @@ uses. Two things follow, and both are worth knowing before they surprise you:
 - **It holds that executable open**, so an installer cannot replace it. Quitting
   the app is no longer enough to release the file.
 
+Giving it a binary of its own was tried and undone. A separate `node.exe` would
+have to be shipped for it — 81MB, paid by everyone, whether or not they keep
+sessions running — and it moved the lock rather than removing it: the broker
+would hold *its* executable and the ConPTY binaries beside it, so an install
+still could not replace the folder. The installer stops the broker instead,
+which is the only thing that actually clears the way, and it works whichever
+binary the broker happens to be.
+
 So it leaves quickly when it has nothing to hold — a few seconds after the last
 window closes, rather than the five minutes it waits when sessions are running.
-When you *do* have shells running and want to install an update anyway:
+The installer runs `iaw host stop` before it writes anything, so an update over
+a running broker is not something you have to think about. By hand:
 
 ```bash
 iaw host          # what is it, and what is it holding
@@ -769,6 +895,9 @@ different things can still lose one.
 | `Ctrl` `Shift` `B` | browser pane |
 | `Ctrl` `Shift` `E` | file tree |
 | `Ctrl` `Shift` `G` | images |
+| `Ctrl` `Shift` `H` | history — every save in this project |
+| `Ctrl` `Shift` `R` | running processes and the ports they hold |
+| `Ctrl` `Alt` `D` | compare any two files |
 | `F2` / `Shift` `F2` | rename tab / workspace |
 | `Ctrl` `Alt` `H` | commands you have typed before |
 | `Ctrl` `Alt` `V` | transcripts of panes you have closed |
@@ -780,7 +909,7 @@ different things can still lose one.
 | `Ctrl` `,` | settings |
 | `Ctrl` `+` / `-` / `0` | font size |
 | `Ctrl` `C` | copy when text is selected, otherwise interrupt |
-| `Ctrl` `V`, `Shift` `Insert` | paste |
+| `Ctrl` `V`, `Shift` `Insert` | paste — an image goes to the agent, or lands as a file path |
 
 On macOS, Command replaces Control everywhere except inside the terminal, where
 `Ctrl+C` stays an interrupt and `Cmd+C` copies.

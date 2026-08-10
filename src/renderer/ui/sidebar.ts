@@ -385,7 +385,13 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
       onClick: () => actions.openDiff(workspaceId),
     },
     {
+      label: 'History',
+      shortcut: 'Ctrl+Shift+H',
+      onClick: () => actions.openHistory(workspaceId),
+    },
+    {
       label: 'Compare files…',
+      shortcut: 'Ctrl+Alt+D',
       onClick: () => void actions.openCompare(workspaceId),
     },
     {
@@ -400,6 +406,7 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
     },
     {
       label: 'Running processes',
+      shortcut: 'Ctrl+Shift+R',
       onClick: () => actions.openPorts(workspaceId),
     },
     // Only where a host can actually show a web page. A menu entry that opens

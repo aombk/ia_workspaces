@@ -22,6 +22,11 @@ import type {
   Worktree,
   SessionHostInfo,
   UsageReport,
+  RepoStatus,
+  Commit,
+  Branch,
+  ChangedFile,
+  GitResult,
 } from '../shared/types'
 
 /**
@@ -113,6 +118,35 @@ const api = {
     ipcRenderer.invoke(IPC.worktreeRemove, cwd, dir, force),
   worktreeSuggest: (cwd: string, branch: string): Promise<string | null> =>
     ipcRenderer.invoke(IPC.worktreeSuggest, cwd, branch),
+  /**
+   * The git panes' whole surface.
+   *
+   * Grouped rather than flat, unlike the older `gitStatus`/`gitDiff` pair beside
+   * it, because there are fifteen of these and a flat namespace of
+   * `gitSomething` reads like a pile rather than like one feature.
+   */
+  git: {
+    repoStatus: (cwd: string): Promise<RepoStatus> => ipcRenderer.invoke(IPC.gitRepoStatus, cwd),
+    history: (cwd: string, limit?: number): Promise<Commit[]> =>
+      ipcRenderer.invoke(IPC.gitHistory, cwd, limit),
+    branches: (cwd: string): Promise<Branch[]> => ipcRenderer.invoke(IPC.gitBranches, cwd),
+    fileDiff: (cwd: string, repoPath: string, opts: { picked?: boolean; untracked?: boolean }): Promise<string> =>
+      ipcRenderer.invoke(IPC.gitFileDiff, cwd, repoPath, opts),
+    pickedDiff: (cwd: string): Promise<string> => ipcRenderer.invoke(IPC.gitPickedDiff, cwd),
+    commitDiff: (cwd: string, sha: string, repoPath?: string): Promise<string> =>
+      ipcRenderer.invoke(IPC.gitCommitDiff, cwd, sha, repoPath),
+    commitFiles: (cwd: string, sha: string): Promise<ChangedFile[]> =>
+      ipcRenderer.invoke(IPC.gitCommitFiles, cwd, sha),
+    pick: (cwd: string, paths: string[]): Promise<GitResult> => ipcRenderer.invoke(IPC.gitPick, cwd, paths),
+    unpick: (cwd: string, paths: string[]): Promise<GitResult> => ipcRenderer.invoke(IPC.gitUnpick, cwd, paths),
+    save: (cwd: string, message: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitSave, cwd, message),
+    send: (cwd: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitSend, cwd),
+    peek: (cwd: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitPeek, cwd),
+    bringIn: (cwd: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitBringIn, cwd),
+    goTo: (cwd: string, branch: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitGoTo, cwd, branch),
+    startBranch: (cwd: string, name: string): Promise<GitResult> =>
+      ipcRenderer.invoke(IPC.gitStartBranch, cwd, name),
+  },
   setAgentHooks: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string; path: string }> =>
     ipcRenderer.invoke(IPC.setAgentHooks, id, enabled),
   wslDistros: (): Promise<string[]> => ipcRenderer.invoke(IPC.wslDistros),

@@ -20,6 +20,11 @@ import type {
   Worktree,
   HistoryEntry,
   VaultEntry,
+  RepoStatus,
+  Commit,
+  Branch,
+  ChangedFile,
+  GitResult,
 } from '../shared/types'
 
 /**
@@ -251,6 +256,45 @@ export interface Backend {
     remove(cwd: string, dir: string, force: boolean): Promise<{ ok: boolean; error?: string }>
     /** A sibling folder named for the branch, or null outside a repository. */
     suggest(cwd: string, branch: string): Promise<string | null>
+  }
+
+  /**
+   * The git panes' surface: reading where a repository stands, and the three
+   * steps that move work along it.
+   *
+   * Separate from the older `gitStatus` and `gitDiff` above, which stay because
+   * the file tree's change markers and the compare pane want exactly what they
+   * already return and nothing more. What is here is what a pane offering to
+   * *change* something needs: staged and unstaged told apart, ahead and behind
+   * counted, and every operation reporting git's own message when it says no.
+   *
+   * Nothing in here can destroy work. There is no discard, no hard reset and no
+   * force push, deliberately — see `src/main/git.ts`.
+   */
+  git: {
+    /** Branch, ahead/behind, and every changed file, from one call. */
+    repoStatus(cwd: string): Promise<RepoStatus>
+    /** Saves across every branch, newest first, for the picture. */
+    history(cwd: string, limit?: number): Promise<Commit[]>
+    branches(cwd: string): Promise<Branch[]>
+    /** One file's changed lines, from whichever of the three places it is in. */
+    fileDiff(cwd: string, repoPath: string, opts: { picked?: boolean; untracked?: boolean }): Promise<string>
+    /** Everything picked, as one patch: exactly what the next save will hold. */
+    pickedDiff(cwd: string): Promise<string>
+    commitDiff(cwd: string, sha: string, repoPath?: string): Promise<string>
+    commitFiles(cwd: string, sha: string): Promise<ChangedFile[]>
+    /** Picks files for the next save. Empty picks everything changed. */
+    pick(cwd: string, paths: string[]): Promise<GitResult>
+    /** Takes them back out. Never touches a file on disk. */
+    unpick(cwd: string, paths: string[]): Promise<GitResult>
+    save(cwd: string, message: string): Promise<GitResult>
+    /** The one operation that leaves this machine. */
+    send(cwd: string): Promise<GitResult>
+    /** Looks at what is new on GitHub without touching anything here. */
+    peek(cwd: string): Promise<GitResult>
+    bringIn(cwd: string): Promise<GitResult>
+    goTo(cwd: string, branch: string): Promise<GitResult>
+    startBranch(cwd: string, name: string): Promise<GitResult>
   }
 
   agents: {

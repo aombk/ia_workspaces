@@ -56,9 +56,10 @@ the session host
 
   Shells outlive the app because a small background process owns them. It is
   this app's own executable re-run as Node, so it shows up under the same name
-  and holds that file open — which is what stops an installer replacing it.
-  It exits by itself once it holds nothing; stop it by hand when you want to
-  install an update without waiting.
+  and holds that file open — which is what would stop an installer replacing
+  it, and is why the installer runs "iaw host stop" itself before it writes
+  anything. It also exits by itself once it holds nothing. Stopping it by hand
+  is for the times you want it gone now.
 
 reaching another machine's instance
   iaw bridge [--port N]                 relay this app's control channel onto

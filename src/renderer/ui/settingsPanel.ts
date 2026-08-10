@@ -12,6 +12,15 @@ import type { ShellProfile, Settings, SoundName } from '../../shared/types'
 let onChange: (() => void) | null = null
 let shells: ShellProfile[] = []
 
+/**
+ * What the search box holds, kept outside the render.
+ *
+ * The panel rebuilds itself whenever a theme is edited, and a filter that
+ * vanished every time you changed a colour would be worse than no filter. It is
+ * cleared when the panel is opened, not when it is redrawn.
+ */
+let query = ''
+
 export function initSettingsPanel(cb: () => void): void {
   onChange = cb
   document.getElementById('overlay')!.addEventListener('click', closeSettings)
@@ -23,9 +32,14 @@ export function isSettingsOpen(): boolean {
 
 export async function openSettings(): Promise<void> {
   shells = await backend().listShells()
+  query = ''
   document.getElementById('overlay')!.hidden = false
   document.getElementById('settings-panel')!.hidden = false
   await render()
+  // Focused on open, so the panel can be driven by typing what you came for.
+  // Only here — `refreshSettings` redraws under a theme edit, and stealing the
+  // caret mid-edit would be its own bug.
+  document.querySelector<HTMLInputElement>('.settings-search')?.focus()
 }
 
 export function closeSettings(): void {
@@ -209,6 +223,98 @@ function wireWheel(panel: HTMLElement): void {
   )
 }
 
+// -------------------------------------------------------------------- search
+
+/**
+ * Applied rather than `hidden`, because `.field` sets `display: flex` and an
+ * author rule beats the `[hidden]` the browser's own stylesheet provides.
+ */
+const FILTERED = 'settings-filtered-out'
+
+function searchBox(): HTMLElement {
+  const input = document.createElement('input')
+  input.type = 'search'
+  input.className = 'settings-search'
+  input.placeholder = 'Search settings'
+  input.value = query
+  input.spellcheck = false
+  input.setAttribute('aria-label', 'Search settings')
+  input.addEventListener('input', () => applyFilter(input.value))
+  return input
+}
+
+/**
+ * Empties the search box, and says whether there was anything in it.
+ *
+ * Escape clears the filter before it closes the panel — a mistyped search
+ * should cost one key rather than a reopen. It cannot be a listener on the box:
+ * the app reads Escape in the capture phase at the window, so nothing inside
+ * the panel ever gets the chance to claim it. The app's handler asks this
+ * first instead, and closes only when the answer is that there was nothing to
+ * clear.
+ */
+export function clearSettingsSearch(): boolean {
+  const input = document.querySelector<HTMLInputElement>('.settings-search')
+  if (!input?.value) return false
+  input.value = ''
+  applyFilter('')
+  return true
+}
+
+/**
+ * Every word a row can be found by.
+ *
+ * `textContent` covers the label, the hint and the text of every option in a
+ * dropdown. It does not cover what is *typed* into a box — an input's value is
+ * a property and not a child node — so the fields are read as well, which is
+ * what makes the custom shell command or the notification sound findable by
+ * what they are currently set to rather than only by what they are called.
+ */
+function haystack(el: Element): string {
+  const parts = [el.textContent ?? '']
+  for (const input of el.querySelectorAll<HTMLInputElement>('input')) {
+    parts.push(input.value, input.placeholder)
+  }
+  return parts.join(' ').toLowerCase()
+}
+
+/**
+ * Narrows the panel to the rows that match, in place.
+ *
+ * A section heading matches on behalf of everything under it: typing
+ * "notifications" is a request for that whole group, not for the one row that
+ * happens to repeat the word. Sections left with nothing showing are hidden
+ * outright, so the result reads as a short list rather than a page of headings.
+ */
+function applyFilter(next: string): void {
+  query = next
+  const body = document.querySelector('.settings-body')
+  if (!body) return
+
+  const needle = query.trim().toLowerCase()
+  let shown = 0
+
+  for (const sec of body.querySelectorAll<HTMLElement>('.settings-section')) {
+    const heading = sec.querySelector('h3')?.textContent?.toLowerCase() ?? ''
+    const wholeSection = !needle || heading.includes(needle)
+    let hits = 0
+    for (const row of sec.children) {
+      if (row.tagName === 'H3') continue
+      const match = wholeSection || haystack(row).includes(needle)
+      row.classList.toggle(FILTERED, !match)
+      if (match) hits++
+    }
+    sec.classList.toggle(FILTERED, hits === 0)
+    shown += hits
+  }
+
+  const empty = body.querySelector<HTMLElement>('.settings-empty')
+  if (empty) {
+    empty.classList.toggle(FILTERED, shown > 0)
+    empty.textContent = `Nothing in Settings matches “${query.trim()}”.`
+  }
+}
+
 async function render(): Promise<void> {
   const panel = document.getElementById('settings-panel')!
   const s = store.settings
@@ -224,7 +330,7 @@ async function render(): Promise<void> {
   head.className = 'settings-head'
   const h2 = document.createElement('h2')
   h2.textContent = 'Settings'
-  head.append(h2, button('Done', closeSettings, true))
+  head.append(h2, searchBox(), button('Done', closeSettings, true))
   panel.appendChild(head)
 
   const body = document.createElement('div')
@@ -496,6 +602,16 @@ async function render(): Promise<void> {
   body.appendChild(section('Claude Code', await claudeSection()))
   body.appendChild(section('Other agents', await agentsSection()))
   body.appendChild(section('About', await aboutSection()))
+
+  // Built with the rest of the panel and hidden until it is needed, so the
+  // filter never has to create anything on a keystroke.
+  const empty = document.createElement('div')
+  empty.className = `settings-empty ${FILTERED}`
+  body.appendChild(empty)
+
+  // The panel has just been rebuilt, so whatever was being searched for has to
+  // be re-applied to the new rows.
+  applyFilter(query)
   panel.scrollTop = scroll
 }
 

@@ -952,7 +952,13 @@ export class EditorPane implements AuxPane {
       this.openFind(false)
       return
     }
-    if (ctrl && key === 'h') {
+    // Unshifted, and it matters. The app's global handler runs in the capture
+    // phase at the window, so a shortcut it claims has already fired by the
+    // time this sees the key — and this pane is a contenteditable div rather
+    // than a textarea, which is what `isTypingInField` looks for, so nothing
+    // upstream holds the key back on our behalf. Ctrl+Shift+H is the project's
+    // history there; leaving Shift unchecked here would open both.
+    if (ctrl && !e.shiftKey && key === 'h') {
       take()
       this.openFind(true)
       return
