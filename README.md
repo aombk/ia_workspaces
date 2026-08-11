@@ -189,7 +189,7 @@ set SKIP_INSTALLER=1         :: portable only, for fast iteration
 ```
 
 ```bash
-./build_macos.sh             # signs, notarizes and staples a .dmg, plus a .pkg
+./build_macos.sh             # signs, notarizes and staples a universal .dmg, plus a .pkg
 ./build_macos.sh --test      # unsigned, for this machine only
 ./build_linux.sh             # AppImage, plus a tar.gz with an install script
 ```
@@ -266,8 +266,8 @@ out/                  every intermediate — safe to delete at any time
 build/                the only folder with finished artifacts
   ia_workspaces.exe            ~90 MB, portable     (Windows)
   ia_workspaces-setup.exe      ~100 MB, installer   (Windows)
-  ia_workspaces.dmg            signed and notarized (macOS)
-  ia_workspaces.pkg            installer            (macOS)
+  ia_workspaces.dmg            ~240 MB, universal, signed and notarized (macOS)
+  ia_workspaces.pkg            ~240 MB, universal, installer            (macOS)
   ia_workspaces.AppImage       portable             (Linux)
   ia_workspaces-linux.tar.gz   installer            (Linux)
 ```

@@ -38,17 +38,16 @@ const installerDir = path.join(root, 'out', 'installer')
 /**
  * Which .dmg to collect, of the several a mac build may have made.
  *
- * The mac target is built per architecture and electron-builder names only the
- * non-default one — arm64 gets a `-arm64` suffix, x64 gets none — so the
- * obvious `ia_workspaces-${version}.dmg` is specifically the *Intel* build.
- * Collecting that on an Apple Silicon machine hands you something that runs
- * under Rosetta, which is not what "the one file you would actually run" means,
- * and it silently threw away the arm64 build that was sitting right beside it.
- *
- * Host architecture rather than a fixed choice, because this is the portable
- * deliverable: the artifact whose whole point is that you double-click it on
- * the machine in front of you. A universal build wins outright when there is
- * one, since it is the right answer everywhere.
+ * The mac target builds `universal`, so `-universal.dmg` is the answer and it
+ * is right on every machine. The per-architecture names are kept behind it
+ * because an older staging tree may still hold them, and because getting this
+ * wrong is silent: electron-builder names only the non-default architecture —
+ * arm64 gets a `-arm64` suffix, x64 gets none — so the obvious
+ * `ia_workspaces-${version}.dmg` is specifically the *Intel* build. Collecting
+ * that on an Apple Silicon machine hands you something that runs under Rosetta,
+ * which is not what "the one file you would actually run" means, and it threw
+ * away the arm64 build sitting right beside it. Hence host architecture, not a
+ * fixed choice, among the fallbacks.
  */
 function macDmg() {
   const candidates = [

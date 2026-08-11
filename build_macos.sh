@@ -4,9 +4,13 @@
 # =============================================================================
 #
 # Output:
-#   build/ia_workspaces.dmg
+#   build/ia_workspaces.dmg   drag-to-Applications disk image
+#   build/ia_workspaces.pkg   installer with a destination page
 #
-# By default this produces a SIGNED, NOTARIZED and STAPLED .dmg: Developer ID
+# Both are universal binaries — one artifact that runs natively on Apple
+# Silicon and Intel — so there is nothing to pick between at download time.
+#
+# By default this produces SIGNED, NOTARIZED and STAPLED artifacts: Developer ID
 # Application, hardened runtime, then `xcrun notarytool submit --wait` and
 # `stapler staple`.
 #
@@ -61,7 +65,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-sign|--test) DO_SIGN=0; shift ;;
     --clean)          DO_CLEAN=1; shift ;;
-    -h|--help)        sed -n '2,39p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,43p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -171,8 +175,21 @@ npm test || fail "tests failed — fix them before building a release"
 echo "[*] bundling"
 node build.mjs || fail "bundle failed"
 
-echo "[*] packaging (one dmg per architecture; collect takes this machine's)"
+# Before packaging, not before the tests: this only matters to what gets packed,
+# and npm prunes the foreign-architecture prebuild on every install — so doing it
+# here means the last word belongs to this script rather than to whichever npm
+# command ran most recently.
+echo "[*] node-pty prebuilds (universal needs both architectures)"
+node tools/ensurePtyArches.mjs || fail "could not assemble the node-pty prebuilds"
+
+echo "[*] packaging (universal dmg — runs on Apple Silicon and Intel)"
 npx electron-builder --mac || fail "packaging failed"
+
+# Before the .pkg is cut and long before anything is notarized, because both of
+# those would happily wrap a bundle that only runs on this machine's
+# architecture. See the file for what goes wrong without it.
+echo "[*] verifying the bundle is universal"
+node tools/verifyUniversal.mjs || fail "the packaged app is not universal — see above; do not ship this build"
 
 # ---------------------------------------------------------------- installer
 # A .pkg beside the .dmg, and they are not the same offer. A disk image asks you
@@ -185,11 +202,13 @@ npx electron-builder --mac || fail "packaging failed"
 # destination page. Both are skipped rather than fatal if the .app is missing,
 # because a --dir run has not produced one.
 #
-# Host architecture first among the single-arch builds, and for the same reason
+# The universal build first, which is what the mac target now produces and is
+# right on every machine. The per-architecture directories are kept as fallbacks
+# because they are still what a `--dir` run or an older staging tree leaves
+# behind, and host architecture is preferred among them for the same reason
 # tools/collect.mjs picks the .dmg that way: both artifacts are made in one run
 # from one staging directory, and a fixed order would have them disagree — an
-# arm64 .pkg beside an Intel .dmg, which is what this used to produce. A
-# universal build wins outright, being right on every machine.
+# arm64 .pkg beside an Intel .dmg, which is what this used to produce.
 APP_BUNDLE=""
 case "$(uname -m)" in
   arm64) NATIVE_DIR="mac-arm64"; OTHER_DIR="mac" ;;
