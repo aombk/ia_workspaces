@@ -231,8 +231,18 @@ function bootApp(): void {
    * 2px window corner is indistinguishable from a sharp one at the scale
    * Windows draws it, and asking for a restart to deliver nothing visible would
    * be a worse trade than leaving the frame alone.
+   *
+   * Windows only, and the `win32` check is the whole point of it. `roundedCorners`
+   * is documented as being about corners, but on macOS turning it off also takes
+   * the close/minimise/zoom buttons with it — the window comes up with no controls
+   * at all, and the only way back is the keyboard or the Dock. Verified rather than
+   * inferred: two windows identical but for this flag, and only the rounded one
+   * had traffic lights. Square corners are a Windows 11 problem in the first
+   * place — nothing on macOS rounds a frame the app did not ask to be rounded —
+   * so there was never anything here for the Mac to gain in exchange.
    */
   function wantsSquareWindow(): boolean {
+    if (process.platform !== 'win32') return false
     const settings = (store.state as { settings?: Record<string, unknown> } | null)?.settings
     if (!settings) return false
     const themes = (settings.customThemes ?? []) as { id: string; roundness?: string }[]

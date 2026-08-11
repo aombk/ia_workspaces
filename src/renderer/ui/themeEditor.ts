@@ -377,8 +377,16 @@ function shapeGroup(theme: InterfaceTheme): HTMLElement {
   section.appendChild(
     selectField(
       'Corner rounding',
-      'Panels, menus, dialogs and scrollbars. Square also squares the window itself, ' +
-        'which takes effect next time the app starts.',
+      // The window half of this is Windows-only, so the hint has to be too —
+      // see `wantsSquareWindow` in main.ts. Promising a square frame on a Mac
+      // and not delivering one reads as the setting being broken, and the
+      // reason it is not delivered (the traffic lights go with it) is not
+      // something anyone would guess from "Corner rounding".
+      backend().capabilities.platform === 'windows'
+        ? 'Panels, menus, dialogs and scrollbars. Square also squares the window itself, ' +
+            'which takes effect next time the app starts.'
+        : 'Panels, menus, dialogs and scrollbars. The window frame is the ' +
+            "system's own here and keeps its own corners.",
       [
         ['full', 'Full'],
         ['subtle', 'Subtle'],

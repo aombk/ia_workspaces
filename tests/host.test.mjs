@@ -440,16 +440,18 @@ console.log('End to end over a socket')
     c.close()
   })
 
-  await checkAsync('attach resolves before its backlog is delivered', async () => {
-    // Written to confirm the opposite, and it disproved it — which is why it
-    // stays. The reply and the backlog are two writes and arrive in two reads,
-    // so the attach continuation runs first and the backlog lands afterwards.
+  await checkAsync('the backlog arrives exactly once, whenever it arrives', async () => {
+    // The reply and the backlog are two writes, and whether they arrive in one
+    // read or two is the OS's choice — a named pipe on Windows splits them and
+    // the attach continuation runs first; a unix socket on macOS coalesces them
+    // and the backlog is already in hand by then. Both were observed, which is
+    // why this asserts only what is actually guaranteed: it arrives, and it
+    // arrives once.
     //
-    // The point is that neither order may be *relied upon*: it depends on how
-    // the OS chooses to coalesce two writes, which differs by transport and by
-    // payload size. So nothing downstream decides anything in that
-    // continuation — PtyManager settles a reattached pane's `claude --resume`
-    // line before it attaches at all, where no delivery timing can reach it.
+    // So no order may be relied upon downstream, and none is — PtyManager
+    // settles a reattached pane's `claude --resume` line before it attaches at
+    // all, where no delivery timing can reach it. That is the property this
+    // check exists to protect; the timing itself is not ours to pin down.
     const c = await connect()
     await c.send({ t: 'hello', token: token(), protocol: P.PROTOCOL_VERSION })
     await c.send({
@@ -462,9 +464,10 @@ console.log('End to end over a socket')
     // Read immediately in the continuation — no settle, no timer.
     const atResolve = c.data.filter((d) => d.kind === 'backlog' && d.id === 'p-order').length
     await settle()
-    const later = c.data.filter((d) => d.kind === 'backlog' && d.id === 'p-order').length
-    assert.equal(atResolve, 0, 'not yet delivered when attach resolves')
-    assert.equal(later, 1, 'but it does arrive')
+    const backlog = c.data.filter((d) => d.kind === 'backlog' && d.id === 'p-order')
+    assert.ok(atResolve <= 1, 'never more than the one backlog, however it is coalesced')
+    assert.equal(backlog.length, 1, 'and it does arrive, exactly once')
+    assert.equal(backlog[0].text, 'REPLAYED-PROMPT')
     // Tidied up, or the session-count assertions further down see two.
     await c.send({ t: 'kill', id: 'p-order' })
     c.close()

@@ -12,7 +12,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { build } from 'esbuild'
 
-const out = path.join(os.tmpdir(), 'iaw-worktree-test')
+// Resolved, because on macOS the temp folder is reached through a symlink
+// (/var -> /private/var) and git always reports the path it really is. Testing
+// against the unresolved name compares a symlink to its target and fails there
+// and nowhere else.
+const out = path.join(fs.realpathSync(os.tmpdir()), 'iaw-worktree-test')
 fs.rmSync(out, { recursive: true, force: true })
 fs.mkdirSync(out, { recursive: true })
 

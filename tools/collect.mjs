@@ -36,6 +36,36 @@ const { version } = JSON.parse(readFileSync(path.join(root, 'package.json'), 'ut
 const installerDir = path.join(root, 'out', 'installer')
 
 /**
+ * Which .dmg to collect, of the several a mac build may have made.
+ *
+ * The mac target is built per architecture and electron-builder names only the
+ * non-default one — arm64 gets a `-arm64` suffix, x64 gets none — so the
+ * obvious `ia_workspaces-${version}.dmg` is specifically the *Intel* build.
+ * Collecting that on an Apple Silicon machine hands you something that runs
+ * under Rosetta, which is not what "the one file you would actually run" means,
+ * and it silently threw away the arm64 build that was sitting right beside it.
+ *
+ * Host architecture rather than a fixed choice, because this is the portable
+ * deliverable: the artifact whose whole point is that you double-click it on
+ * the machine in front of you. A universal build wins outright when there is
+ * one, since it is the right answer everywhere.
+ */
+function macDmg() {
+  const candidates = [
+    `ia_workspaces-${version}-universal.dmg`,
+    ...(process.arch === 'arm64' ? [`ia_workspaces-${version}-arm64.dmg`] : []),
+    `ia_workspaces-${version}.dmg`,
+  ]
+  for (const name of candidates) {
+    const full = path.join(electronPack, name)
+    if (existsSync(full)) return full
+  }
+  // Nothing built. Named anyway so the miss is reported against the file the
+  // build was meant to produce rather than against an empty string.
+  return path.join(electronPack, candidates[candidates.length - 1])
+}
+
+/**
  * What each platform's toolchain produces, and what to call it here.
  *
  * Two per platform now, and they are not alternatives. The **portable** build
@@ -58,7 +88,7 @@ const ARTIFACTS = {
     [path.join(installerDir, 'ia_workspaces-setup.exe'), 'ia_workspaces-setup.exe'],
   ],
   darwin: [
-    [path.join(electronPack, `ia_workspaces-${version}.dmg`), 'ia_workspaces.dmg'],
+    [macDmg(), 'ia_workspaces.dmg'],
     [path.join(installerDir, 'ia_workspaces.pkg'), 'ia_workspaces.pkg'],
   ],
   linux: [
