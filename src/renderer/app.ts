@@ -43,6 +43,7 @@ import {
 } from './ui/palette'
 import { isNavigation, isPrimary } from './ui/keys'
 import { fallbackCwd, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
+import { isWslPath } from '../shared/wsl'
 import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
@@ -1138,12 +1139,24 @@ function handleAlert(alert: TerminalAlert): void {
 
 /**
  * Branch is read from `.git/HEAD` rather than by spawning git, so polling all
- * workspaces every few seconds costs almost nothing.
+ * workspaces every few seconds costs almost nothing — *on a local path*.
+ *
+ * On a `\\wsl.localhost\…` path it costs the entire WSL utility VM. Reading
+ * that share is served by the plan9 redirector, which boots the distribution to
+ * answer, and the VM then allocates its whole `memory=` up front (3 GB on this
+ * machine). A background WSL workspace was therefore re-launching WSL every
+ * five seconds for one branch string, which is also why `wsl --shutdown` never
+ * appeared to stick. Poll those only while the workspace is the one on screen;
+ * the rest keep the branch they were last seen with.
  */
 function startBranchPolling(): void {
   const tick = () => {
     if (!store.settings.showGitBranch) return
-    for (const workspace of store.workspaces) void refreshBranch(workspace.id, workspace.cwd)
+    const activeId = store.activeWorkspace?.id
+    for (const workspace of store.workspaces) {
+      if (isWslPath(workspace.cwd) && workspace.id !== activeId) continue
+      void refreshBranch(workspace.id, workspace.cwd)
+    }
   }
   tick()
   window.setInterval(tick, 5000)
