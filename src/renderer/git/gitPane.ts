@@ -28,7 +28,7 @@
  */
 import { backend } from '../../backend'
 import { hostLabel } from '../../shared/gitHosts'
-import type { GitResult } from '../../shared/types'
+import type { GitProgress, GitResult } from '../../shared/types'
 import { remoteHostOfPane, store } from '../state'
 import type { AuxPane } from '../auxPane'
 import { confirmDialog } from '../ui/confirm'
@@ -37,6 +37,7 @@ import { showToast } from '../ui/toast'
 import { ChangesView } from './changesView'
 import { gitRoot, text } from './common'
 import { HistoryView } from './historyView'
+import { GitProgressBar } from './progressBar'
 import { showPublish } from './publish'
 import { invalidateRepo, refreshRepo, watchRepo, type RepoSnapshot } from './repoWatch'
 import type { GitContext, GitView } from './view'
@@ -50,6 +51,8 @@ export class GitPane implements AuxPane {
   private readonly aboutEl: HTMLDivElement
   private readonly bandEl: HTMLDivElement
   private readonly bodyEl: HTMLDivElement
+  private readonly progress: GitProgressBar
+  private readonly unsubscribeProgress: () => void
 
   private readonly changes: ChangesView
   private readonly history: HistoryView
@@ -86,15 +89,23 @@ export class GitPane implements AuxPane {
     this.bandEl.hidden = true
     this.element.appendChild(this.bandEl)
 
+    // Above the body and below the band, so it appears between what the pane
+    // says about the repository and what it is showing of it — and so it never
+    // pushes the thing you just clicked out from under the cursor.
+    this.progress = new GitProgressBar()
+    this.element.appendChild(this.progress.element)
+
     this.bodyEl = document.createElement('div')
     this.bodyEl.className = 'git-body'
     this.element.appendChild(this.bodyEl)
+
+    this.unsubscribeProgress = backend().on.gitProgress((event) => this.onProgress(event))
 
     const ctx: GitContext = {
       paneId,
       root: () => this.cwd,
       busy: () => this.busyFlag,
-      run: (work, success) => this.run(work, success),
+      run: (work, success, label) => this.run(work, success, label),
       openPublish: () => void this.publish(),
       show: (view) => this.showView(view),
       showFileHistory: (repoPath) => {
@@ -133,6 +144,21 @@ export class GitPane implements AuxPane {
       isVisible: () => !this.disposed && this.element.checkVisibility(),
       onSnapshot: (snapshot) => this.onSnapshot(snapshot),
     })
+  }
+
+  /**
+   * One line of what git is doing, if it is doing it here.
+   *
+   * Matched on the repository root *or* this pane's folder, because the two are
+   * not always the same string: a pane opened in a subfolder passes that
+   * subfolder to every call, and git reports against the root it resolved. Two
+   * panes on one repository both light up, which is right — they are both
+   * looking at the thing that is changing.
+   */
+  private onProgress(event: GitProgress): void {
+    if (this.disposed) return
+    if (event.cwd !== this.cwd && event.cwd !== this.snapshot?.status.root) return
+    this.progress.update(event)
   }
 
   private onSnapshot(snapshot: RepoSnapshot): void {
@@ -275,7 +301,11 @@ export class GitPane implements AuxPane {
     explain(peek, 'fetch')
     peek.disabled = this.busyFlag || !status.hasRemote
     peek.addEventListener('click', () =>
-      void this.run(() => backend().git.peek(this.cwd), `Looked at ${where}. Nothing here was touched.`)
+      void this.run(
+        () => backend().git.peek(this.cwd),
+        `Looked at ${where}. Nothing here was touched.`,
+        `Looking at ${where}`
+      )
     )
     this.headEl.appendChild(peek)
 
@@ -476,9 +506,10 @@ export class GitPane implements AuxPane {
    * second click while a push is in flight would start a second push, and the
    * refresh in between would redraw the button out from under the cursor.
    */
-  private async run(work: () => Promise<GitResult>, success: string): Promise<void> {
+  private async run(work: () => Promise<GitResult>, success: string, label = 'Working'): Promise<void> {
     if (this.busyFlag) return
     this.busyFlag = true
+    this.progress.start(label)
     this.renderHead()
     this.renderBand()
     this.activeView().update(this.snapshot)
@@ -492,6 +523,7 @@ export class GitPane implements AuxPane {
         })
     } finally {
       this.busyFlag = false
+      this.progress.finish()
       // An operation that changed nothing — unpicking a file that was not
       // picked — would otherwise leave every button disabled until the next
       // real change, because the poll only redraws when something moved.
@@ -517,7 +549,7 @@ export class GitPane implements AuxPane {
       confirmLabel: 'Send',
     })
     if (!ok) return
-    await this.run(() => backend().git.send(this.cwd), `Sent. Your saves are on ${where}.`)
+    await this.run(() => backend().git.send(this.cwd), `Sent. Your saves are on ${where}.`, 'Sending your saves')
   }
 
   private async bringIn(): Promise<void> {
@@ -531,14 +563,18 @@ export class GitPane implements AuxPane {
       confirmLabel: 'Bring in',
     })
     if (!ok) return
-    await this.run(() => backend().git.bringIn(this.cwd), 'Brought in. Your files are up to date.')
+    await this.run(
+      () => backend().git.bringIn(this.cwd),
+      'Brought in. Your files are up to date.',
+      `Bringing in ${where}'s saves`
+    )
   }
 
   private async publish(): Promise<void> {
     await showPublish({
       cwd: () => this.cwd,
       status: () => this.snapshot?.status ?? null,
-      run: (work, success) => this.run(work, success),
+      run: (work, success, label) => this.run(work, success, label),
       showChanges: () => this.showView('changes'),
     })
   }
@@ -547,6 +583,8 @@ export class GitPane implements AuxPane {
     this.disposed = true
     this.unwatch?.()
     this.unwatch = null
+    this.unsubscribeProgress()
+    this.progress.dispose()
     this.changes.dispose()
     this.history.dispose()
   }

@@ -575,14 +575,16 @@ export class ChangesView implements GitView {
   private pick(paths: string[]): Promise<void> {
     return this.ctx.run(
       () => backend().git.pick(this.ctx.root(), paths),
-      paths.length ? 'Picked. Nothing is saved yet.' : 'Picked everything. Nothing is saved yet.'
+      paths.length ? 'Picked. Nothing is saved yet.' : 'Picked everything. Nothing is saved yet.',
+      paths.length ? 'Picking' : 'Picking everything'
     )
   }
 
   private unpick(paths: string[]): Promise<void> {
     return this.ctx.run(
       () => backend().git.unpick(this.ctx.root(), paths),
-      'Taken back out. Your files were not touched.'
+      'Taken back out. Your files were not touched.',
+      'Taking them back out'
     )
   }
 
@@ -611,7 +613,8 @@ export class ChangesView implements GitView {
       () => backend().git.applyLines(this.ctx.root(), built, direction),
       direction === 'pick'
         ? `${count} line${count === 1 ? '' : 's'} picked. Nothing is saved yet.`
-        : `${count} line${count === 1 ? '' : 's'} taken back out. Your file was not touched.`
+        : `${count} line${count === 1 ? '' : 's'} taken back out. Your file was not touched.`,
+      direction === 'pick' ? 'Picking the lines you ticked' : 'Taking those lines back out'
     )
     // The ticks named lines in a patch that has just been refetched, and the
     // same numbers now mean different lines. The shell forces the redraw that
@@ -629,7 +632,7 @@ export class ChangesView implements GitView {
       // a reason you then fixed is a message you have to write again.
       if (res.ok) this.messageEl.value = ''
       return res
-    }, 'Saved — on this machine. Nowhere else has it until you send it.')
+    }, 'Saved — on this machine. Nowhere else has it until you send it.', 'Saving')
   }
 
   private async send(): Promise<void> {
@@ -644,7 +647,11 @@ export class ChangesView implements GitView {
       confirmLabel: 'Send',
     })
     if (!ok) return
-    await this.ctx.run(() => backend().git.send(this.ctx.root()), `Sent. Your saves are on ${where}.`)
+    await this.ctx.run(
+      () => backend().git.send(this.ctx.root()),
+      `Sent. Your saves are on ${where}.`,
+      'Sending your saves'
+    )
   }
 
   private async undoLastSave(): Promise<void> {
@@ -662,7 +669,8 @@ export class ChangesView implements GitView {
     if (!ok) return
     await this.ctx.run(
       () => backend().git.undoLastSave(this.ctx.root()),
-      'Undone. Your files are untouched and the changes are picked again.'
+      'Undone. Your files are untouched and the changes are picked again.',
+      'Undoing the last save'
     )
   }
 
@@ -686,7 +694,7 @@ export class ChangesView implements GitView {
       const res = await backend().git.amend(this.ctx.root(), message)
       if (res.ok) this.messageEl.value = ''
       return res
-    }, 'Added. It is one save, not two.')
+    }, 'Added. It is one save, not two.', 'Adding to the last save')
   }
 
   // ------------------------------------------------------------- save box

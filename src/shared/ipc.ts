@@ -109,6 +109,7 @@ export const IPC = {
   onWindowFocus: 'window:focus',
   onExternalState: 'state:external',
   onMenuAction: 'menu:action',
+  onGitProgress: 'git:progress',
 } as const
 
 export type MenuAction =

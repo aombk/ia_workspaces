@@ -587,7 +587,8 @@ export class HistoryView implements GitView {
     if (!ok) return
     await this.ctx.run(
       () => backend().git.goTo(this.ctx.root(), branch.name),
-      `You are now on ${branch.name.replace(/^[^/]+\//, '')}.`
+      `You are now on ${branch.name.replace(/^[^/]+\//, '')}.`,
+      `Going to ${branch.name}`
     )
   }
 
@@ -601,7 +602,11 @@ export class HistoryView implements GitView {
       confirmLabel: 'Start it',
     })
     if (!name) return
-    await this.ctx.run(() => backend().git.startBranch(this.ctx.root(), name), `You are now on ${name}.`)
+    await this.ctx.run(
+      () => backend().git.startBranch(this.ctx.root(), name),
+      `You are now on ${name}.`,
+      `Starting ${name}`
+    )
   }
 
   private async tag(commit: Commit): Promise<void> {
@@ -616,7 +621,8 @@ export class HistoryView implements GitView {
     if (!name) return
     await this.ctx.run(
       () => backend().git.tag(this.ctx.root(), commit.sha, name),
-      `That save is now called ${name}. It is on this machine only until you send it.`
+      `That save is now called ${name}. It is on this machine only until you send it.`,
+      `Naming it ${name}`
     )
   }
 
@@ -632,7 +638,8 @@ export class HistoryView implements GitView {
     if (!ok) return
     await this.ctx.run(
       () => backend().git.revert(this.ctx.root(), commit.sha),
-      'Done — a new save putting that one back is at the top of the list.'
+      'Done — a new save putting that one back is at the top of the list.',
+      'Making the undo save'
     )
   }
 

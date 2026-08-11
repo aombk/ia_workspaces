@@ -25,6 +25,7 @@ import type {
   Branch,
   ChangedFile,
   GitResult,
+  GitProgress,
   HistoryFilter,
   HostTool,
 } from '../shared/types'
@@ -455,5 +456,7 @@ export interface Backend {
     alert(cb: (a: TerminalAlert) => void): () => void
     focusTerminal(cb: (p: { workspaceId: string; paneId: string }) => void): () => void
     windowFocus(cb: (focused: boolean) => void): () => void
+    /** What git is doing, while it is doing it. See `GitProgress`. */
+    gitProgress(cb: (p: GitProgress) => void): () => void
   }
 }

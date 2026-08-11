@@ -5680,3 +5680,94 @@ html.translucent .titlebar {
 .publish-actions--step {
   justify-content: flex-start;
 }
+
+/* ------------------------------------------------------- what git is doing */
+
+/* Between the band and the body: below what the pane says about the project,
+   above what it is showing of it, and never in the path of a button that was
+   just clicked. */
+.git-progress {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.git-progress__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.git-progress__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* Tabular figures so a percentage counting up does not shuffle the text
+   beside it on every frame. */
+.git-progress__count {
+  flex: none;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.git-progress__track {
+  position: relative;
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-active);
+}
+
+.git-progress__fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  /* Fast enough to feel live, slow enough that the jump from 12% to 40% in one
+     event reads as movement rather than as a redraw. */
+  transition: width 140ms linear;
+}
+
+/* The phases git cannot put a number on — and the first seconds of every
+   operation, before it has said anything at all. A stripe that travels says
+   "working" without claiming to know how far along it is. */
+.git-progress__track.waiting .git-progress__fill {
+  width: 35%;
+  transition: none;
+  animation: git-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes git-progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(340%);
+  }
+}
+
+/* Somebody who has asked not to be shown movement gets a bar that is simply
+   there. The label and the counts still say everything it was saying. */
+@media (prefers-reduced-motion: reduce) {
+  .git-progress__fill {
+    transition: none;
+  }
+
+  .git-progress__track.waiting .git-progress__fill {
+    width: 100%;
+    animation: none;
+    opacity: 0.5;
+  }
+}

@@ -31,8 +31,13 @@ export interface GitContext {
    * Every button in both views goes through this, which is why neither of them
    * contains a toast: git's own message and the plain sentence beside it are
    * composed in one place, so they cannot drift into two house styles.
+   *
+   * `label` is what the progress bar says before git has said anything — the
+   * first second of a push, where there is no percentage yet and "working…"
+   * would say less than the caller already knows. Present tense, no full stop:
+   * it sits beside a number.
    */
-  run(work: () => Promise<GitResult>, success: string): Promise<void>
+  run(work: () => Promise<GitResult>, success: string, label: string): Promise<void>
   /** Opens the panel that puts this project online. */
   openPublish(): void
   /** Switches to the other view, from a link in this one. */

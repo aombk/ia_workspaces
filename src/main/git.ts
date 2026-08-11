@@ -29,7 +29,7 @@
  * reimplementing that is how a pane comes to disagree with the terminal beside
  * it about what is about to be saved.
  */
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import type {
@@ -38,6 +38,7 @@ import type {
   Commit,
   CommitRef,
   GitChange,
+  GitProgress,
   GitResult,
   HistoryFilter,
   HostTool,
@@ -135,6 +136,175 @@ function runInput(cwd: string, args: string[], input: string): Promise<GitRun> {
     // become the error message it is.
     child.stdin?.on('error', () => {})
     child.stdin?.end(input)
+  })
+}
+
+// ------------------------------------------------------------- progress
+
+/**
+ * Where progress events go, once the main process has somewhere to send them.
+ *
+ * A setter rather than an import, because this module is also loaded by the CLI
+ * and by the tests, where there is no window to send anything to. Unset, every
+ * report costs one null check and vanishes.
+ */
+let progressSink: ((event: GitProgress) => void) | null = null
+
+export function onGitProgress(sink: ((event: GitProgress) => void) | null): void {
+  progressSink = sink
+}
+
+function report(event: GitProgress): void {
+  progressSink?.(event)
+}
+
+/**
+ * Git's phases, in plain words.
+ *
+ * The same rule as everywhere else in these panes: git's own word stays, and a
+ * sentence somebody can act on goes beside it. "Compressing objects" is a
+ * perfectly good description of what is happening and tells a person nothing
+ * about whether their work is safe; "packing it up to send" tells them where
+ * they are in the journey.
+ *
+ * Ordered longest-prefix-first is unnecessary here — the names are distinct —
+ * but they are matched by prefix rather than equality because git appends a
+ * count to some of them and localised builds are prevented by `LC_ALL=C`.
+ */
+const PHASES: readonly { match: string; plain: string }[] = [
+  { match: 'Enumerating objects', plain: 'Working out what to send' },
+  { match: 'Counting objects', plain: 'Counting up what to send' },
+  { match: 'Compressing objects', plain: 'Packing it up' },
+  { match: 'Writing objects', plain: 'Uploading' },
+  { match: 'Receiving objects', plain: 'Downloading' },
+  { match: 'Resolving deltas', plain: 'Putting the pieces together' },
+  { match: 'Unpacking objects', plain: 'Unpacking what came back' },
+  { match: 'Updating files', plain: 'Updating your files' },
+  { match: 'Checking out files', plain: 'Putting the files in place' },
+  { match: 'Finding sources', plain: 'Finding what changed' },
+  { match: 'remote: Enumerating objects', plain: 'The other end is working out what it has' },
+  { match: 'remote: Counting objects', plain: 'The other end is counting' },
+  { match: 'remote: Compressing objects', plain: 'The other end is packing it up' },
+  { match: 'remote: Resolving deltas', plain: 'The other end is putting the pieces together' },
+]
+
+/**
+ * Reads one line of git's progress output.
+ *
+ * The shape is fixed and has been for twenty years:
+ *
+ *   Writing objects:  62% (8/13)
+ *   remote: Resolving deltas: 100% (4/4), done.
+ *   Enumerating objects: 13, done.
+ *
+ * The percentage is missing on the phases that cannot know their total up
+ * front, which is why it is optional here and why the bar has an indeterminate
+ * state at all. Exported for the tests.
+ */
+export function parseProgress(line: string): { phase: string; plain: string; percent?: number; current?: number; total?: number; remote: boolean } | null {
+  const text = line.trim()
+  if (!text) return null
+
+  const withCounts = /^(.*?):\s+(\d+)%\s+\((\d+)\/(\d+)\)/.exec(text)
+  const bare = /^(.*?):\s+(\d+)(?:,|$)/.exec(text)
+  const phase = (withCounts?.[1] ?? bare?.[1] ?? '').trim()
+  if (!phase) return null
+
+  const known = PHASES.find((p) => phase === p.match || phase.startsWith(p.match))
+  // Anything git prints that is not one of its progress phases — "remote:" MOTD
+  // banners, hints, warnings — is not progress and must not be shown as though
+  // it were. Only the phases we recognise get through.
+  if (!known) return null
+
+  const remote = phase.startsWith('remote:')
+  if (withCounts) {
+    return {
+      phase,
+      plain: known.plain,
+      percent: Number(withCounts[2]),
+      current: Number(withCounts[3]),
+      total: Number(withCounts[4]),
+      remote,
+    }
+  }
+  return { phase, plain: known.plain, current: Number(bare![2]), remote }
+}
+
+/**
+ * Runs git and reports what it says as it says it.
+ *
+ * `spawn` rather than `execFile`, which is the whole point: `execFile` buffers
+ * and hands everything over at the end, and the end is exactly when progress
+ * has stopped being useful. The cost is that the timeout and the output cap
+ * become ours to enforce rather than the library's, which is what the two
+ * timers and the length check below are.
+ *
+ * `--progress` is passed by the callers because git only writes it when it
+ * believes it is talking to a terminal, and it is not — there is a pipe here.
+ * Without the flag a push over a slow link prints nothing at all until it ends.
+ */
+function runProgress(
+  cwd: string,
+  args: string[],
+  opts: { op: string; network?: boolean; onLine?: (line: string) => void; command?: string }
+): Promise<GitRun> {
+  return new Promise((resolve) => {
+    // `gh` shells out to git for the push it does, and git's progress comes
+    // back up the same pipe — so the one runner covers both.
+    const child = spawn(opts.command ?? 'git', args, {
+      cwd,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_PAGER: 'cat',
+        GIT_EDITOR: 'true',
+        LC_ALL: 'C',
+      },
+    })
+
+    let out = ''
+    let err = ''
+    let settled = false
+    const timer = setTimeout(() => {
+      // Killed rather than left running: a push that hangs forever behind a
+      // dead connection would otherwise hold the pane's lock for the life of
+      // the app, with a bar that never moves.
+      child.kill()
+    }, opts.network ? NETWORK_TIMEOUT_MS : LOCAL_TIMEOUT_MS)
+
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      report({ cwd, op: opts.op, phase: '', plain: '', done: true })
+      resolve({ ok, out, err: err.trim() })
+    }
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (out.length < MAX_OUTPUT) out += chunk.toString()
+      if (opts.onLine) for (const line of chunk.toString().split(/\r?\n/)) if (line) opts.onLine(line)
+    })
+
+    // Progress is written to stderr, and separated by carriage returns rather
+    // than newlines — one line rewritten in place, as a terminal would show it.
+    // Splitting on `\n` alone yields one enormous line per phase and no updates
+    // until it ends, which is the bug that makes this look like it is not
+    // working.
+    child.stderr?.on('data', (chunk: Buffer) => {
+      const value = chunk.toString()
+      if (err.length < MAX_OUTPUT) err += value
+      for (const line of value.split(/[\r\n]+/)) {
+        const parsed = parseProgress(line)
+        if (parsed) report({ cwd, op: opts.op, ...parsed })
+      }
+    })
+
+    child.on('error', (error) => {
+      err += `\n${error.message}`
+      finish(false)
+    })
+    child.on('close', (code) => finish(code === 0))
   })
 }
 
@@ -814,11 +984,32 @@ export async function commitFiles(cwd: string, sha: string): Promise<ChangedFile
 
 // ------------------------------------------------------------- operations
 
-/** Picks files for the next save. No paths means everything that has changed. */
+/**
+ * Picks files for the next save. No paths means everything that has changed.
+ *
+ * `--verbose` so that picking everything in a repository an agent has just
+ * rewritten says which file it is on rather than sitting still: git prints
+ * `add 'path'` per file, which is the only per-file progress any of these
+ * operations can offer.
+ */
 export async function pick(cwd: string, paths: string[]): Promise<GitResult> {
   const root = (await repoRoot(cwd)) ?? cwd
-  const args = paths.length ? ['add', '--', ...paths] : ['add', '--all']
-  return asResult(await run(root, args))
+  const args = paths.length ? ['add', '--verbose', '--', ...paths] : ['add', '--verbose', '--all']
+  let count = 0
+  return asResult(
+    await runProgress(root, args, {
+      op: 'pick',
+      onLine: (line) => {
+        const m = /^add '(.*)'$/.exec(line.trim())
+        if (!m) return
+        count++
+        // Tagged with the repository root, like every other report: the pane
+        // knows both that and its own folder, and matching on either is what
+        // lets a pane opened in a subfolder still see its own operations.
+        report({ cwd: root, op: 'pick', phase: 'add', plain: 'Picking', file: m[1], current: count })
+      },
+    })
+  )
 }
 
 /**
@@ -863,15 +1054,21 @@ export async function send(cwd: string): Promise<GitResult> {
     }
   }
   const args = status.upstream
-    ? ['push']
-    : ['push', '--set-upstream', 'origin', status.branch]
-  return asResult(await run(root, args, { network: true }))
+    ? ['push', '--progress']
+    : ['push', '--progress', '--set-upstream', 'origin', status.branch]
+  return asResult(await runProgress(root, args, { op: 'send', network: true }))
 }
 
-/** Looks at what is new on GitHub without touching a single file here. */
+/**
+ * Looks at what is new on the copy online without touching a single file here.
+ *
+ * `--progress` in place of the `--quiet` this used to pass, which were pulling
+ * in opposite directions: quiet suppressed the very lines the bar is drawn
+ * from. Nothing is printed to a user either way — the output goes to the pane.
+ */
 export async function peek(cwd: string): Promise<GitResult> {
   const root = (await repoRoot(cwd)) ?? cwd
-  return asResult(await run(root, ['fetch', '--quiet'], { network: true }))
+  return asResult(await runProgress(root, ['fetch', '--progress'], { op: 'peek', network: true }))
 }
 
 /**
@@ -885,7 +1082,7 @@ export async function peek(cwd: string): Promise<GitResult> {
  */
 export async function bringIn(cwd: string): Promise<GitResult> {
   const root = (await repoRoot(cwd)) ?? cwd
-  return asResult(await run(root, ['pull', '--rebase'], { network: true }))
+  return asResult(await runProgress(root, ['pull', '--rebase', '--progress'], { op: 'bring-in', network: true }))
 }
 
 /**
@@ -1170,7 +1367,8 @@ export async function createOnline(
   if (opts.command === 'gh') {
     const args = ['repo', 'create', name, '--source=.', '--remote=origin', '--push', visibility]
     if (opts.description) args.push('--description', opts.description)
-    const res = await runTool('gh', args, root, NETWORK_TIMEOUT_MS)
+    report({ cwd: root, op: 'publish', phase: 'create', plain: `Making ${name} on GitHub` })
+    const res = await runProgress(root, args, { op: 'publish', network: true, command: 'gh' })
     shapeCache.clear()
     return asResult(res)
   }

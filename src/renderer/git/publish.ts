@@ -41,7 +41,7 @@ export interface PublishHooks {
   cwd(): string
   status(): RepoStatus | null
   /** Runs an operation with the pane locked and reports it, like every button. */
-  run(work: () => Promise<GitResult>, success: string): Promise<void>
+  run(work: () => Promise<GitResult>, success: string, label: string): Promise<void>
   /** Sends the user to the Changes view, for the "make a first save" step. */
   showChanges(): void
 }
@@ -106,12 +106,12 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
     window.addEventListener('keydown', onKey, true)
 
     /** Runs one step, keeping the panel locked and redrawing after. */
-    const step = async (work: () => Promise<GitResult>, success: string) => {
+    const step = async (work: () => Promise<GitResult>, success: string, label: string) => {
       if (working) return
       working = true
       draw()
       try {
-        await hooks.run(work, success)
+        await hooks.run(work, success, label)
       } finally {
         working = false
         draw()
@@ -154,7 +154,11 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
         )
       )
       const go = primary('Start tracking this folder', () =>
-        step(() => backend().git.init(hooks.cwd()), 'Tracked. Now make your first save in Changes.')
+        step(
+          () => backend().git.init(hooks.cwd()),
+          'Tracked. Now make your first save in Changes.',
+          'Starting to track this folder'
+        )
       )
       body.appendChild(actions(go))
     }
@@ -232,7 +236,8 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
                 name: repoName.trim(),
                 private: isPrivate,
               }),
-            `Done. ${repoName} is on ${host.name} and your saves are in it.`
+            `Done. ${repoName} is on ${host.name} and your saves are in it.`,
+            `Making ${repoName} on ${host.name}`
           )
       )
       go.disabled = working || !repoName.trim()
@@ -283,7 +288,7 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
           const set = await backend().git.setOrigin(hooks.cwd(), url)
           if (!set.ok) return set
           return backend().git.send(hooks.cwd())
-        }, `Done. Your saves are at ${url}.`)
+        }, `Done. Your saves are at ${url}.`, 'Connecting it and sending')
         // Only close once it has actually worked — a panel that vanishes on a
         // failure takes the address the user just pasted with it.
         if (hooks.status()?.hasRemote) finish()

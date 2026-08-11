@@ -444,6 +444,47 @@ await checkAsync('a save that stopped part-way is noticed and reported', async (
   git('merge', '--abort')
 })
 
+// --------------------------------------------- what git says it is doing
+
+check('git\'s progress lines are read into a phase, a percentage and a count', () => {
+  const writing = G.parseProgress('Writing objects:  62% (8/13)')
+  assert.equal(writing.phase, 'Writing objects')
+  assert.equal(writing.plain, 'Uploading', 'and said in words somebody can act on')
+  assert.equal(writing.percent, 62)
+  assert.equal(writing.current, 8)
+  assert.equal(writing.total, 13)
+  assert.equal(writing.remote, false)
+
+  // The far end's phases are the same shape with a prefix, and they matter:
+  // "it has gone quiet" and "the server is thinking" look identical otherwise.
+  const remote = G.parseProgress('remote: Resolving deltas: 100% (4/4), done.')
+  assert.equal(remote.remote, true)
+  assert.equal(remote.percent, 100)
+  assert.match(remote.plain, /other end/)
+
+  // The phases with no total to count against, which is why the bar has an
+  // indeterminate state at all.
+  const counting = G.parseProgress('Enumerating objects: 13, done.')
+  assert.equal(counting.percent, undefined)
+  assert.equal(counting.current, 13)
+})
+
+check('anything that is not progress is not shown as though it were', () => {
+  // A host's banner arrives on the same stream as the progress does, and a bar
+  // that put "remote: Welcome to GitLab!" in its label would be reporting a
+  // greeting as work.
+  for (const line of [
+    '',
+    'remote: ',
+    'remote: Welcome to GitLab!',
+    'To https://github.com/you/thing.git',
+    '   abc1234..def5678  main -> main',
+    'hint: Updates were rejected because the tip of your current branch is behind',
+  ]) {
+    assert.equal(G.parseProgress(line), null, `treated as progress: ${line}`)
+  }
+})
+
 // -------------------------------------------------- where the copy lives
 
 check('a remote address is read in all three shapes git accepts', () => {
@@ -760,6 +801,54 @@ await checkAsync('the list of saves can be narrowed without breaking on a filter
 
   const nothing = await G.history(repo2, 400, { text: 'a phrase nobody wrote' })
   assert.deepEqual(nothing, [], 'and no match is an empty list rather than a failure')
+})
+
+await checkAsync('picking says which file it is on, as it goes', async () => {
+  // The only per-file progress any of these operations can offer, and the one
+  // that matters when an agent has just rewritten forty files.
+  const seen = []
+  G.onGitProgress((e) => seen.push(e))
+  try {
+    fs.writeFileSync(fileIn2('p1.txt'), 'one\n')
+    fs.writeFileSync(fileIn2('p2.txt'), 'two\n')
+    const res = await G.pick(repo2, [])
+    assert.equal(res.ok, true, res.error)
+  } finally {
+    G.onGitProgress(null)
+  }
+
+  const files = seen.filter((e) => e.op === 'pick' && e.file).map((e) => e.file)
+  assert.ok(files.includes('p1.txt'), `expected p1.txt among ${JSON.stringify(files)}`)
+  assert.ok(files.includes('p2.txt'))
+  assert.ok(
+    seen.some((e) => e.done),
+    'and the operation says when it is over, so the bar can go away'
+  )
+  await G.save(repo2, 'two more files')
+})
+
+await checkAsync('sending reports git\'s own phases while it is sending', async () => {
+  // Against the bare repository standing in for a host. A local push is fast,
+  // but it still goes through the same phases and prints the same lines — which
+  // is the thing under test: that `--progress` is passed, that stderr is split
+  // on carriage returns, and that the phases reach the sink at all.
+  const seen = []
+  G.onGitProgress((e) => seen.push(e))
+  let res
+  try {
+    res = await G.send(repo2)
+  } finally {
+    G.onGitProgress(null)
+  }
+  assert.equal(res.ok, true, res.error)
+
+  const phases = seen.filter((e) => e.op === 'send' && e.phase)
+  assert.ok(phases.length > 0, 'a push that reports nothing is a frozen window')
+  assert.ok(
+    phases.every((e) => e.plain && e.cwd),
+    'every report says what it is in plain words, and which folder it is about'
+  )
+  assert.equal(seen[seen.length - 1].done, true, 'the last word is that it has finished')
 })
 
 await checkAsync('pointing a project at a copy online refuses to move one already set', async () => {

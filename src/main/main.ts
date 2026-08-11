@@ -644,6 +644,11 @@ function bootApp(): void {
       const root = await repoRoot(cwd)
       return root ? suggestWorktreeDir(root, branch) : null
     })
+    // What git is doing, while it is doing it. Wired here rather than imported
+    // by the module, because `git.ts` is also loaded by the CLI and by the
+    // tests, where there is no window to send anything to.
+    git.onGitProgress((p) => send(IPC.onGitProgress, p))
+
     // The git panes. Every one of these is a thin forward: the module owns the
     // decisions, including which of them are allowed to exist at all.
     ipcMain.handle(IPC.gitRepoStatus, (_e, cwd: string) => git.repoStatus(cwd))

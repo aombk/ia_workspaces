@@ -156,6 +156,7 @@ export function createElectronBackend(): Backend {
       alert: (cb) => api.on.alert(cb),
       focusTerminal: (cb) => api.on.focusTerminal(cb),
       windowFocus: (cb) => api.on.windowFocus(cb),
+      gitProgress: (cb) => api.on.gitProgress(cb),
     },
   }
 }

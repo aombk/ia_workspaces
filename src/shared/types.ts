@@ -926,6 +926,42 @@ export interface HistoryFilter {
 }
 
 /**
+ * What git is doing right now, while it is doing it.
+ *
+ * Every operation in the git pane used to be a button that went dead and a
+ * toast some seconds later, and for a push over a slow connection that is a
+ * minute of a frozen window with nothing to say whether it is working, stuck,
+ * or waiting on a password prompt it cannot show. Git itself knows exactly what
+ * it is doing and says so — it simply says it to a terminal that is not there.
+ * This is that, carried out to the pane.
+ *
+ * Addressed by `cwd` rather than by an operation id, because the pane already
+ * passes its own folder to every call it makes: the events for an operation
+ * come back tagged with the same string that started it, and two panes on one
+ * repository both light up, which is right.
+ */
+export interface GitProgress {
+  /** The folder the operation was asked for, exactly as the caller gave it. */
+  cwd: string
+  /** Which operation: `send`, `bring-in`, `peek`, `pick`, `publish`. */
+  op: string
+  /** Git's own phase name — "Writing objects" — kept so it matches what it prints. */
+  phase: string
+  /** The same thing in plain words, which is what actually goes on screen. */
+  plain: string
+  /** 0–100, when git gives a percentage. Absent for the phases that have none. */
+  percent?: number
+  current?: number
+  total?: number
+  /** True when this phase is happening on the far end rather than here. */
+  remote?: boolean
+  /** The file being dealt with, for the operations that name them. */
+  file?: string
+  /** The last event of an operation, whether it worked or not. */
+  done?: boolean
+}
+
+/**
  * A host's own command-line tool, and whether it can be used.
  *
  * Installed and signed in are separate because they need separate sentences:

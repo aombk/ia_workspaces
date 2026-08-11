@@ -27,6 +27,7 @@ import type {
   Branch,
   ChangedFile,
   GitResult,
+  GitProgress,
   HistoryFilter,
   HostTool,
 } from '../shared/types'
@@ -252,6 +253,7 @@ const api = {
       subscribe(IPC.onFocusTerminal, cb),
     windowFocus: (cb: (focused: boolean) => void) => subscribe(IPC.onWindowFocus, cb),
     externalState: (cb: (state: unknown) => void) => subscribe(IPC.onExternalState, cb),
+    gitProgress: (cb: (p: GitProgress) => void) => subscribe(IPC.onGitProgress, cb),
   },
 }
 
