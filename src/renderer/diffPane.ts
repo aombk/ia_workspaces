@@ -158,12 +158,12 @@ export class DiffPane implements AuxPane {
     waiting.textContent = 'Reading what has changed…'
     this.listEl.replaceChildren(waiting)
 
-    void this.refresh()
+    void this.refresh(true)
     this.pollTimer = setInterval(() => void this.refresh(), POLL_MS)
     window.addEventListener('focus', this.onFocus)
   }
 
-  private readonly onFocus = () => void this.refresh()
+  private readonly onFocus = () => void this.refresh(true)
 
   private describe(): void {
     this.aboutEl.textContent =
@@ -207,12 +207,20 @@ export class DiffPane implements AuxPane {
     this.selected = null
     this.signature = ''
     this.describe()
-    void this.refresh()
+    void this.refresh(true)
   }
 
-  private async refresh(): Promise<void> {
+  private async refresh(force = false): Promise<void> {
     if (this.disposed || this.busy) return
-    if (document.hidden) return
+    // Minimised window *or* a pane on a tab nobody is looking at — see the same
+    // guard in `historyPane`. Both were polling git regardless of being seen.
+    //
+    // `force` for the same reason that pane has it, and one more: at mount the
+    // element is not in the document yet, and `checkVisibility` says false for
+    // anything detached. Without the escape hatch the first draw would be
+    // skipped and the pane would sit on "Reading what has changed…" until the
+    // poll came round.
+    if (!force && (document.hidden || !this.element.checkVisibility())) return
 
     // An SSH workspace's folder is a path on the far machine, and `git` here
     // would either fail or — worse — answer about a directory of the same name
@@ -575,7 +583,7 @@ export class DiffPane implements AuxPane {
     } finally {
       this.busy = false
       this.signature = ''
-      await this.refresh()
+      await this.refresh(true)
       // The poll only redraws when something changed, and an operation that
       // changed nothing — unpicking a file that was not picked — would
       // otherwise leave every button disabled until the next real change.

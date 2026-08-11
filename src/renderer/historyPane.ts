@@ -150,7 +150,12 @@ export class HistoryPane implements AuxPane {
 
   private async refresh(force = false): Promise<void> {
     if (this.disposed || this.busy) return
-    if (!force && document.hidden) return
+    // `document.hidden` alone only catches a minimised window. A pane sitting
+    // on a workspace tab nobody is looking at is just as unseen, and its timer
+    // keeps running — which is how several background panes came to be spawning
+    // git processes several times a second between them. `checkVisibility` is
+    // the same test `filesPane` already polls behind.
+    if (!force && (document.hidden || !this.element.checkVisibility())) return
 
     // An SSH workspace's folder is a path on the far machine. Running git here
     // would answer about a folder of the same name that happens to exist

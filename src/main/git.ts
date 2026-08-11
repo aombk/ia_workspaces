@@ -30,7 +30,7 @@
  * it about what is about to be saved.
  */
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import type {
   Branch,
@@ -195,12 +195,71 @@ export function hintFor(text: string): string | undefined {
   return undefined
 }
 
+// ---------------------------------------------------------------- shape cache
+
+/**
+ * Answers about a repository's *shape*, kept so the panes stop re-deriving them.
+ *
+ * Three of the five commands behind one `repoStatus` — the checkout root, the
+ * git directory, and the origin URL — answer questions whose answers change
+ * when someone runs `git init`, moves a folder, or sets a remote, and at no
+ * other time. The panes ask every two to three seconds. Measured on Windows,
+ * those three were 26 of 66 concurrent `git.exe` processes: the app was
+ * spawning a process several times a second to re-derive a path that had not
+ * moved. Every spawn is a process creation plus an antivirus scan.
+ *
+ * Staleness is handled per caller rather than by this deadline alone, because a
+ * deadline is the wrong tool for anything the user can change under your hand:
+ * `repoRoot` re-checks a remembered "not a repository" against the filesystem,
+ * and `originUrl` puts the config file's mtime in its key. This value is the
+ * floor under the ones that have no cheaper signal, and short enough that being
+ * wrong costs a few seconds rather than a session.
+ *
+ * Anything that genuinely moves tick to tick — the status, the ahead/behind
+ * counts, whether a rebase is in progress — is deliberately not cached here and
+ * still costs exactly what it always did.
+ */
+const SHAPE_TTL_MS = 10_000
+
+/** A long session visits many folders, so the cache is bounded rather than kept. */
+const SHAPE_MAX = 256
+
+const shapeCache = new Map<string, { value: unknown; at: number }>()
+
+async function shaped<T>(key: string, compute: () => Promise<T>, ttlMs = SHAPE_TTL_MS): Promise<T> {
+  const now = Date.now()
+  const hit = shapeCache.get(key)
+  if (hit && now - hit.at < ttlMs) return hit.value as T
+
+  const value = await compute()
+  if (shapeCache.size >= SHAPE_MAX) {
+    for (const [k, v] of shapeCache) if (now - v.at >= SHAPE_TTL_MS) shapeCache.delete(k)
+    // Still full means every entry is live; a clear costs one re-derivation
+    // each rather than letting the map grow for the life of the process.
+    if (shapeCache.size >= SHAPE_MAX) shapeCache.clear()
+  }
+  shapeCache.set(key, { value, at: now })
+  return value
+}
+
 /** The root of the checkout this folder is in, or null when it is not in one. */
 export async function repoRoot(cwd: string): Promise<string | null> {
-  const res = await run(cwd, ['rev-parse', '--show-toplevel'])
-  if (!res.ok) return null
-  const root = res.out.trim()
-  return root ? path.normalize(root) : null
+  const key = `root:${cwd}`
+
+  // A remembered "not a repository" is the one answer here that goes false
+  // under the user's hand: `git init` in the terminal beside the pane makes it
+  // wrong immediately, and a pane still saying "not a project git is watching"
+  // afterwards reads as the app being broken. One `existsSync` per call is a
+  // rounding error against the spawn it is protecting, so it is paid always.
+  const hit = shapeCache.get(key)
+  if (hit && hit.value === null && existsSync(path.join(cwd, '.git'))) shapeCache.delete(key)
+
+  return shaped(key, async () => {
+    const res = await run(cwd, ['rev-parse', '--show-toplevel'])
+    if (!res.ok) return null
+    const root = res.out.trim()
+    return root ? path.normalize(root) : null
+  })
 }
 
 // ---------------------------------------------------------------- status
@@ -308,8 +367,13 @@ export function parseStatus(
  * needs the answer needs it on the same timer as the status.
  */
 async function inProgress(cwd: string): Promise<RepoStatus['inProgress']> {
-  const res = await run(cwd, ['rev-parse', '--absolute-git-dir'])
-  const gitDir = res.ok ? res.out.trim() : ''
+  // Where the git directory *is* keeps; what is sitting in it does not. The
+  // path is cached and the `existsSync` checks below stay live, so a rebase
+  // started in the terminal beside the pane still shows up on the next tick.
+  const gitDir = await shaped(`gitdir:${cwd}`, async () => {
+    const res = await run(cwd, ['rev-parse', '--absolute-git-dir'])
+    return res.ok ? res.out.trim() : ''
+  })
   if (!gitDir) return undefined
   const has = (name: string) => existsSync(path.join(gitDir, name))
   if (has('rebase-merge') || has('rebase-apply')) return 'rebase'
@@ -318,6 +382,40 @@ async function inProgress(cwd: string): Promise<RepoStatus['inProgress']> {
   if (has('REVERT_HEAD')) return 'revert'
   if (has('BISECT_LOG')) return 'bisect'
   return undefined
+}
+
+/**
+ * Where `origin` points, or empty when there is no such remote.
+ *
+ * Cached against the *modification time of the file git keeps remotes in*
+ * rather than against a clock. `git remote add` in the terminal beside the pane
+ * rewrites that file, so the very next tick misses the cache and re-reads —
+ * which a plain time-to-live would not do, and the difference is a pane that
+ * says "not sent anywhere" for ten seconds after you have just added a remote.
+ * A `stat` costs nothing next to the process spawn it saves, and unlike a
+ * deadline it cannot be stale.
+ *
+ * A linked worktree keeps `.git` as a file pointing elsewhere, so there is no
+ * config to stat beside it; that case pays the spawn rather than guessing.
+ */
+async function originUrl(root: string): Promise<string> {
+  const read = async () => {
+    const res = await run(root, ['remote', 'get-url', 'origin'])
+    return res.ok ? res.out.trim() : ''
+  }
+
+  let stamp: string
+  try {
+    const dot = path.join(root, '.git')
+    if (!statSync(dot).isDirectory()) return read()
+    stamp = String(statSync(path.join(dot, 'config')).mtimeMs)
+  } catch {
+    return read()
+  }
+
+  // The key carries the freshness, so the deadline is only here to stop an
+  // untouched repository's entry living for the whole life of the process.
+  return shaped(`origin:${root}:${stamp}`, read, 10 * 60_000)
 }
 
 /**
@@ -333,15 +431,13 @@ export async function repoStatus(cwd: string): Promise<RepoStatus> {
     return { root: '', detached: false, ahead: 0, behind: 0, hasRemote: false, files: [], unsent: [] }
   }
 
-  const [status, remote, stopped] = await Promise.all([
+  const [status, remoteUrl, stopped] = await Promise.all([
     run(root, ['status', '--porcelain=v2', '--branch', '--untracked-files=normal', '-z']),
-    run(root, ['remote', 'get-url', 'origin']),
+    originUrl(root),
     inProgress(root),
   ])
 
   const parsed = parseStatus(status.ok ? status.out : '', root)
-
-  const remoteUrl = remote.ok ? remote.out.trim() : ''
 
   // Every save on any line here that is on no line GitHub has.
   //
