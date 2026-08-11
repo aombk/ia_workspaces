@@ -23,7 +23,13 @@ fs.rmSync(out, { recursive: true, force: true })
 fs.mkdirSync(out, { recursive: true })
 
 await build({
-  entryPoints: { git: 'src/main/git.ts', graph: 'src/shared/gitGraph.ts', words: 'src/shared/gitWords.ts' },
+  entryPoints: {
+    git: 'src/main/git.ts',
+    graph: 'src/shared/gitGraph.ts',
+    words: 'src/shared/gitWords.ts',
+    patch: 'src/shared/diffPatch.ts',
+    hosts: 'src/shared/gitHosts.ts',
+  },
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -33,6 +39,8 @@ await build({
 const G = await import(`file://${out}/git.js`)
 const Graph = await import(`file://${out}/graph.js`)
 const Words = await import(`file://${out}/words.js`)
+const Patch = await import(`file://${out}/patch.js`)
+const Hosts = await import(`file://${out}/hosts.js`)
 
 let passed = 0
 const check = (name, fn) => {
@@ -434,6 +442,330 @@ await checkAsync('a save that stopped part-way is noticed and reported', async (
     'and the file git is asking about is marked as a question, not as a change'
   )
   git('merge', '--abort')
+})
+
+// -------------------------------------------------- where the copy lives
+
+check('a remote address is read in all three shapes git accepts', () => {
+  // The scp-like one is the reason this is hand-written: `github.com:you/thing`
+  // has no scheme and a colon that is not a port, so a URL parser reads the
+  // host as `github.com` and the port as `you`, or rejects it outright.
+  for (const url of [
+    'git@github.com:you/thing.git',
+    'ssh://git@github.com/you/thing.git',
+    'https://github.com/you/thing.git',
+    'https://github.com/you/thing',
+  ]) {
+    const info = Hosts.readRemote(url)
+    assert.ok(info, `unreadable: ${url}`)
+    assert.equal(info.host.id, 'github', url)
+    assert.equal(info.owner, 'you', url)
+    assert.equal(info.repo, 'thing', url)
+    assert.equal(info.webUrl, 'https://github.com/you/thing', url)
+  }
+})
+
+check('a company GitLab is called GitLab, not by its domain', () => {
+  // The users every hardcoded "GitHub" was wrong for.
+  const info = Hosts.readRemote('git@gitlab.example.com:team/thing.git')
+  assert.equal(info.host.id, 'gitlab')
+  assert.equal(info.domain, 'gitlab.example.com')
+  assert.equal(Hosts.hostLabel(info), 'GitLab')
+  assert.equal(info.webUrl, 'https://gitlab.example.com/team/thing')
+})
+
+check('a host nobody has heard of is named by its domain rather than guessed at', () => {
+  const info = Hosts.readRemote('https://code.someplace.net/me/thing.git')
+  assert.equal(info.host.id, 'unknown')
+  assert.equal(Hosts.hostLabel(info), 'code.someplace.net')
+  assert.equal(Hosts.commitWebUrl(info, 'abc123'), null, 'a link that would 404 is not offered')
+  assert.equal(Hosts.hostLabel(null), 'the copy online', 'and with no remote at all, nothing is named')
+})
+
+check('a folder on this disk is not mistaken for a host', () => {
+  // `C:/code/thing` matches the scp shape exactly, and it is a perfectly good
+  // git remote — another folder.
+  assert.equal(Hosts.readRemote('C:/code/thing'), null)
+  assert.equal(Hosts.readRemote('/home/me/thing.git'), null)
+  assert.equal(Hosts.readRemote('   '), null)
+})
+
+check('one save has a web address on the hosts that have one', () => {
+  const gh = Hosts.readRemote('https://github.com/you/thing.git')
+  assert.equal(Hosts.commitWebUrl(gh, 'abc'), 'https://github.com/you/thing/commit/abc')
+  const bb = Hosts.readRemote('https://bitbucket.org/you/thing.git')
+  assert.equal(Hosts.commitWebUrl(bb, 'abc'), 'https://bitbucket.org/you/thing/commits/abc', 'bitbucket says commits')
+})
+
+check('a folder name becomes something a host will accept', () => {
+  assert.equal(Hosts.suggestRepoName('C:\\code\\my new thing'), 'my-new-thing')
+  assert.equal(Hosts.suggestRepoName('/home/me/thing/'), 'thing')
+  assert.equal(Hosts.suggestRepoName(''), 'project')
+})
+
+// ------------------------------------------------- cutting a patch down
+
+/** The patch used by the picking checks: two changes in one file, far apart. */
+const TWO_CHANGES = [
+  'diff --git a/a.txt b/a.txt',
+  'index 1111111..2222222 100644',
+  '--- a/a.txt',
+  '+++ b/a.txt',
+  '@@ -1,3 +1,4 @@ header()',
+  ' one',
+  '+the fix',
+  ' two',
+  ' three',
+  '@@ -10,3 +11,4 @@ footer()',
+  ' eight',
+  '+console.log("stray")',
+  ' nine',
+  ' ten',
+  '',
+].join('\n')
+
+check('a patch is split into its file and its blocks', () => {
+  const [file] = Patch.parsePatch(TWO_CHANGES)
+  assert.equal(file.path, 'a.txt')
+  assert.equal(file.oldPath, 'a.txt')
+  assert.equal(file.binaryOrEmpty, false)
+  assert.equal(file.hunks.length, 2)
+  assert.equal(file.hunks[0].newStart, 1)
+  assert.equal(file.hunks[1].newStart, 11)
+  assert.deepEqual(Patch.hunkCounts(file.hunks[0]), { added: 1, removed: 0 })
+  // Every changed line is numbered across the whole file, so a tick names one
+  // line and one line only — which "line 2 of the file" could not, since an
+  // added and a removed line can share a screen row.
+  assert.deepEqual(Patch.hunkLineIndices(file.hunks[0]), [1])
+  assert.deepEqual(Patch.hunkLineIndices(file.hunks[1]), [5])
+})
+
+check('picking one block leaves the other out of the patch entirely', () => {
+  const [file] = Patch.parsePatch(TWO_CHANGES)
+  const built = Patch.buildPatch(file, [file.hunks[0]], new Set([1]), 'pick')
+  assert.match(built, /\+the fix/)
+  assert.ok(!/stray/.test(built), 'the block that was not picked is not in the patch at all')
+  assert.match(built, /^@@ -1,3 \+1,4 @@ header\(\)$/m, 'and the counts still describe what is there')
+  assert.ok(built.endsWith('\n'), 'git apply wants a final newline')
+})
+
+check('an unticked removal stays as context when picking, and vanishes when unpicking', () => {
+  // The rule the whole file turns on, and the one that is not obvious: a patch
+  // whose context does not match what it is applied against is a patch git
+  // rejects. Which unticked lines are still *there* depends on the direction.
+  const raw = [
+    'diff --git a/a.txt b/a.txt',
+    '--- a/a.txt',
+    '+++ b/a.txt',
+    '@@ -1,3 +1,3 @@',
+    ' keep',
+    '-gone',
+    '+added',
+    ' tail',
+    '',
+  ].join('\n')
+  const [file] = Patch.parsePatch(raw)
+  assert.equal(file.hunks[0].lines.length, 4, 'the newline the patch ends with is not a line of it')
+
+  // Tick only the addition — ' keep' is 0, '-gone' is 1, '+added' is 2.
+  const added = file.hunks[0].lines.find((l) => l.kind === 'add').index
+  const picking = Patch.buildPatch(file, file.hunks, new Set([added]), 'pick')
+  assert.match(picking, /^ gone$/m, 'picking: the removal is still in the file, so it is context')
+  assert.match(picking, /^\+added$/m)
+  assert.match(picking, /^@@ -1,3 \+1,4 @@/m, 'three lines in, four out')
+
+  const unpicking = Patch.buildPatch(file, file.hunks, new Set([added]), 'unpick')
+  assert.ok(!/^[ -]gone$/m.test(unpicking), 'unpicking: the removal already happened, so it is not there')
+  assert.match(unpicking, /^\+added$/m)
+  assert.match(unpicking, /^@@ -1,2 \+1,3 @@/m)
+})
+
+check('a selection with nothing changed in it builds no patch at all', () => {
+  const [file] = Patch.parsePatch(TWO_CHANGES)
+  assert.equal(Patch.buildPatch(file, file.hunks, new Set(), 'pick'), null)
+})
+
+check('a binary file is reported as having nothing to tick', () => {
+  const raw = [
+    'diff --git a/logo.png b/logo.png',
+    'index 1111111..2222222 100644',
+    'Binary files a/logo.png and b/logo.png differ',
+    '',
+  ].join('\n')
+  const [file] = Patch.parsePatch(raw)
+  assert.equal(file.binaryOrEmpty, true)
+  assert.equal(file.hunks.length, 0)
+})
+
+// -------------------------------------------- the new operations, for real
+
+const repo2 = path.join(out, 'repo2')
+fs.mkdirSync(repo2)
+const git2 = (...args) =>
+  execFileSync('git', args, { cwd: repo2, encoding: 'utf8', windowsHide: true }).trim()
+
+await checkAsync('an untracked folder can be started, and only then', async () => {
+  const res = await G.initRepo(repo2)
+  assert.equal(res.ok, true, res.error)
+  const status = await G.repoStatus(repo2)
+  assert.ok(status.root, 'git is watching it now')
+  assert.equal(status.lastSave, undefined, 'and there is nothing saved in it yet')
+
+  const again = await G.initRepo(repo2)
+  assert.equal(again.ok, false, 'a folder already tracked is not tracked twice')
+  assert.match(again.hint, /already/)
+})
+
+git2('config', 'user.email', 'test@example.com')
+git2('config', 'user.name', 'Test Person')
+git2('config', 'commit.gpgsign', 'false')
+
+const lines = (...values) => values.join('\n') + '\n'
+const fileIn2 = (name) => path.join(repo2, name)
+
+await checkAsync('one block of a file can go into a save while the rest stays out', async () => {
+  fs.writeFileSync(fileIn2('a.txt'), lines('one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'))
+  await G.pick(repo2, ['a.txt'])
+  await G.save(repo2, 'the starting point')
+
+  // A fix near the top and a stray line near the bottom: the exact case the
+  // file-sized unit cannot express.
+  fs.writeFileSync(
+    fileIn2('a.txt'),
+    lines('one', 'the fix', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'console.log("stray")', 'nine', 'ten')
+  )
+
+  const raw = await G.fileDiff(repo2, 'a.txt', {})
+  const [file] = Patch.parsePatch(raw)
+  assert.equal(file.hunks.length, 2, 'far enough apart to be two blocks')
+
+  const built = Patch.buildPatch(file, [file.hunks[0]], new Set(Patch.hunkLineIndices(file.hunks[0])), 'pick')
+  const res = await G.applyLines(repo2, built, 'pick')
+  assert.equal(res.ok, true, res.error)
+
+  const picked = await G.fileDiff(repo2, 'a.txt', { picked: true })
+  assert.match(picked, /\+the fix/)
+  assert.ok(!/stray/.test(picked), 'the stray line is not going into this save')
+
+  const left = await G.fileDiff(repo2, 'a.txt', {})
+  assert.match(left, /stray/, 'and it is still sitting there, changed and not picked')
+
+  // The file on disk is untouched by either half — the property that makes
+  // this safe enough to offer at all.
+  assert.match(fs.readFileSync(fileIn2('a.txt'), 'utf8'), /console\.log\("stray"\)/)
+})
+
+await checkAsync('the same block can be taken back out again', async () => {
+  const raw = await G.fileDiff(repo2, 'a.txt', { picked: true })
+  const [file] = Patch.parsePatch(raw)
+  const built = Patch.buildPatch(file, file.hunks, new Set(Patch.hunkLineIndices(file.hunks[0])), 'unpick')
+  const res = await G.applyLines(repo2, built, 'unpick')
+  assert.equal(res.ok, true, res.error)
+
+  const status = await G.repoStatus(repo2)
+  assert.equal(status.files[0].picked, '', 'nothing is picked any more')
+  assert.match(fs.readFileSync(fileIn2('a.txt'), 'utf8'), /the fix/, 'and the file still has both changes')
+})
+
+await checkAsync('undoing the last save keeps every file exactly as it is', async () => {
+  await G.pick(repo2, ['a.txt'])
+  await G.save(repo2, 'a save to take back')
+  const before = fs.readFileSync(fileIn2('a.txt'), 'utf8')
+
+  const status = await G.repoStatus(repo2)
+  assert.equal(status.lastSave.subject, 'a save to take back', 'the save is named, so the button can say which')
+
+  const res = await G.undoLastSave(repo2)
+  assert.equal(res.ok, true, res.error)
+
+  assert.equal(fs.readFileSync(fileIn2('a.txt'), 'utf8'), before, 'not one character of the file changed')
+  const after = await G.repoStatus(repo2)
+  assert.equal(after.lastSave.subject, 'the starting point', 'the save is gone')
+  assert.equal(after.files[0].picked, 'M', 'and what it held is picked again, ready to be saved differently')
+})
+
+await checkAsync('adding to the last save makes one save rather than two', async () => {
+  const countBefore = (await G.history(repo2)).length
+  const res = await G.amend(repo2, 'the fix, and the stray line')
+  assert.equal(res.ok, true, res.error)
+  const commits = await G.history(repo2)
+  assert.equal(commits.length, countBefore, 'no new save was added')
+  assert.equal(commits[0].subject, 'the fix, and the stray line')
+})
+
+await checkAsync('a save that has been sent can be neither undone nor added to', async () => {
+  const bare = path.join(out, 'origin2.git')
+  execFileSync('git', ['init', '--bare', '--initial-branch=main', bare], { encoding: 'utf8', windowsHide: true })
+  git2('remote', 'add', 'origin', bare)
+  git2('push', '--quiet', '--set-upstream', 'origin', 'main')
+
+  const undo = await G.undoLastSave(repo2)
+  assert.equal(undo.ok, false, 'rewriting something somebody else may have is where this pane stops')
+  assert.match(undo.hint, /already/)
+
+  const add = await G.amend(repo2, 'nope')
+  assert.equal(add.ok, false)
+  assert.match(add.hint, /already/)
+})
+
+await checkAsync('undoing what a save did makes a new save rather than removing it', async () => {
+  // The undo that is safe at any age, which is why it is the one offered on
+  // every row of the history rather than on only the newest.
+  const before = await G.history(repo2)
+  const target = before[0]
+  const res = await G.revertSave(repo2, target.sha)
+  assert.equal(res.ok, true, res.error)
+
+  const after = await G.history(repo2)
+  assert.equal(after.length, before.length + 1, 'a save was added, not taken away')
+  assert.ok(after.some((c) => c.sha === target.sha), 'and the one it undid is still there')
+  assert.match(after[0].subject, /Revert/)
+})
+
+await checkAsync('a name can be put on a save, and not silently moved off another', async () => {
+  const [newest] = await G.history(repo2)
+  const res = await G.addTag(repo2, newest.sha, 'v1.0')
+  assert.equal(res.ok, true, res.error)
+  assert.match(git2('tag', '--list'), /v1\.0/)
+
+  const again = await G.addTag(repo2, newest.parents[0], 'v1.0')
+  assert.equal(again.ok, false, 'a name already in use is a question, not something to overwrite')
+})
+
+await checkAsync('the list of saves can be narrowed without breaking on a filter nobody matches', async () => {
+  // A save of its own, on a file nothing else touches, so the path filter has
+  // something to exclude rather than trivially matching everything.
+  fs.writeFileSync(fileIn2('notes.md'), '# notes\n')
+  await G.pick(repo2, ['notes.md'])
+  await G.save(repo2, 'a distinctive message about pelicans')
+
+  const all = await G.history(repo2)
+  assert.ok(all.length >= 3, `expected a few saves, got ${all.length}`)
+
+  const byMessage = await G.history(repo2, 400, { text: 'pelicans' })
+  assert.equal(byMessage.length, 1)
+  assert.equal(byMessage[0].subject, 'a distinctive message about pelicans')
+
+  const byAuthor = await G.history(repo2, 400, { author: 'Test Person' })
+  assert.equal(byAuthor.length, all.length, 'one person made all of them')
+
+  const byPath = await G.history(repo2, 400, { path: 'notes.md' })
+  assert.equal(byPath.length, 1, 'only the one save that touched it')
+  assert.equal(byPath[0].subject, 'a distinctive message about pelicans')
+
+  // `-S`: when did this text start or stop appearing in the code. The question
+  // no amount of reading save messages will answer.
+  const byContent = await G.history(repo2, 400, { content: 'console.log' })
+  assert.ok(byContent.length >= 1, 'the save that introduced it is found by the code, not by its message')
+
+  const nothing = await G.history(repo2, 400, { text: 'a phrase nobody wrote' })
+  assert.deepEqual(nothing, [], 'and no match is an empty list rather than a failure')
+})
+
+await checkAsync('pointing a project at a copy online refuses to move one already set', async () => {
+  const res = await G.setOrigin(repo2, 'https://github.com/someone/else.git')
+  assert.equal(res.ok, false, 'repointing by accident sends the next push somewhere forgotten')
+  assert.match(res.hint, /already points at/)
 })
 
 console.log(`\n${passed} checks passed`)

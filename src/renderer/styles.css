@@ -1753,8 +1753,12 @@ kbd {
   font-style: italic;
 }
 
-/* ------------------------------------------------------------------ diff pane */
+/* ------------------------------------------------------------------- git pane */
 
+/* One pane, two views. The shell is a column — head, description, band, body —
+   and the body is whichever view is showing, which is why the views themselves
+   carry no chrome of their own. */
+.git-pane,
 .diff-pane {
   display: flex;
   flex-direction: column;
@@ -1762,6 +1766,53 @@ kbd {
   min-height: 0;
   overflow: hidden;
   background: var(--bg);
+}
+
+.git-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.changes-view,
+.history-view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The switch sits first in the head and is never rebuilt on a poll, so the tab
+   under the cursor cannot move out from under it. */
+.git-switch {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius);
+  background: var(--bg-active);
+}
+
+.git-switch__tab {
+  padding: 3px 12px;
+  border: 0;
+  border-radius: calc(var(--radius) - 1px);
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.git-switch__tab:hover {
+  color: var(--text);
+}
+
+.git-switch__tab.current {
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.18);
 }
 
 .diff-head {
@@ -5258,4 +5309,374 @@ html.translucent .titlebar {
    there, and this is the only thing on screen saying it is about to move. */
 .files-row.cut {
   opacity: 0.45;
+}
+
+/* --------------------------------------------------------- picking by line */
+
+/* The bar above the patch. It only ever says one of two things: what a tick
+   would do, or what the ticks you have made are about to do. */
+.hunk-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.hunk-bar__note {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.hunk {
+  border-bottom: 1px solid var(--border);
+}
+
+.hunk-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--bg-active);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.hunk-head__where {
+  color: var(--text-dim);
+}
+
+.hunk-head__counts {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The function or section the block is in, as git names it. Truncated rather
+   than wrapped: it is orientation, not content, and a second line here pushes
+   the code itself down the screen. */
+.hunk-head__context {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  opacity: 0.75;
+}
+
+.hunk-head__action {
+  flex: none;
+  margin-left: auto;
+}
+
+.hunk-body {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hunk-line {
+  display: flex;
+  align-items: baseline;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.hunk-line__mark {
+  flex: none;
+  width: 1.2em;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.hunk-line__text {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.hunk-line--add {
+  background: rgba(63, 185, 80, 0.13);
+  color: #9fd6a5;
+}
+
+.hunk-line--del {
+  background: rgba(248, 81, 73, 0.13);
+  color: #f0a49f;
+}
+
+.hunk-line--ctx {
+  color: var(--text-dim);
+}
+
+.hunk-line--meta {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* Only the lines that can go into a save respond to a click. A context line
+   that highlighted on hover would be promising something it cannot do. */
+.hunk-line.pickable {
+  cursor: pointer;
+}
+
+.hunk-line.pickable:hover {
+  filter: brightness(1.25);
+}
+
+.hunk-line.pickable:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* A ticked line, marked on the left edge rather than by another background —
+   the background is already carrying whether it is an addition or a removal,
+   and a second colour on top makes both unreadable. */
+.hunk-line.ticked {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* A patch there is nothing to tick in — binary, a rename, an untracked file. */
+.diff-note {
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
+}
+
+/* "Every save that touched this file", on a changed file's row. */
+.diff-file__past {
+  flex: none;
+  border: 0;
+  padding: 0 4px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.diff-file:hover .diff-file__past,
+.diff-file__past:focus-visible {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------ the ways back */
+
+/* Under the two ways forward, never beside them, and never in the primary
+   style: these are for the minute after a save you did not mean to make. */
+.diff-foot__undo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+.diff-foot__undo:empty {
+  display: none;
+}
+
+.diff-foot__undo-label {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------- history search */
+
+.history-search {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-search__field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.history-search__field .text-input {
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Says what the list has been narrowed to, and — the part that matters — that
+   the picture is missing because the lines between these saves are not here. */
+.history-filter-note {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.history-more {
+  display: block;
+  width: calc(100% - 8px);
+  margin: 6px 4px;
+  padding: 5px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.history-more:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.history-detail__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.history-detail__filelist {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0 10px 8px;
+}
+
+.history-detail__filelist .history-link {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.history-detail__filelist .history-link:hover {
+  text-decoration: underline;
+}
+
+/* ----------------------------------------------------------------- publish */
+
+.publish-panel {
+  width: min(560px, calc(100vw - 48px));
+}
+
+.publish-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.publish-say {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+.publish-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+/* The one thing that makes publishing go wrong, said where it cannot be
+   missed: an empty project, or the push is refused and the whole
+   copy-into-a-fresh-clone habit starts. */
+.publish-warn {
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.publish-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.publish-field__label {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.publish-hosts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.publish-host {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.publish-host:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.publish-host.current {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text);
+}
+
+/* Marks a host whose own tool is signed in here — the route with no browser. */
+.publish-host__ready {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #3fb950;
+  color: #08170c;
+  font-size: 10px;
+}
+
+.publish-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.publish-actions--step {
+  justify-content: flex-start;
 }

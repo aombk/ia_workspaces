@@ -300,12 +300,14 @@ function newTabEntries(workspaceId: string): MenuEntry[] {
       onClick: () => actions.openEditor(workspaceId),
     },
     {
-      label: 'Changes',
+      label: 'Git — changes',
       shortcut: 'Ctrl+Shift+D',
       onClick: () => actions.openDiff(workspaceId),
     },
     {
-      label: 'History',
+      // Two doors into one pane. Both are kept because landing on the view you
+      // wanted is the point of having asked for it.
+      label: 'Git — history',
       shortcut: 'Ctrl+Shift+H',
       onClick: () => actions.openHistory(workspaceId),
     },

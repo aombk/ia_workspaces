@@ -857,6 +857,16 @@ export interface RepoStatus {
   detached: boolean
   /** The short number (hash) of the save you are on. */
   head?: string
+  /**
+   * The same number in full.
+   *
+   * Kept beside the short one rather than replacing it, because the two are for
+   * different things: the short one is what a person reads, and the full one is
+   * what gets compared against `unsent` to answer "has this actually left this
+   * machine" — a comparison that a seven-character prefix would get right until
+   * the day a project grew two saves sharing one.
+   */
+  headFull?: string
   /** The branch on GitHub this one is paired with, like `origin/main`. */
   upstream?: string
   /** Saves you have that GitHub has not. */
@@ -885,6 +895,51 @@ export interface RepoStatus {
    * and the buttons would be lying about what they do.
    */
   inProgress?: 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect'
+  /**
+   * The save you are standing on, named.
+   *
+   * Here so the two operations that act on it can say which one they mean —
+   * "Add to 'fixed the parser'" rather than "Amend" — and undefined in a project
+   * whose first save has not been made, which is the state the publish flow
+   * exists for.
+   */
+  lastSave?: { sha: string; subject: string }
+}
+
+/**
+ * Narrowing the list of saves down to the ones being looked for.
+ *
+ * Four separate fields rather than one search box, because they are four
+ * genuinely different questions and git answers them with four different flags.
+ * The one people reach for and never find is `content`: "when did this line of
+ * code appear", which no amount of reading commit messages will answer.
+ */
+export interface HistoryFilter {
+  /** Text in the save's message. */
+  text?: string
+  /** Who made it. */
+  author?: string
+  /** Only saves that touched this file, as a path inside the project. */
+  path?: string
+  /** Only saves where this text started or stopped appearing in the code. */
+  content?: string
+}
+
+/**
+ * A host's own command-line tool, and whether it can be used.
+ *
+ * Installed and signed in are separate because they need separate sentences:
+ * one is "you could install this", the other is "run `gh auth login` once".
+ */
+export interface HostTool {
+  /** The program name, which is also how the publish flow asks for it back. */
+  command: string
+  host: 'github' | 'gitlab'
+  label: string
+  installed: boolean
+  signedIn: boolean
+  /** What it said when it refused, for the times that is worth showing. */
+  note?: string
 }
 
 /** One save (commit), as the history pane draws it. */

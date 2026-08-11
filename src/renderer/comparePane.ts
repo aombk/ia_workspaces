@@ -18,7 +18,7 @@
  */
 import { backend } from '../backend'
 import { store } from './state'
-import { classify } from './diffPane'
+import { classify } from './git/common'
 import { FILE_DRAG } from './filesPane'
 import type { AuxPane } from './auxPane'
 

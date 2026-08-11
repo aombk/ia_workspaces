@@ -27,6 +27,8 @@ import type {
   Branch,
   ChangedFile,
   GitResult,
+  HistoryFilter,
+  HostTool,
 } from '../shared/types'
 
 /**
@@ -122,13 +124,13 @@ const api = {
    * The git panes' whole surface.
    *
    * Grouped rather than flat, unlike the older `gitStatus`/`gitDiff` pair beside
-   * it, because there are fifteen of these and a flat namespace of
+   * it, because there are two dozen of these and a flat namespace of
    * `gitSomething` reads like a pile rather than like one feature.
    */
   git: {
     repoStatus: (cwd: string): Promise<RepoStatus> => ipcRenderer.invoke(IPC.gitRepoStatus, cwd),
-    history: (cwd: string, limit?: number): Promise<Commit[]> =>
-      ipcRenderer.invoke(IPC.gitHistory, cwd, limit),
+    history: (cwd: string, limit?: number, filter?: HistoryFilter): Promise<Commit[]> =>
+      ipcRenderer.invoke(IPC.gitHistory, cwd, limit, filter),
     branches: (cwd: string): Promise<Branch[]> => ipcRenderer.invoke(IPC.gitBranches, cwd),
     fileDiff: (cwd: string, repoPath: string, opts: { picked?: boolean; untracked?: boolean }): Promise<string> =>
       ipcRenderer.invoke(IPC.gitFileDiff, cwd, repoPath, opts),
@@ -146,6 +148,20 @@ const api = {
     goTo: (cwd: string, branch: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitGoTo, cwd, branch),
     startBranch: (cwd: string, name: string): Promise<GitResult> =>
       ipcRenderer.invoke(IPC.gitStartBranch, cwd, name),
+    applyLines: (cwd: string, patch: string, direction: 'pick' | 'unpick'): Promise<GitResult> =>
+      ipcRenderer.invoke(IPC.gitApplyLines, cwd, patch, direction),
+    undoLastSave: (cwd: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitUndoLastSave, cwd),
+    amend: (cwd: string, message: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitAmend, cwd, message),
+    revert: (cwd: string, sha: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitRevert, cwd, sha),
+    tag: (cwd: string, sha: string, name: string): Promise<GitResult> =>
+      ipcRenderer.invoke(IPC.gitTag, cwd, sha, name),
+    init: (cwd: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitInit, cwd),
+    setOrigin: (cwd: string, url: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitSetOrigin, cwd, url),
+    hostTools: (cwd: string): Promise<HostTool[]> => ipcRenderer.invoke(IPC.gitHostTools, cwd),
+    createOnline: (
+      cwd: string,
+      opts: { command: string; name: string; private: boolean; description?: string }
+    ): Promise<GitResult> => ipcRenderer.invoke(IPC.gitCreateOnline, cwd, opts),
   },
   setAgentHooks: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string; path: string }> =>
     ipcRenderer.invoke(IPC.setAgentHooks, id, enabled),

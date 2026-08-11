@@ -11,8 +11,8 @@ import { isEditing } from './ui/editing'
 import { FilesPane, type FilesPaneHooks } from './filesPane'
 import { ReaderPane, type ReaderPaneHooks } from './readerPane'
 import { EditorPane, type EditorPaneHooks } from './editorPane'
-import { DiffPane, diffRoot, type DiffPaneHooks } from './diffPane'
-import { HistoryPane, historyRoot, type HistoryPaneHooks } from './historyPane'
+import { GitPane, viewForKind } from './git/gitPane'
+import { gitRoot } from './git/common'
 import { ComparePane } from './comparePane'
 import { SearchPane, type SearchPaneHooks } from './searchPane'
 import { PortsPane, type PortsPaneHooks } from './portsPane'
@@ -100,8 +100,6 @@ export class TerminalManager {
   private editorHooks: EditorPaneHooks | null = null
   private portsHooks: PortsPaneHooks | null = null
   private imagesHooks: ImagesPaneHooks | null = null
-  private diffHooks: DiffPaneHooks | null = null
-  private historyHooks: HistoryPaneHooks | null = null
   private searchHooks: SearchPaneHooks | null = null
   private paneHooks: PaneHooks | null = null
   /** Pane being dragged by its header, so drop targets know what to expect. */
@@ -604,21 +602,6 @@ export class TerminalManager {
   }
 
   /**
-   * Wired by the app shell once, so each git pane can reach the other.
-   *
-   * The two answer different halves of one question — what is different now,
-   * and what has happened — and each of them has a moment where the answer is
-   * in the other. A link rather than a merged pane: one pane doing both would
-   * be a pane where the buttons that change things sit next to four hundred
-   * rows of history, and the thing you are about to press would depend on where
-   * you last scrolled.
-   */
-  setGitHooks(diff: DiffPaneHooks, history: HistoryPaneHooks): void {
-    this.diffHooks = diff
-    this.historyHooks = history
-  }
-
-  /**
    * Mounts the non-shell pane for a state, making it if it isn't there yet.
    *
    * The dispatch lives here and nowhere else: a new pane kind is a case in this
@@ -635,17 +618,16 @@ export class TerminalManager {
       case 'editor':
         pane = new EditorPane(state.id, workspaceIdOf(state.id), this.editorHooks!)
         break
+      // Two names, one pane. See `viewForKind` for why both still exist.
       case 'diff':
-        pane = new DiffPane(state.id, diffRoot(state.id), this.diffHooks!)
-        break
       case 'history':
-        pane = new HistoryPane(state.id, historyRoot(state.id), this.historyHooks!)
+        pane = new GitPane(state.id, gitRoot(state.id), viewForKind(state.kind))
         break
       case 'compare':
         pane = new ComparePane(state.id)
         break
       case 'search':
-        pane = new SearchPane(state.id, diffRoot(state.id), this.searchHooks!)
+        pane = new SearchPane(state.id, gitRoot(state.id), this.searchHooks!)
         break
       case 'ports':
         pane = new PortsPane(state.id, this.portsHooks!)

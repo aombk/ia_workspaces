@@ -293,7 +293,7 @@ function collect(): Command[] {
       },
       {
         kind: 'Action',
-        label: 'History',
+        label: 'Git — history',
         detail: 'every save in this project, and the lines they sit on — Ctrl+Shift+H',
         run: () => actions.openHistory(id),
       },

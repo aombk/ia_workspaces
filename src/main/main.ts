@@ -65,7 +65,7 @@ import {
   MAC_TRAFFIC_LIGHTS,
 } from '../shared/platform'
 import { DEFAULT_THEME_ID, findInterfaceTheme, type InterfaceTheme } from '../shared/themes'
-import type { SpawnRequest } from '../shared/types'
+import type { HistoryFilter, SpawnRequest } from '../shared/types'
 
 /** The title bar's height. Must match `--titlebar-h` in styles.css. */
 const TITLEBAR_H = 36
@@ -647,7 +647,9 @@ function bootApp(): void {
     // The git panes. Every one of these is a thin forward: the module owns the
     // decisions, including which of them are allowed to exist at all.
     ipcMain.handle(IPC.gitRepoStatus, (_e, cwd: string) => git.repoStatus(cwd))
-    ipcMain.handle(IPC.gitHistory, (_e, cwd: string, limit?: number) => git.history(cwd, limit))
+    ipcMain.handle(IPC.gitHistory, (_e, cwd: string, limit?: number, filter?: HistoryFilter) =>
+      git.history(cwd, limit, filter)
+    )
     ipcMain.handle(IPC.gitBranches, (_e, cwd: string) => git.branches(cwd))
     ipcMain.handle(
       IPC.gitFileDiff,
@@ -667,6 +669,26 @@ function bootApp(): void {
     ipcMain.handle(IPC.gitBringIn, (_e, cwd: string) => git.bringIn(cwd))
     ipcMain.handle(IPC.gitGoTo, (_e, cwd: string, branch: string) => git.goTo(cwd, branch))
     ipcMain.handle(IPC.gitStartBranch, (_e, cwd: string, name: string) => git.startBranch(cwd, name))
+    ipcMain.handle(IPC.gitApplyLines, (_e, cwd: string, patch: string, direction: 'pick' | 'unpick') =>
+      git.applyLines(cwd, patch, direction === 'unpick' ? 'unpick' : 'pick')
+    )
+    ipcMain.handle(IPC.gitUndoLastSave, (_e, cwd: string) => git.undoLastSave(cwd))
+    ipcMain.handle(IPC.gitAmend, (_e, cwd: string, message: string) => git.amend(cwd, message ?? ''))
+    ipcMain.handle(IPC.gitRevert, (_e, cwd: string, sha: string) => git.revertSave(cwd, sha))
+    ipcMain.handle(IPC.gitTag, (_e, cwd: string, sha: string, name: string) => git.addTag(cwd, sha, name))
+    ipcMain.handle(IPC.gitInit, (_e, cwd: string) => git.initRepo(cwd))
+    ipcMain.handle(IPC.gitSetOrigin, (_e, cwd: string, url: string) => git.setOrigin(cwd, url))
+    ipcMain.handle(IPC.gitHostTools, (_e, cwd: string) => git.hostTools(cwd))
+    ipcMain.handle(
+      IPC.gitCreateOnline,
+      (_e, cwd: string, opts: { command: string; name: string; private: boolean; description?: string }) =>
+        // The tool name is checked against the two this app knows rather than
+        // passed through: everything else here forwards to git, and this one
+        // forwards to an arbitrary program name from the renderer.
+        opts && (opts.command === 'gh' || opts.command === 'glab')
+          ? git.createOnline(cwd, opts)
+          : Promise.resolve({ ok: false, error: 'unknown tool' })
+    )
     ipcMain.handle(IPC.setAgentHooks, (_e, id: string, enabled: boolean) => {
       const spec = agentById(id)
       if (!spec) return { ok: false, error: `unknown agent: ${id}`, path: '' }

@@ -25,6 +25,8 @@ import type {
   Branch,
   ChangedFile,
   GitResult,
+  HistoryFilter,
+  HostTool,
 } from '../shared/types'
 
 /**
@@ -275,7 +277,7 @@ export interface Backend {
     /** Branch, ahead/behind, and every changed file, from one call. */
     repoStatus(cwd: string): Promise<RepoStatus>
     /** Saves across every branch, newest first, for the picture. */
-    history(cwd: string, limit?: number): Promise<Commit[]>
+    history(cwd: string, limit?: number, filter?: HistoryFilter): Promise<Commit[]>
     branches(cwd: string): Promise<Branch[]>
     /** One file's changed lines, from whichever of the three places it is in. */
     fileDiff(cwd: string, repoPath: string, opts: { picked?: boolean; untracked?: boolean }): Promise<string>
@@ -295,6 +297,29 @@ export interface Backend {
     bringIn(cwd: string): Promise<GitResult>
     goTo(cwd: string, branch: string): Promise<GitResult>
     startBranch(cwd: string, name: string): Promise<GitResult>
+    /**
+     * Picks or unpicks exactly the lines in a patch the renderer cut down.
+     * `--cached` either way, so no file on disk is touched.
+     */
+    applyLines(cwd: string, patch: string, direction: 'pick' | 'unpick'): Promise<GitResult>
+    /** Undoes the last save and keeps every file (`reset --soft`). Never `--hard`. */
+    undoLastSave(cwd: string): Promise<GitResult>
+    /** Puts what is picked into the save that already exists. Refused once sent. */
+    amend(cwd: string, message: string): Promise<GitResult>
+    /** Undoes one save by making a new one that puts it back. Safe at any age. */
+    revert(cwd: string, sha: string): Promise<GitResult>
+    tag(cwd: string, sha: string, name: string): Promise<GitResult>
+    /** Starts tracking a folder that git has never been told about. */
+    init(cwd: string): Promise<GitResult>
+    /** Points the project at its copy online. Refuses to move one already set. */
+    setOrigin(cwd: string, url: string): Promise<GitResult>
+    /** Which host CLIs are installed and signed in, for the one-button publish. */
+    hostTools(cwd: string): Promise<HostTool[]>
+    /** Makes the project online with the host's own tool, and sends everything. */
+    createOnline(
+      cwd: string,
+      opts: { command: string; name: string; private: boolean; description?: string }
+    ): Promise<GitResult>
   }
 
   agents: {

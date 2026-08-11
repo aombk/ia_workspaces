@@ -11,7 +11,7 @@
  */
 import { backend } from '../backend'
 import type { AuxPane } from './auxPane'
-import { searchRoot } from './diffPane'
+import { searchRoot } from './git/common'
 import { remoteHostOfPane } from './state'
 import type { SearchHit } from '../shared/types'
 

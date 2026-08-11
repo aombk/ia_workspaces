@@ -101,13 +101,6 @@ export async function start(): Promise<void> {
     openInEditor: (target) => openInEditor(target),
   })
 
-  // Each git pane can send you to the other, and a workspace that has neither
-  // open gets one made rather than a link that does nothing.
-  terminals.setGitHooks(
-    { openHistory: (workspaceId) => actions.openHistory(workspaceId || store.activeWorkspace?.id || '') },
-    { openChanges: (workspaceId) => actions.openDiff(workspaceId || store.activeWorkspace?.id || '') }
-  )
-
   terminals.setPortsHooks({
     jumpToPane: (workspaceId, paneId) => actions.jumpToPane(workspaceId, paneId),
     // Typed, never submitted: ending a process is not a one-click action from a
@@ -388,6 +381,26 @@ function findPane(
   return null
 }
 
+/**
+ * Opens the git pane on the view that was asked for.
+ *
+ * One per workspace, and one for *both* questions: Changes and History are two
+ * views of one pane now, so asking for either when the other is already open
+ * switches that pane over rather than making a second one. The kind is how the
+ * view is recorded — see `setPaneKind` — so setting it is the whole of the
+ * switch, and the pane picks it up on the next render through its `sync`.
+ */
+function openGit(workspaceId: string, kind: 'diff' | 'history'): void {
+  const existing = findPane((p) => p.kind === 'diff' || p.kind === 'history', workspaceId)
+  if (existing) {
+    store.setPaneKind(existing.paneId, kind)
+    actions.jumpToPane(existing.workspaceId, existing.paneId)
+    return
+  }
+  store.addTab(workspaceId, undefined, kind)
+  void syncMountedTab()
+}
+
 function updateBadge(): void {
   const count = store.settings.notifications.flashTaskbar ? store.attention.size : 0
   void backend().setBadge(count)
@@ -643,32 +656,18 @@ const actions: UiActions = {
   },
 
   openDiff(workspaceId) {
-    const existing = findPane((p) => p.kind === 'diff', workspaceId)
-    if (existing) {
-      actions.jumpToPane(existing.workspaceId, existing.paneId)
-      return
-    }
-    store.addTab(workspaceId, undefined, 'diff')
-    void syncMountedTab()
+    openGit(workspaceId, 'diff')
   },
 
-  // One per workspace, like the changes pane: it is one question about one
-  // repository, so a second would draw exactly the same picture.
   openHistory(workspaceId) {
-    const existing = findPane((p) => p.kind === 'history', workspaceId)
-    if (existing) {
-      actions.jumpToPane(existing.workspaceId, existing.paneId)
-      return
-    }
-    store.addTab(workspaceId, undefined, 'history')
-    void syncMountedTab()
+    openGit(workspaceId, 'history')
   },
 
   /**
    * Compares two files, asking for whichever it was not given.
    *
-   * Unlike the other openers this never reuses an existing pane: "Changes" is
-   * one question about one workspace, but a compare is about a specific pair,
+   * Unlike the other openers this never reuses an existing pane: the Git pane
+   * is one question about one workspace, but a compare is about a specific pair,
    * and folding a second comparison into the first would throw away the one you
    * were looking at. Each pair gets its own tab.
    */

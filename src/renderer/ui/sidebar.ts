@@ -380,12 +380,12 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
       onClick: () => actions.openEditor(workspaceId),
     },
     {
-      label: 'Changes',
+      label: 'Git — changes',
       shortcut: 'Ctrl+Shift+D',
       onClick: () => actions.openDiff(workspaceId),
     },
     {
-      label: 'History',
+      label: 'Git — history',
       shortcut: 'Ctrl+Shift+H',
       onClick: () => actions.openHistory(workspaceId),
     },

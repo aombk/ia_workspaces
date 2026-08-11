@@ -15,6 +15,7 @@ import {
   type PaneActivity,
   type PaneAgentState,
   type PaneNode,
+  type PaneKind,
   type PaneState,
   type PersistedState,
   type Settings,
@@ -983,6 +984,25 @@ class WorkspaceState {
     const pane = this.pane(paneId)
     if (!pane || pane.url === url) return
     pane.url = url
+    this.commit()
+  }
+
+  /**
+   * Records which of its two views the git pane is showing.
+   *
+   * The kind *is* the view — `diff` and `history` are the two names the git
+   * pane answers to — so switching views writes it back rather than keeping a
+   * second field. Two things fall out of that for free: the tab renames itself,
+   * because its title is derived from the kind; and the view you left is the
+   * view you come back to after a restart, because the kind is persisted.
+   *
+   * Safe only because both names mount the same class: the pane is cached by
+   * id, so nothing is torn down and rebuilt under the change.
+   */
+  setPaneKind(paneId: string, kind: PaneKind): void {
+    const pane = this.pane(paneId)
+    if (!pane || pane.kind === kind) return
+    pane.kind = kind
     this.commit()
   }
 
@@ -2003,8 +2023,10 @@ export function paneLabel(pane: PaneState): string {
   // back as the whole path.
   if (pane.kind === 'reader') return fileName(pane.file) || 'File'
   if (pane.kind === 'editor') return `e: ${fileName(pane.file) || 'Untitled'}`
-  if (pane.kind === 'diff') return 'Changes'
-  if (pane.kind === 'history') return 'History'
+  // One name for both kinds, because they are one pane: the kind records which
+  // of its two views is showing, and a tab that renamed itself every time you
+  // pressed the switch inside it would read as a second tab appearing.
+  if (pane.kind === 'diff' || pane.kind === 'history') return 'Git'
   // Both names, because which two files this pane holds is the whole of what it
   // is — and a workspace can hold several compares at once.
   if (pane.kind === 'compare') {

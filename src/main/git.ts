@@ -39,6 +39,8 @@ import type {
   CommitRef,
   GitChange,
   GitResult,
+  HistoryFilter,
+  HostTool,
   RepoStatus,
 } from '../shared/types'
 
@@ -101,6 +103,38 @@ function run(cwd: string, args: string[], opts: { timeout?: number; network?: bo
         resolve({ ok: !error, out: stdout ?? '', err: (stderr ?? '').trim() || (error?.message ?? '') })
       }
     )
+  })
+}
+
+/**
+ * The same, with a patch fed to git on its standard input.
+ *
+ * Only `git apply` needs this, and it needs it rather than a temporary file for
+ * a reason worth stating: a patch written to disk is a patch that outlives the
+ * operation if the process dies mid-way, in a folder the user did not ask us to
+ * write to. Down the pipe it exists for as long as the command does.
+ */
+function runInput(cwd: string, args: string[], input: string): Promise<GitRun> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      'git',
+      args,
+      {
+        cwd,
+        timeout: LOCAL_TIMEOUT_MS,
+        windowsHide: true,
+        maxBuffer: MAX_OUTPUT,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat', GIT_EDITOR: 'true', LC_ALL: 'C' },
+      },
+      (error, stdout, stderr) => {
+        resolve({ ok: !error, out: stdout ?? '', err: (stderr ?? '').trim() || (error?.message ?? '') })
+      }
+    )
+    // A patch git refuses can make it exit before the whole thing is written,
+    // and the resulting EPIPE would otherwise take the process down rather than
+    // become the error message it is.
+    child.stdin?.on('error', () => {})
+    child.stdin?.end(input)
   })
 }
 
@@ -182,6 +216,34 @@ export function hintFor(text: string): string | undefined {
       'This project has no copy on GitHub yet, or the address it has does not work. ' +
       'Your saves are all still here; there is simply nowhere to send them to.'
     )
+  }
+  if (/refusing to merge unrelated histories/.test(t)) {
+    return (
+      'The copy online was started separately — it was made with a README or a licence file, so it has a save of its own ' +
+      'and the two histories have nothing in common. Nothing is lost either way. ' +
+      'Bring theirs in with `git pull --rebase --allow-unrelated-histories` in the terminal beside this pane, then send again.'
+    )
+  }
+  if (/patch does not apply|corrupt patch|does not match index|while searching for/.test(t)) {
+    return (
+      'The file changed after this pane drew the lines you ticked, so the part it was going to pick is no longer where it was. ' +
+      'Nothing was picked and nothing on disk was touched — the pane will redraw, and you can tick them again.'
+    )
+  }
+  if (/remote origin already exists/.test(t)) {
+    return (
+      'This project already has an address for its copy online. Nothing was changed. ' +
+      'To point it somewhere else, run `git remote set-url origin <address>` in the terminal beside this pane.'
+    )
+  }
+  if (/name already exists on this account|repository .* already exists|already exists on remote/.test(t)) {
+    return (
+      'There is already a project of that name on your account, so nothing was made. ' +
+      'Either pick another name, or — if that one *is* this project — paste its address instead of making a new one.'
+    )
+  }
+  if (/gh: command not found|glab: command not found|is not recognized as an internal/.test(t)) {
+    return 'That tool is not installed on this machine, so this pane cannot use it. The step-by-step way beside it needs nothing installed.'
   }
   if (/index\.lock|another git process/.test(t)) {
     return 'Another git command is running in this folder — often one in the terminal beside this pane. Let it finish and try again.'
@@ -285,6 +347,7 @@ export function parseStatus(
     branch: undefined as string | undefined,
     detached: false,
     head: undefined as string | undefined,
+    headFull: undefined as string | undefined,
     upstream: undefined as string | undefined,
     ahead: 0,
     behind: 0,
@@ -313,7 +376,13 @@ export function parseStatus(
     if (record.startsWith('# ')) {
       const [key, ...rest] = record.slice(2).split(' ')
       const value = rest.join(' ')
-      if (key === 'branch.oid') out.head = value === '(initial)' ? undefined : value.slice(0, 7)
+      if (key === 'branch.oid') {
+        // "(initial)" is git's way of saying this repository has no saves at
+        // all yet, which is a state the publish flow has to be able to tell
+        // apart from "a save exists and I cannot read it".
+        out.head = value === '(initial)' ? undefined : value.slice(0, 7)
+        out.headFull = value === '(initial)' ? undefined : value
+      }
       else if (key === 'branch.head') {
         if (value === '(detached)') out.detached = true
         else out.branch = value
@@ -430,6 +499,16 @@ export async function repoStatus(cwd: string): Promise<RepoStatus> {
   if (!root) {
     return { root: '', detached: false, ahead: 0, behind: 0, hasRemote: false, files: [], unsent: [] }
   }
+  return statusOf(root)
+}
+
+/**
+ * The same answer for a root that has already been resolved.
+ *
+ * Split out because `send` wants the status of a root it is holding, and going
+ * back through `repoStatus` would re-resolve the root it just used.
+ */
+async function statusOf(root: string): Promise<RepoStatus> {
 
   const [status, remoteUrl, stopped] = await Promise.all([
     run(root, ['status', '--porcelain=v2', '--branch', '--untracked-files=normal', '-z']),
@@ -460,10 +539,32 @@ export async function repoStatus(cwd: string): Promise<RepoStatus> {
     root,
     ...parsed,
     unsent,
+    lastSave: await lastSave(root, parsed.headFull),
     hasRemote: remoteUrl.length > 0,
     remoteUrl: remoteUrl || undefined,
     inProgress: stopped,
   }
+}
+
+/**
+ * The message on the save you are standing on.
+ *
+ * Wanted for one sentence — "Add to 'fixed the parser'" — and paid for once per
+ * save rather than once per tick, because the sha is *in the cache key*. A new
+ * save changes the key and costs one spawn; three seconds later the same save
+ * costs nothing. That is the same trick `originUrl` plays with the config
+ * file's timestamp, and it is why this can sit in the poll at all.
+ */
+async function lastSave(root: string, sha: string | undefined): Promise<RepoStatus['lastSave']> {
+  if (!sha) return undefined
+  return shaped(
+    `lastsave:${root}:${sha}`,
+    async () => {
+      const res = await run(root, ['log', '-1', '--format=%s', sha])
+      return res.ok ? { sha, subject: res.out.trim() } : undefined
+    },
+    60 * 60_000
+  )
 }
 
 // --------------------------------------------------------------- history
@@ -553,14 +654,31 @@ async function remoteNames(cwd: string): Promise<string[]> {
  * roughly chronological without ever putting a save above one it came from,
  * which is the ordering `layoutGraph` is written against.
  */
-export async function history(cwd: string, limit = 400): Promise<Commit[]> {
+export async function history(cwd: string, limit = 400, filter?: HistoryFilter): Promise<Commit[]> {
   const root = (await repoRoot(cwd)) ?? cwd
   const remotes = await remoteNames(root)
-  const args = ['log', '--date-order', `--max-count=${Math.max(1, Math.min(2000, limit))}`, `--format=${LOG_FORMAT}`, '--all', 'HEAD']
-  let res = await run(root, args)
+  const args = ['log', '--date-order', `--max-count=${Math.max(1, Math.min(2000, limit))}`, `--format=${LOG_FORMAT}`, '--all']
+
+  // Every one of these is passed as its own argument and never interpolated
+  // into a string: what the user typed goes to git as a value, so a message
+  // search for `--author=me` searches for that text rather than becoming a
+  // flag. `execFile` takes an array for exactly this reason.
+  if (filter?.text) args.push('--regexp-ignore-case', `--grep=${filter.text}`)
+  if (filter?.author) args.push('--regexp-ignore-case', `--author=${filter.author}`)
+  // `-S` is git's "when did this text stop or start appearing" search, which is
+  // a different and often better question than "who mentioned it in a message".
+  if (filter?.content) args.push(`-S${filter.content}`)
+  // A path is a pathspec and has to come after the separator, or a file whose
+  // name happens to match a branch is read as a revision.
+  const tail = filter?.path ? ['--', filter.path] : []
+
+  let res = await run(root, [...args, 'HEAD', ...tail])
   // A repository whose first save has not been made yet has no HEAD to name,
   // and git treats that as a bad argument rather than as an empty answer.
-  if (!res.ok) res = await run(root, args.slice(0, -1))
+  // Dropping the name by position was fine while it was last; a path filter
+  // puts two more arguments after it, so the two forms are built rather than
+  // sliced.
+  if (!res.ok) res = await run(root, [...args, ...tail])
   if (!res.ok) return []
   return parseLog(res.out, remotes)
 }
@@ -793,4 +911,280 @@ export async function startBranch(cwd: string, name: string): Promise<GitResult>
   if (!clean) return { ok: false, error: 'a name is required' }
   const root = (await repoRoot(cwd)) ?? cwd
   return asResult(await run(root, ['switch', '--create', clean]))
+}
+
+// -------------------------------------------------------- part of a file
+
+/**
+ * Picks or unpicks exactly the lines in a patch the renderer built.
+ *
+ * The patch arrives already cut down — see `src/shared/diffPatch.ts` for the
+ * arithmetic — and all that is left here is to hand it to git the right way
+ * round. Neither direction writes to a file on disk: `--cached` means the patch
+ * lands in what is picked and nowhere else, so the worst case is git refusing
+ * it, which is a message rather than a loss.
+ *
+ * `--unidiff-zero` is deliberately *not* passed. It tells git to skip the
+ * context check, and the context check is the thing standing between a
+ * mis-built patch and lines being picked from the wrong part of the file.
+ */
+export async function applyLines(cwd: string, patch: string, direction: 'pick' | 'unpick'): Promise<GitResult> {
+  if (!patch.trim()) return { ok: false, error: 'nothing selected', hint: 'Tick at least one changed line first.' }
+  const root = (await repoRoot(cwd)) ?? cwd
+  const args = ['apply', '--cached', '--whitespace=nowarn']
+  if (direction === 'unpick') args.push('--reverse')
+  return asResult(await runInput(root, args, patch))
+}
+
+// ------------------------------------------------------------- undoing
+
+/**
+ * Undoes the last save, leaving every file exactly as it is.
+ *
+ * `--soft`, and only `--soft`. The distinction is the single most valuable
+ * thing this pane can teach: `git reset --soft HEAD~1` puts the save's contents
+ * back into "picked" and touches nothing on disk, while the `--hard` sitting
+ * one word away in every search result deletes the work outright. This offers
+ * the reversible one and does not offer the other.
+ *
+ * Refused once the save is on the copy online, because undoing a save that
+ * someone else may already have is the beginning of a rewrite, and a rewrite is
+ * exactly the class of operation this pane leaves to the terminal.
+ */
+export async function undoLastSave(cwd: string): Promise<GitResult> {
+  const root = (await repoRoot(cwd)) ?? cwd
+  const status = await statusOf(root)
+  if (!status.lastSave) {
+    return { ok: false, error: 'no saves yet', hint: 'There is no save to undo — this project has not had one made yet.' }
+  }
+  if (status.hasRemote && !status.unsent.includes(status.lastSave.sha)) {
+    return {
+      ok: false,
+      error: 'the last save has already been sent',
+      hint:
+        'That save is already on the copy online, so undoing it here would leave the two disagreeing about what happened. ' +
+        'Make a new save that puts it right instead — or, if you are certain nobody else has it, do it in the terminal beside this pane.',
+    }
+  }
+  // A first save has no save before it to fall back to, and `HEAD~1` is an
+  // error rather than an empty answer. Emptying the branch is the honest
+  // equivalent and keeps every file.
+  const first = await run(root, ['rev-parse', '--verify', '--quiet', 'HEAD~1'])
+  const args = first.ok ? ['reset', '--soft', 'HEAD~1'] : ['update-ref', '-d', 'HEAD']
+  return asResult(await run(root, args))
+}
+
+/**
+ * Puts what is picked into the save that already exists, instead of a new one.
+ *
+ * The same gate as undoing, and for the same reason — this replaces a save with
+ * a different one carrying the same intent, which is fine while it is yours
+ * alone and a rewrite once it is not.
+ */
+export async function amend(cwd: string, message: string): Promise<GitResult> {
+  const root = (await repoRoot(cwd)) ?? cwd
+  const status = await statusOf(root)
+  if (!status.lastSave) {
+    return { ok: false, error: 'no saves yet', hint: 'There is no save to add to yet. Make the first one.' }
+  }
+  if (status.hasRemote && !status.unsent.includes(status.lastSave.sha)) {
+    return {
+      ok: false,
+      error: 'the last save has already been sent',
+      hint:
+        'That save is already on the copy online. Changing it here would make the two disagree about what happened, so this makes a new save instead.',
+    }
+  }
+  const text = message.trim()
+  const args = text ? ['commit', '--amend', '-m', text] : ['commit', '--amend', '--no-edit']
+  return asResult(await run(root, args))
+}
+
+/**
+ * Undoes one save by making a new one that puts it back.
+ *
+ * The safe undo, and the one that works on a save everybody already has: git
+ * writes a fresh save whose content is the old one turned around, so nothing is
+ * rewritten and the record of both stays. `--no-edit` because the pane cannot
+ * open an editor, and git's default message already names what was reverted.
+ */
+export async function revertSave(cwd: string, sha: string): Promise<GitResult> {
+  if (!sha.trim()) return { ok: false, error: 'no save given' }
+  const root = (await repoRoot(cwd)) ?? cwd
+  // A merge has two sides, and reverting one needs to be told which to keep.
+  // `-m 1` means "keep the line you were on", the only answer a button can
+  // give honestly — and git refuses outright without it.
+  const parents = await run(root, ['rev-list', '--parents', '-n', '1', sha])
+  const isMerge = parents.ok && parents.out.trim().split(/\s+/).length > 2
+  const args = ['revert', '--no-edit']
+  if (isMerge) args.push('-m', '1')
+  args.push(sha)
+  return asResult(await run(root, args))
+}
+
+/** Puts a name on one save, so it can be found by it later. */
+export async function addTag(cwd: string, sha: string, name: string): Promise<GitResult> {
+  const clean = name.trim()
+  if (!clean) return { ok: false, error: 'a name is required' }
+  const root = (await repoRoot(cwd)) ?? cwd
+  // Not `--force`: a name that already points at another save is a question,
+  // and moving it silently is how a release tag comes to mean something else.
+  return asResult(await run(root, ['tag', clean, sha || 'HEAD']))
+}
+
+// ------------------------------------------------------------ publishing
+
+/**
+ * Starts tracking this folder, if it is not tracked already.
+ *
+ * `-b main` because the default git ships with is still `master` on any
+ * installation older than 2.28 or without `init.defaultBranch` set, and every
+ * host this app knows about now calls its default `main`. Getting them to agree
+ * from the start saves the "your push created a second branch" confusion that
+ * has no good explanation. Older gits reject the flag, and then the plain form
+ * is used and the branch is called whatever that git calls it.
+ */
+export async function initRepo(cwd: string): Promise<GitResult> {
+  const already = await repoRoot(cwd)
+  if (already) {
+    return { ok: false, error: 'already tracked', hint: `This folder is already part of a project git is watching (${already}).` }
+  }
+  let res = await run(cwd, ['init', '-b', 'main'])
+  if (!res.ok) res = await run(cwd, ['init'])
+  // The remembered "not a repository" for this folder is now wrong, and the
+  // pane asks again within the second.
+  shapeCache.delete(`root:${cwd}`)
+  return asResult(res)
+}
+
+/**
+ * Points this project at its copy online.
+ *
+ * Refuses to move an address that is already set. Repointing a project at a
+ * different host is a real thing people do and a rare one, and doing it by
+ * accident — because a publish flow was run twice — sends the next push
+ * somewhere the user has forgotten about.
+ */
+export async function setOrigin(cwd: string, url: string): Promise<GitResult> {
+  const clean = url.trim()
+  if (!clean) return { ok: false, error: 'an address is required' }
+  const root = (await repoRoot(cwd)) ?? cwd
+  const existing = await run(root, ['remote', 'get-url', 'origin'])
+  if (existing.ok && existing.out.trim()) {
+    return {
+      ok: false,
+      error: 'remote origin already exists',
+      hint: `This project already points at ${existing.out.trim()}. Nothing was changed.`,
+    }
+  }
+  const res = await run(root, ['remote', 'add', 'origin', clean])
+  // The origin cache is keyed on the config file's timestamp, which has just
+  // changed — so this is belt and braces rather than necessary, and cheap.
+  shapeCache.clear()
+  return asResult(res)
+}
+
+/**
+ * Runs a program that is not git, to find out whether it is there.
+ *
+ * Separate from `run` because everything in that function is about git — its
+ * environment variables, its pager, its prompt suppression — and because a tool
+ * that is missing is the ordinary answer here rather than a failure.
+ */
+function runTool(command: string, args: string[], cwd: string, timeout = 15_000): Promise<GitRun> {
+  return new Promise((resolve) => {
+    execFile(
+      command,
+      args,
+      { cwd, timeout, windowsHide: true, maxBuffer: MAX_OUTPUT, env: { ...process.env, NO_COLOR: '1' }, shell: false },
+      (error, stdout, stderr) => {
+        resolve({ ok: !error, out: stdout ?? '', err: (stderr ?? '').trim() || (error?.message ?? '') })
+      }
+    )
+  })
+}
+
+/**
+ * Which host command-line tools are installed here, and signed in.
+ *
+ * Asked because one of them collapses the whole publish flow into a button:
+ * `gh` and `glab` already hold the user's credentials, so with either present
+ * the app never has to see a token, store one, or send the user to a browser.
+ * Without one the guided route works and needs nothing installed — so this is
+ * a shortcut being offered, never a requirement.
+ *
+ * `auth status` rather than `--version`, because installed and signed in are
+ * different states and only the second one can make a project.
+ */
+export async function hostTools(cwd: string): Promise<HostTool[]> {
+  const candidates: { command: string; host: 'github' | 'gitlab'; label: string }[] = [
+    { command: 'gh', host: 'github', label: 'GitHub CLI' },
+    { command: 'glab', host: 'gitlab', label: 'GitLab CLI' },
+  ]
+  return Promise.all(
+    candidates.map(async ({ command, host, label }) => {
+      const res = await runTool(command, ['auth', 'status'], cwd)
+      // A missing program and a program that ran and said "not logged in" both
+      // come back as a non-zero exit, and they need different sentences on
+      // screen — so they are told apart by the shape of the failure.
+      const missing = /ENOENT|not found|not recognized|cannot find/i.test(res.err)
+      return {
+        command,
+        host,
+        label,
+        installed: !missing,
+        signedIn: res.ok,
+        note: missing ? undefined : res.ok ? undefined : firstLine(res.err || res.out),
+      }
+    })
+  )
+}
+
+function firstLine(text: string): string | undefined {
+  const line = text.split('\n').map((l) => l.trim()).find(Boolean)
+  return line || undefined
+}
+
+/**
+ * Makes the project online and sends everything to it, in one go.
+ *
+ * Only reachable when the matching tool reported itself signed in. The whole
+ * dance this replaces — make an empty project on a web page, copy the address,
+ * add it as a remote, push and set the pairing — is four steps with two places
+ * to get it wrong, and the tool does all four with the credentials it already
+ * has.
+ *
+ * `--source=.` matters: it tells `gh` this folder is the project, so it adds the
+ * remote here rather than making an empty one somewhere else and leaving the
+ * user to wire it up.
+ */
+export async function createOnline(
+  cwd: string,
+  opts: { command: string; name: string; private: boolean; description?: string }
+): Promise<GitResult> {
+  const root = (await repoRoot(cwd)) ?? cwd
+  const name = opts.name.trim()
+  if (!name) return { ok: false, error: 'a name is required' }
+  const visibility = opts.private ? '--private' : '--public'
+
+  if (opts.command === 'gh') {
+    const args = ['repo', 'create', name, '--source=.', '--remote=origin', '--push', visibility]
+    if (opts.description) args.push('--description', opts.description)
+    const res = await runTool('gh', args, root, NETWORK_TIMEOUT_MS)
+    shapeCache.clear()
+    return asResult(res)
+  }
+
+  if (opts.command === 'glab') {
+    // `glab` makes the project and adds the remote, but does not push — so the
+    // push is ours, and it is the ordinary one every other button here runs.
+    const args = ['repo', 'create', name, visibility, '--remoteName', 'origin']
+    if (opts.description) args.push('--description', opts.description)
+    const made = await runTool('glab', args, root, NETWORK_TIMEOUT_MS)
+    shapeCache.clear()
+    if (!made.ok) return asResult(made)
+    return send(root)
+  }
+
+  return { ok: false, error: `unknown tool: ${opts.command}` }
 }
