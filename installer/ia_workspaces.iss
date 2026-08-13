@@ -65,6 +65,15 @@ OutputDir=..\out\installer
 OutputBaseFilename=ia_workspaces-setup
 Compression=lzma2/max
 SolidCompression=yes
+; The whole packed tree is a quarter of a gigabyte of Electron, and LZMA2 at
+; /max over it is single-threaded by default — minutes of one core while the
+; other fifteen watch. Splitting the stream into blocks lets four of them work
+; at once; the cost is a percent or so of size, which is nothing against an
+; installer that is mostly incompressible binaries anyway. Four is Inno's
+; ceiling. The separate process is what gives the compressor room for a /max
+; dictionary without the 32-bit compiler's address space getting in the way.
+LZMANumBlockThreads=4
+LZMAUseSeparateProcess=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; Electron 43 requires Windows 10 or later. Without this, setup completes on an

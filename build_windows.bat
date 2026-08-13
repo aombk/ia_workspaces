@@ -53,16 +53,16 @@ if not exist "node_modules\" (
   call npm install || goto :fail_deps
 )
 
-echo [*] typecheck
+echo [*] typecheck  (%TIME%)
 call npm run typecheck || goto :fail_typecheck
 
-echo [*] tests
+echo [*] tests  (%TIME%)
 call npm test || goto :fail_tests
 
-echo [*] bundling
+echo [*] bundling  (%TIME%)
 call node build.mjs || goto :fail_build
 
-echo [*] packaging (portable exe + unpacked tree)
+echo [*] packaging (portable exe + unpacked tree)  (%TIME%)
 call npx electron-builder --win || goto :fail_build
 
 rem ── Installer ──────────────────────────────────────────────────────────────
@@ -92,16 +92,16 @@ if "%SKIP_INSTALLER%"=="1" (
   echo [!] Inno Setup not found — portable exe only.
   echo     Install it from https://jrsoftware.org/isdl.php to build the installer.
 ) else (
-  echo [*] packaging installer %APP_VERSION%
+  echo [*] packaging installer %APP_VERSION%  ^(%TIME%^)
   "%ISCC%" /Q /DMyAppVersion=%APP_VERSION% installer\ia_workspaces.iss || goto :fail_installer
 )
 
 echo.
-echo [*] collecting artifacts into build\
+echo [*] collecting artifacts into build\  (%TIME%)
 call node tools\collect.mjs || goto :fail_collect
 
 echo.
-echo === done ===
+echo === done ===  (%TIME%)
 dir /b build 2>nul
 echo.
 exit /b 0
