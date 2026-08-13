@@ -29,7 +29,7 @@ import type { Branch, ChangedFile, Commit, HistoryFilter } from '../../shared/ty
 import { confirmDialog, promptDialog } from '../ui/confirm'
 import { explain, gitButton } from '../ui/gitWord'
 import { showToast } from '../ui/toast'
-import { ago, patchElement } from './common'
+import { ago, patchElement, splitResizer } from './common'
 import type { RepoSnapshot } from './repoWatch'
 import type { GitContext, GitView } from './view'
 
@@ -100,6 +100,8 @@ export class HistoryView implements GitView {
     this.listEl = document.createElement('div')
     this.listEl.className = 'history-list'
     split.appendChild(this.listEl)
+
+    split.appendChild(splitResizer(this.listEl, 'history'))
 
     this.detailEl = document.createElement('div')
     this.detailEl.className = 'history-detail'

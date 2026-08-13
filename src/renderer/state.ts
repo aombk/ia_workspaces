@@ -103,6 +103,8 @@ const EMPTY: PersistedState = {
   sidebarWidth: 230,
   sidebarCollapsed: false,
   treeWidth: 260,
+  gitFilesWidth: 300,
+  gitHistoryWidth: 420,
   window: { width: 1360, height: 860, maximized: false },
   settings: DEFAULT_SETTINGS,
 }
@@ -1383,6 +1385,25 @@ class WorkspaceState {
     this.commit()
   }
 
+  /**
+   * Where the grip sits in a git pane. Shared rather than per-pane: a split you
+   * dragged wide once is a preference, and re-dragging it in the next pane is
+   * the app forgetting something you already said.
+   */
+  get gitFilesWidth(): number {
+    return this.data.gitFilesWidth
+  }
+
+  get gitHistoryWidth(): number {
+    return this.data.gitHistoryWidth
+  }
+
+  setGitSplit(which: 'files' | 'history', width: number): void {
+    if (which === 'files') this.data.gitFilesWidth = width
+    else this.data.gitHistoryWidth = width
+    this.commit()
+  }
+
 }
 
 // ------------------------------------------------------------ layout helpers
@@ -1750,6 +1771,8 @@ function normalize(raw: unknown): PersistedState {
     sidebarWidth: Number(doc.sidebarWidth ?? EMPTY.sidebarWidth),
     sidebarCollapsed: Boolean(doc.sidebarCollapsed),
     treeWidth: Number(doc.treeWidth ?? EMPTY.treeWidth),
+    gitFilesWidth: Number(doc.gitFilesWidth ?? EMPTY.gitFilesWidth),
+    gitHistoryWidth: Number(doc.gitHistoryWidth ?? EMPTY.gitHistoryWidth),
     window: { ...EMPTY.window, ...((doc.window as object) ?? {}) },
     settings,
   }
@@ -1785,11 +1808,15 @@ function pruneLayout(node: PaneNode | undefined, known: Set<string>): PaneNode |
  */
 function readAgentSession(raw: unknown): AgentSession | undefined {
   if (!raw || typeof raw !== 'object') return undefined
-  const { tool, id, at } = raw as Record<string, unknown>
+  const { tool, id, at, transcript } = raw as Record<string, unknown>
   if (tool !== 'claude' || typeof id !== 'string' || typeof at !== 'number') return undefined
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/.test(id)) return undefined
   if (Date.now() - at > AGENT_SESSION_TTL_MS) return undefined
-  return { tool, id, at }
+  // The transcript is what makes the id checkable at the moment it would be
+  // resumed; a file that has since gone means a conversation that has gone.
+  // Absent on records written by an older build, and absence is honest — it
+  // means unknown, and an unknown transcript is taken at its word.
+  return { tool, id, at, ...(typeof transcript === 'string' && transcript ? { transcript } : {}) }
 }
 
 /**

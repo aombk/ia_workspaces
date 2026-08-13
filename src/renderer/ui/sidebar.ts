@@ -379,15 +379,12 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
       shortcut: 'Ctrl+Shift+O',
       onClick: () => actions.openEditor(workspaceId),
     },
+    // One entry for one pane; History is the switch inside it. See the same
+    // list in `tabstrip.ts`.
     {
-      label: 'Git — changes',
+      label: 'Git',
       shortcut: 'Ctrl+Shift+D',
       onClick: () => actions.openDiff(workspaceId),
-    },
-    {
-      label: 'Git — history',
-      shortcut: 'Ctrl+Shift+H',
-      onClick: () => actions.openHistory(workspaceId),
     },
     {
       label: 'Compare files…',

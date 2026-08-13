@@ -52,6 +52,10 @@ export interface ControlRequest {
   body?: string
   /** `session`: the agent conversation id this pane is now running. */
   sessionId?: string
+  /** `session`: where that conversation's transcript lives, per the hook. */
+  transcriptPath?: string
+  /** `session`: which hook event reported it, e.g. `UserPromptSubmit`. */
+  hookEvent?: string
   blocked?: string
   unblocked?: boolean
   choices?: AgentChoice[]

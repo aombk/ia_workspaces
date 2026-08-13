@@ -521,7 +521,10 @@ html.mac-caption .titlebar-drag {
   transform: rotate(180deg);
 }
 
-.app.sidebar-collapsed .sidebar-resizer {
+/* Only the sidebar's own grip goes dead when the sidebar is shut — the same
+   class dresses the docked tree's grip and the two inside the git pane, and
+   none of those care whether the sidebar is folded. */
+.app.sidebar-collapsed #sidebar-resizer {
   pointer-events: none;
 }
 
@@ -1853,6 +1856,15 @@ kbd {
   flex: 1;
   min-height: 0;
   display: flex;
+}
+
+/* Wider than the sidebar's grip: this one sits over a scrollbar as often as
+   not, and 4px between a list that scrolls and a diff that scrolls is a target
+   you have to aim at. */
+.split-resizer {
+  width: 7px;
+  margin-left: -4px;
+  margin-right: -3px;
 }
 
 .diff-files {

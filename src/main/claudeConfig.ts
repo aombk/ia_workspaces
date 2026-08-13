@@ -54,6 +54,19 @@ export function hookEvents(iawPath: string): Record<string, string> {
     // reopening it can resume this exact session rather than the newest one in
     // the folder. `iaw session` reads the id from the hook JSON on stdin.
     SessionStart: `${iaw} session --quiet${hush}`,
+    // The same, on the event that means the conversation is real.
+    //
+    // `SessionStart` is startup: it hands out an id for a conversation nobody
+    // has had yet, and Claude Code writes no transcript for a session that is
+    // never spoken to. Resuming one of those is the "No conversation found
+    // with session ID" a restored pane used to greet you with. This fires when
+    // a prompt is submitted, which is also how a pane that moved on to a
+    // second conversation records the one it is actually having.
+    //
+    // Nothing is printed on success, which matters here and nowhere else: what
+    // a `UserPromptSubmit` hook writes to stdout is added to the agent's
+    // context.
+    UserPromptSubmit: `${iaw} session --quiet${hush}`,
   }
 }
 

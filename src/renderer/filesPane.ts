@@ -1,5 +1,12 @@
 import { backend } from '../backend'
-import { pathSeparator, trashName } from '../shared/platform'
+import {
+  parentDir,
+  parseUserPath,
+  pathAncestors,
+  pathSeparator,
+  samePath,
+  trashName,
+} from '../shared/platform'
 import { showContextMenu, type MenuEntry, type MenuItem } from './ui/contextMenu'
 import { confirmDialog } from './ui/confirm'
 import { attachInlineEditor } from './ui/editing'
@@ -338,7 +345,10 @@ export class FilesPane {
       onCommit: async (value) => {
         this.pathInput.hidden = true
         this.crumbEl.hidden = false
-        const target = expandPath(value)
+        // Asked for only when there is a `~` to expand: it is one IPC round
+        // trip, and every other paste is already a path.
+        const home = value.trim().startsWith('~') ? await backend().homeDir() : ''
+        const target = parseUserPath(backend().capabilities.platform, value, home)
         if (!target || target === this.cwd) return
         if (await backend().isDirectory(target)) this.navigate(target)
         else showToast('No such folder', target, { kind: 'warn' })
@@ -900,15 +910,13 @@ export class FilesPane {
 
   private renderCrumbs(): void {
     this.crumbEl.replaceChildren()
-    const parts = this.cwd.split(/[\\/]/).filter(Boolean)
+    const parts = pathAncestors(backend().capabilities.platform, this.cwd)
 
     parts.forEach((part, index) => {
       const crumb = document.createElement('button')
       crumb.className = 'files-crumb'
-      crumb.textContent = part
-      const target = parts.slice(0, index + 1).join('\\')
-      // A bare drive letter needs its trailing separator to be a valid path.
-      crumb.addEventListener('click', () => this.navigate(index === 0 ? target + '\\' : target))
+      crumb.textContent = part.name
+      crumb.addEventListener('click', () => this.navigate(part.path))
       this.crumbEl.appendChild(crumb)
 
       if (index < parts.length - 1) {
@@ -1066,7 +1074,8 @@ export class FilesPane {
     return [
       {
         label: 'Set as workspace folder',
-        disabled: current !== undefined && samePath(current, folder),
+        disabled:
+          current !== undefined && samePath(backend().capabilities.platform, current, folder),
         onClick: () => set(folder),
       },
     ]
@@ -1538,26 +1547,9 @@ function folderLeaf(dir: string): string {
   return dir.split(/[\\/]/).filter(Boolean).pop() || dir
 }
 
-/** Windows path equality: case-insensitive, and a trailing `\` means nothing. */
-function samePath(a: string, b: string): boolean {
-  return a.toLowerCase().replace(/\\+$/, '') === b.toLowerCase().replace(/\\+$/, '')
-}
-
+/** `parentDir` against the host we are actually running on. */
 function parentOf(dir: string): string {
-  const parts = dir.split(/[\\/]/).filter(Boolean)
-  if (parts.length <= 1) return dir
-  const parent = parts.slice(0, -1).join('\\')
-  return parts.length === 2 ? parent + '\\' : parent
-}
-
-/** Accepts `~`, forward slashes and stray quotes from a pasted path. */
-function expandPath(value: string): string {
-  let out = value.trim().replace(/^"(.*)"$/, '$1')
-  if (out.startsWith('~')) {
-    const home = (globalThis as { __iawHome?: string }).__iawHome
-    if (home) out = home + out.slice(1)
-  }
-  return out.replace(/\//g, '\\')
+  return parentDir(backend().capabilities.platform, dir)
 }
 
 /** Only quote when needed, so pasted paths stay readable. */

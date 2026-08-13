@@ -163,7 +163,16 @@ export async function runCli(argv: string[], userDataPath: string): Promise<numb
   // Claude Code hands a hook its context as JSON on stdin, which is where the
   // session id lives. --id stays available so the verb is testable by hand.
   if (verb === 'session' && !args.id) {
-    args.id = (await readHookField('session_id')) ?? undefined
+    const hook = await readHookJson()
+    args.id = hookString(hook, 'session_id') ?? undefined
+    // The payload also says where the conversation is written. Read together
+    // with the id, because stdin can only be drained once — and worth reading
+    // at all because an id whose transcript does not exist is not resumable.
+    args.transcript = args.transcript ?? hookString(hook, 'transcript_path') ?? undefined
+    // Which hook is speaking. `SessionStart` fires before the conversation
+    // exists; a prompt being submitted means it now does. The far end tells
+    // them apart — see `recordAgentSession`.
+    args.event = args.event ?? hookString(hook, 'hook_event_name') ?? undefined
   }
   // Before identity: this one talks to the broker rather than the app, and its
   // whole purpose is to work when the app is not running.
@@ -494,7 +503,14 @@ function buildRequest(method: Method, args: Args, identity: PaneIdentity): Built
 
     case 'session':
       if (!args.id) return { error: 'no session id (pass --id, or pipe the hook JSON in)' }
-      return { value: { ...base, sessionId: args.id } }
+      return {
+        value: {
+          ...base,
+          sessionId: args.id,
+          transcriptPath: args.transcript,
+          hookEvent: args.event,
+        },
+      }
 
     case 'ask': {
       if (!args.choices) return { error: 'ask needs --choices' }
@@ -624,14 +640,17 @@ function parseChoices(raw: string): { value: AgentChoice[] } | { error: string }
 // --------------------------------------------------------------- hook stdin
 
 /**
- * Reads one field out of the JSON a hook is given on stdin.
+ * Reads the JSON a hook is given on stdin.
  *
  * Bounded on both ends: a hook's payload is small, and a shell that leaves
  * stdin open would otherwise hang the hook — and with it the agent — forever.
  * Anything unreadable resolves to null, because a missing session id must
  * degrade to "no resume", never to a stuck Claude Code.
+ *
+ * The whole object rather than one field of it, because stdin drains once and
+ * two fields are needed from the same read.
  */
-function readHookField(field: string): Promise<string | null> {
+function readHookJson(): Promise<Record<string, unknown> | null> {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) {
       resolve(null)
@@ -640,7 +659,7 @@ function readHookField(field: string): Promise<string | null> {
 
     let text = ''
     let settled = false
-    const done = (value: string | null) => {
+    const done = (value: Record<string, unknown> | null) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
@@ -658,13 +677,19 @@ function readHookField(field: string): Promise<string | null> {
     process.stdin.on('error', () => done(null))
     process.stdin.on('end', () => {
       try {
-        const value = (JSON.parse(text) as Record<string, unknown>)[field]
-        done(typeof value === 'string' && value ? value : null)
+        const parsed = JSON.parse(text) as unknown
+        done(parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null)
       } catch {
         done(null)
       }
     })
   })
+}
+
+/** One string field of a hook payload, or null for anything else. */
+function hookString(hook: Record<string, unknown> | null, field: string): string | null {
+  const value = hook?.[field]
+  return typeof value === 'string' && value ? value : null
 }
 
 // ----------------------------------------------------------------- transport

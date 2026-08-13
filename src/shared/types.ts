@@ -374,6 +374,21 @@ export interface AgentSession {
   id: string
   /** When it was last reported, so a stale id can be aged out. */
   at: number
+  /**
+   * Absolute path to this conversation's transcript, as the hook reported it.
+   *
+   * An id is a claim; the transcript is the conversation. Claude Code issues
+   * the id at `SessionStart` — before a single word has been said — and writes
+   * the file only once the conversation has a first user turn, so a session
+   * that is started and abandoned leaves an id pointing at nothing. Checking
+   * the file is what tells the two apart, and it is checked rather than
+   * derived because the folder a transcript lives in is Claude Code's own
+   * encoding of a path, not ours to reimplement.
+   *
+   * Absent on sessions recorded by a build that predates this; those are taken
+   * at their word and age out on the TTL.
+   */
+  transcript?: string
 }
 
 /**
@@ -739,6 +754,9 @@ export interface PersistedState {
   sidebarCollapsed: boolean
   /** Shared by every workspace that shows a docked tree. */
   treeWidth: number
+  /** Where the grip sits in each half of the git pane, shared by every git pane. */
+  gitFilesWidth: number
+  gitHistoryWidth: number
   window: WindowState
   settings: Settings
 }

@@ -24,6 +24,7 @@ import { beginDrag, draggingTab, endDrag } from './ui/dragState'
 import { isMac, isPrimary } from './ui/keys'
 import { DomZoom, UnavailablePane, type AuxPane, type PaneZoom } from './auxPane'
 import { bufferWhileHidden, clearPending, drainPending } from './paneBuffer'
+import { programWheelDriver } from './programWheel'
 import { fallbackCwd } from '../shared/platform'
 import type { DropSide } from './state'
 import { isTerminalPane } from '../shared/types'
@@ -298,7 +299,14 @@ export class TerminalManager {
       // nothing to collide with and the pane can paste after all. That matters
       // for the full-screen program that grabs the mouse and has no paste of
       // its own — without it, right-click paste would simply vanish in there.
-      if (!e.shiftKey && term.modes.mouseTrackingMode !== 'none') return
+      //
+      // macOS is exempt, and the platform decides that rather than us: the
+      // secondary click belongs to the application there, which is why
+      // Terminal.app and iTerm2 both keep it for their own menu and no Mac TUI
+      // is written expecting one. Handing it over cost the pane its paste and
+      // bought nothing — Claude Code, measured, is sent the report and does
+      // nothing with it at all.
+      if (!e.shiftKey && !isMac() && term.modes.mouseTrackingMode !== 'none') return
       void this.paste(term, paneId)
     })
 
@@ -323,6 +331,8 @@ export class TerminalManager {
       },
       { passive: false, capture: true }
     )
+
+    term.attachCustomWheelEventHandler(programWheelDriver(term, element))
 
     // Absolutely positioned, so it never enters xterm's size measurement.
     const blockedBar = document.createElement('div')
@@ -377,11 +387,24 @@ export class TerminalManager {
     const copyCombo = isPrimary(e) && (isMac() || e.shiftKey) && e.code === 'KeyC'
     const pasteCombo = isPrimary(e) && (isMac() || e.shiftKey) && e.code === 'KeyV'
 
+    // `preventDefault` on both, and it is load-bearing on the Mac half.
+    // Returning false stops *xterm* handling the key; it does not stop the
+    // browser, which xterm's own `_keyDown` makes plain — it returns early
+    // without cancelling anything. So Cmd+V went on to fire Chromium's paste
+    // command on xterm's hidden textarea, xterm pasted that too, and every
+    // Cmd+V landed twice. (Electron's default Edit menu is not the culprit,
+    // though it does show Cmd+V: those roles carry `registerAccelerator:
+    // false` precisely so the keystroke reaches the page instead.)
+    //
+    // The Ctrl+V branch below has always cancelled for this reason. This is
+    // the same bug in the branch that forgot to.
     if (copyCombo) {
+      e.preventDefault()
       void this.copy(term)
       return false
     }
     if (pasteCombo) {
+      e.preventDefault()
       void this.paste(term, paneId)
       return false
     }

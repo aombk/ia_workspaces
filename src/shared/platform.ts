@@ -160,6 +160,79 @@ export function baseName(full: string): string {
 }
 
 /**
+ * Every folder on the way to `full`, named and addressable — what a breadcrumb
+ * bar is, and what "go up" walks.
+ *
+ * The roots are the whole difficulty, and the two platforms put them in
+ * different places. On Windows the root lives *inside* the first segment and
+ * needs a trailing separator to be a path at all: `C:` is a drive letter and
+ * `C:\` is a directory. On POSIX the root is the leading separator, which
+ * splitting has just discarded — put it back and `/Users/me` reads as
+ * `/Users` then `/Users/me`, rather than the `Users\me` a Windows-shaped
+ * version of this produced, which is not a path on either platform.
+ */
+export function pathAncestors(
+  p: PlatformKind,
+  full: string
+): Array<{ name: string; path: string }> {
+  const sep = pathSeparator(p)
+  const names = full.split(/[\\/]/).filter(Boolean)
+  return names.map((name, i) => {
+    const joined = names.slice(0, i + 1).join(sep)
+    if (!isWindows(p)) return { name, path: sep + joined }
+    return { name, path: i === 0 ? joined + sep : joined }
+  })
+}
+
+/**
+ * The folder `dir` is in — or `dir` itself, at the top.
+ *
+ * A file tree navigates with this, so answering above the root would send it to
+ * a path that does not exist. POSIX bottoms out at `/` and Windows at the
+ * drive.
+ */
+export function parentDir(p: PlatformKind, dir: string): string {
+  const chain = pathAncestors(p, dir)
+  if (chain.length === 0) return dir
+  if (chain.length === 1) return isWindows(p) ? dir : pathSeparator(p)
+  return chain[chain.length - 2].path
+}
+
+/**
+ * Whether two paths name the same place, as far as this OS is concerned.
+ *
+ * Case is significant on Linux and is not on Windows or on a stock macOS
+ * volume; a trailing separator is significant nowhere.
+ */
+export function samePath(p: PlatformKind, a: string, b: string): boolean {
+  const trim = (v: string): string => v.replace(/[\\/]+$/, '') || pathSeparator(p)
+  const [x, y] = [trim(a), trim(b)]
+  return p === 'linux' ? x === y : x.toLowerCase() === y.toLowerCase()
+}
+
+/**
+ * A path somebody typed or pasted, turned into one this platform can open.
+ *
+ * Quotes come along when a path is copied out of a shell and `~` is a shorthand
+ * no filesystem call understands, so both are answered everywhere. Separators
+ * are not: Windows accepts either and is happier normalised, while on POSIX a
+ * backslash is an ordinary character in a filename — rewriting it there
+ * corrupts a legal path instead of repairing a broken one, which is exactly how
+ * a path copied out of one file tree came back as "No such folder" when pasted
+ * into another on a Mac.
+ */
+export function parseUserPath(p: PlatformKind, value: string, home = ''): string {
+  let out = value
+    .trim()
+    .replace(/^"(.*)"$/s, '$1')
+    .replace(/^'(.*)'$/s, '$1')
+  // `~` alone or `~/…`, never `~other` — that is somebody else's home directory
+  // on POSIX and a perfectly ordinary folder name anywhere.
+  if (home && (out === '~' || /^~[\\/]/.test(out))) out = home + out.slice(1)
+  return isWindows(p) ? out.replace(/\//g, '\\') : out
+}
+
+/**
  * Where persisted state lives.
  *
  * `env` and `home` are passed in rather than read, so this stays pure and the
@@ -445,6 +518,12 @@ export const MAC_TRAFFIC_LIGHTS = {
   y: 12,
   /** 12pt button + two 20pt steps. */
   width: 52,
-  /** Where the bar's own content may begin: past the buttons, plus breathing room. */
-  inset: 76,
+  /**
+   * Where the bar's own content may begin: past the buttons (12 + 52 = 64),
+   * plus a clear gap. Held at a gap rather than a hair, because the app mark is
+   * a coloured dot roughly the size of a traffic light — set too close it reads
+   * as a fourth button, which is the one thing the left of a Mac title bar must
+   * not do.
+   */
+  inset: 88,
 } as const

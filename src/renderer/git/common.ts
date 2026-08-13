@@ -67,6 +67,70 @@ export function workspaceOf(paneId: string): string {
   return store.workspaceOfPane(paneId)?.id ?? ''
 }
 
+/** How little of either side a drag is allowed to leave behind. */
+const MIN_SIDE = 160
+
+/**
+ * The grip between the two halves of a git pane.
+ *
+ * Both panes are a list beside a body, and both had that boundary nailed down —
+ * 300px of file names whatever the names are, 55% of the width for a column of
+ * one-line subjects. A path or a diff is exactly the kind of thing where the
+ * right split is the reader's to decide, so the boundary is draggable, and where
+ * it is put is remembered.
+ *
+ * The width is applied to the left half as a fixed flex basis: `.diff-files`
+ * sizes in pixels and `.history-list` in percent, and a drag has to speak one
+ * language to both. Returns the handle, for inserting between the two halves.
+ */
+export function splitResizer(left: HTMLElement, which: 'files' | 'history'): HTMLDivElement {
+  const fallback = which === 'files' ? 300 : 420
+  const onCommit = (width: number) => store.setGitSplit(which, width)
+  const apply = (width: number) => {
+    left.style.flex = `0 0 ${width}px`
+  }
+  apply(which === 'files' ? store.gitFilesWidth : store.gitHistoryWidth)
+
+  const handle = document.createElement('div')
+  handle.className = 'sidebar-resizer split-resizer'
+  handle.setAttribute('role', 'separator')
+  handle.setAttribute('aria-orientation', 'vertical')
+  handle.title = 'Drag to resize — double-click to reset'
+
+  handle.addEventListener('mousedown', (down) => {
+    down.preventDefault()
+    handle.classList.add('dragging')
+    const startX = down.clientX
+    const startWidth = left.offsetWidth
+    // The pane the two halves share, so a drag can never push the right half
+    // off the end of a narrow window.
+    const room = (left.parentElement?.clientWidth ?? startWidth * 2) - MIN_SIDE
+    let width = startWidth
+
+    const onMove = (move: MouseEvent) => {
+      width = Math.max(MIN_SIDE, Math.min(room, startWidth + move.clientX - startX))
+      apply(width)
+    }
+    const onUp = () => {
+      handle.classList.remove('dragging')
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      onCommit(width)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  })
+
+  // A drag that went badly wants one gesture back to sane, not a second drag
+  // aimed at a number you have to guess.
+  handle.addEventListener('dblclick', () => {
+    apply(fallback)
+    onCommit(fallback)
+  })
+
+  return handle
+}
+
 /** Shorthand for the many small text nodes the bilingual headings are built from. */
 export function text(value: string): Text {
   return document.createTextNode(value)

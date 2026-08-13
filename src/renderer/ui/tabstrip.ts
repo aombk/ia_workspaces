@@ -300,16 +300,13 @@ function newTabEntries(workspaceId: string): MenuEntry[] {
       onClick: () => actions.openEditor(workspaceId),
     },
     {
-      label: 'Git — changes',
+      // One entry, because it is one pane: Changes and History are a switch
+      // inside it, and two menu items for two views of the same thing read as
+      // two panes you have to choose between. The keys still land on the view
+      // they name — that is where asking for History directly belongs.
+      label: 'Git',
       shortcut: 'Ctrl+Shift+D',
       onClick: () => actions.openDiff(workspaceId),
-    },
-    {
-      // Two doors into one pane. Both are kept because landing on the view you
-      // wanted is the point of having asked for it.
-      label: 'Git — history',
-      shortcut: 'Ctrl+Shift+H',
-      onClick: () => actions.openHistory(workspaceId),
     },
     {
       label: 'Compare files…',

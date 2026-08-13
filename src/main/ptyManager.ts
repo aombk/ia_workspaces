@@ -12,7 +12,7 @@ import type { SessionVault } from './vault'
 import { connectPtyHost, createLocalBackend, type PtyBackend, type PtyBackendHooks } from './ptyHost'
 import { selectOrphans } from './orphans'
 import type { AskResult } from './controlServer'
-import { AGENT_SESSION_TTL_MS } from '../shared/types'
+import { acceptSession, resumeCommand } from './agentSessions'
 import { hasQuirk, platformKind, withBinDir } from '../shared/platform'
 import type {
   AgentChoice,
@@ -48,22 +48,6 @@ const MAX_REPLAY_PADDING = 200
 /** Longest wait for a prompt marker before resuming anyway. See `spawn`. */
 const RESUME_FALLBACK_MS = 1500
 
-/**
- * The line that re-enters a recorded conversation.
- *
- * `--resume <id>` and not `--continue`: continue means "the newest session in
- * this folder", which is the wrong answer the moment two panes are open on one
- * project. The id is checked against the shape Claude Code issues rather than
- * interpolated blind — it ends up on a command line, and this one is
- * reconstructed from a file on disk.
- */
-function resumeCommand(session: AgentSession | undefined): string | null {
-  if (!session || session.tool !== 'claude') return null
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/.test(session.id)) return null
-  if (Date.now() - session.at > AGENT_SESSION_TTL_MS) return null
-  return `claude --resume ${session.id}`
-}
-
 interface Session {
   id: string
   workspaceId: string
@@ -72,6 +56,14 @@ interface Session {
   title: string
   /** Last line submitted here, mirrored to the renderer so it is persisted. */
   lastCommand: string
+  /**
+   * The agent conversation this pane is running, as far as we know.
+   *
+   * Mirrors what the renderer has been told, and is seeded with what it told
+   * us at spawn, so `recordAgentSession` can tell a new conversation from the
+   * one already recorded here without asking across the wire.
+   */
+  agentSession?: AgentSession
   /**
    * True between a command starting and the next 133;D marker. With shell
    * integration this comes from a real 133;C; without it we fall back to
@@ -377,9 +369,10 @@ export class PtyManager {
       pid: 0,
       spawnedAt,
       shellImage: resolved.file,
+      agentSession: req.resumeSession,
       // Only an agent pane gets a line back, and only the one we compose
       // ourselves. A plain shell reopens at an empty prompt.
-      pendingCommand: resumeCommand(req.resumeSession),
+      pendingCommand: resumeCommand(req.resumeSession, Date.now()),
       pendingCommandTimer: null,
       replaying: false,
     }
@@ -677,16 +670,45 @@ export class PtyManager {
   /** Raised by the CLI on behalf of a shell running in this pane. */
   /**
    * Records the agent conversation a pane is running, reported by the agent's
-   * own SessionStart hook. Rides the meta channel the renderer already uses for
-   * cwd and title, because it is the same kind of fact about the same pane.
+   * own hooks. Rides the meta channel the renderer already uses for cwd and
+   * title, because it is the same kind of fact about the same pane.
+   *
+   * Not every id offered here is worth keeping. Claude Code issues one at
+   * `SessionStart`, which is startup — before the conversation exists and
+   * before anything is written to disk. Start Claude Code in a pane, say
+   * nothing, quit the app: the id was recorded, the conversation never was,
+   * and the pane came back typing `claude --resume <id>` at a conversation
+   * Claude Code had never heard of. Worse, that empty session's id had
+   * overwritten the id of the real one the pane had before it.
+   *
+   * So an id displaces a different, already-recorded one on one of two
+   * grounds: its transcript is on disk, or it comes from the user submitting a
+   * prompt to it, which is a conversation beginning in earnest. An id from a
+   * session that has neither said anything nor written anything is not
+   * evidence about which conversation this pane is having. A pane with nothing
+   * recorded yet takes whatever it is given — there is nothing to lose, and
+   * `resumeCommand` checks the transcript before typing anything anyway.
    */
-  recordAgentSession(paneId: string, sessionId: string): boolean {
+  recordAgentSession(
+    paneId: string,
+    sessionId: string,
+    transcriptPath?: string,
+    hookEvent?: string
+  ): boolean {
     const session = this.sessions.get(paneId)
     if (!session || session.exited) return false
-    this.hooks.onMeta({
-      paneId,
-      agentSession: { tool: 'claude', id: sessionId, at: Date.now() },
-    })
+
+    const record = acceptSession(
+      session.agentSession,
+      { id: sessionId, transcript: transcriptPath, hookEvent },
+      Date.now()
+    )
+    // Nothing worth keeping. Still an accepted call: the caller is a hook, and
+    // there is nothing here for it to report or retry.
+    if (!record) return true
+
+    session.agentSession = record
+    this.hooks.onMeta({ paneId, agentSession: record })
     return true
   }
 

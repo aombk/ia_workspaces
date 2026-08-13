@@ -44,7 +44,7 @@ import { hostLabel } from '../../shared/gitHosts'
 import type { ChangedFile, RepoStatus } from '../../shared/types'
 import { confirmDialog } from '../ui/confirm'
 import { explain, gitButton, gitWordFirst, plainWord } from '../ui/gitWord'
-import { patchElement, text } from './common'
+import { patchElement, splitResizer, text } from './common'
 import type { RepoSnapshot } from './repoWatch'
 import type { GitContext, GitView } from './view'
 
@@ -92,6 +92,8 @@ export class ChangesView implements GitView {
     this.listEl = document.createElement('div')
     this.listEl.className = 'diff-files'
     split.appendChild(this.listEl)
+
+    split.appendChild(splitResizer(this.listEl, 'files'))
 
     this.diffEl = document.createElement('div')
     this.diffEl.className = 'diff-body'

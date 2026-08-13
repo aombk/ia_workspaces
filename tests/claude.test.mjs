@@ -84,6 +84,19 @@ check("installing keeps the user's own hook on a shared event", () => {
   assert.ok(commands.some((c) => c.includes('/iaw" notify --quiet')))
 })
 
+check('the conversation id is recorded on startup and on every prompt', () => {
+  const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  // Two events, because `SessionStart` alone reports an id for a conversation
+  // that may never be had — and never written, and so never resumable.
+  for (const event of ['SessionStart', 'UserPromptSubmit']) {
+    const commands = config.hooks[event].flatMap((g) => g.hooks.map((h) => h.command))
+    assert.ok(
+      commands.some((c) => c.includes('/iaw" session --quiet')),
+      `${event} does not record the session`
+    )
+  }
+})
+
 check('installing twice adds nothing further', () => {
   setClaudeIntegration(true, stateDir, IAW)
   const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))

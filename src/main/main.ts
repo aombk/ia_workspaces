@@ -1002,7 +1002,12 @@ function bootApp(): void {
             ? { ok: true }
             : { ok: false, error: 'unknown pane' }
         case 'session':
-          return ptys.recordAgentSession(req.paneId!, req.sessionId ?? '')
+          return ptys.recordAgentSession(
+            req.paneId!,
+            req.sessionId ?? '',
+            req.transcriptPath,
+            req.hookEvent
+          )
             ? { ok: true }
             : { ok: false, error: 'unknown pane' }
         case 'report-agent':

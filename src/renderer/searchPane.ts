@@ -10,6 +10,7 @@
  * attached is a question missing its subject.
  */
 import { backend } from '../backend'
+import { pathSeparator } from '../shared/platform'
 import type { AuxPane } from './auxPane'
 import { searchRoot } from './git/common'
 import { remoteHostOfPane } from './state'
@@ -270,6 +271,7 @@ function appendHighlighted(
 }
 
 function relative(root: string, full: string): string {
-  const prefix = root.endsWith('\\') ? root : `${root}\\`
+  const sep = pathSeparator(backend().capabilities.platform)
+  const prefix = root.endsWith(sep) ? root : `${root}${sep}`
   return full.startsWith(prefix) ? full.slice(prefix.length) : full
 }

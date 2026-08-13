@@ -26,6 +26,8 @@ await build({
     events: 'src/main/events.ts',
     vault: 'src/main/vault.ts',
     paneBuffer: 'src/renderer/paneBuffer.ts',
+    programWheel: 'src/renderer/programWheel.ts',
+    agentSessions: 'src/main/agentSessions.ts',
   },
   bundle: true,
   platform: 'node',
@@ -43,12 +45,17 @@ const { isPhantomExit, classifyReapIdentity, mayReap } = await import(
 const { buildTree, flattenPanes } = await import(`file://${out}/controlSurface.js`)
 const { normalise } = await import(`file://${out}/browserPane.js`)
 const { stepZoom } = await import(`file://${out}/auxPane.js`)
-const { withBinDir, ipcAddress, isPipeAddress } = await import(`file://${out}/platform.js`)
+const { withBinDir, ipcAddress, isPipeAddress, pathAncestors, parentDir, samePath, parseUserPath } =
+  await import(`file://${out}/platform.js`)
 const { isOrphan, selectOrphans, ORPHAN_GRACE_MS } = await import(`file://${out}/orphans.js`)
 const { EventLog, parseCategories } = await import(`file://${out}/events.js`)
 const { SessionVault } = await import(`file://${out}/vault.js`)
 const { bufferWhileHidden, drainPending, clearPending } = await import(
   `file://${out}/paneBuffer.js`
+)
+const { wheelTicks } = await import(`file://${out}/programWheel.js`)
+const { acceptSession, resumeCommand, RECORD_REFRESH_MS } = await import(
+  `file://${out}/agentSessions.js`
 )
 
 let passed = 0
@@ -656,6 +663,101 @@ console.log('Browser zoom steps')
   })
 }
 
+// ------------------------------------------------------------- tree paths
+{
+  check('crumbs keep the root they need to still be paths', () => {
+    assert.deepEqual(
+      pathAncestors('macos', '/Users/me/dev').map((c) => c.path),
+      ['/Users', '/Users/me', '/Users/me/dev']
+    )
+    // A bare drive letter is not a directory; `C:\` is.
+    assert.deepEqual(
+      pathAncestors('windows', 'C:\\Users\\me').map((c) => c.path),
+      ['C:\\', 'C:\\Users', 'C:\\Users\\me']
+    )
+  })
+
+  check('going up stops at the root instead of walking past it', () => {
+    assert.equal(parentDir('macos', '/Users/me/dev'), '/Users/me')
+    assert.equal(parentDir('macos', '/Users'), '/')
+    assert.equal(parentDir('macos', '/'), '/')
+    assert.equal(parentDir('windows', 'C:\\Users\\me'), 'C:\\Users')
+    assert.equal(parentDir('windows', 'C:\\Users'), 'C:\\')
+    assert.equal(parentDir('windows', 'C:\\'), 'C:\\')
+  })
+
+  check('path equality follows the filesystem, not the app', () => {
+    assert.equal(samePath('macos', '/Users/Me/', '/users/me'), true)
+    assert.equal(samePath('linux', '/home/Me', '/home/me'), false)
+    assert.equal(samePath('windows', 'C:\\Dev\\', 'c:\\dev'), true)
+  })
+
+  check('a pasted path survives being pasted', () => {
+    // The bug: a POSIX path copied out of one file tree came back as
+    // `\Users\me\dev` in the next one, and the tree said "No such folder".
+    assert.equal(parseUserPath('macos', '/Users/me/dev'), '/Users/me/dev')
+    assert.equal(parseUserPath('macos', '  "/Users/me/my code"  '), '/Users/me/my code')
+    assert.equal(parseUserPath('windows', 'C:/Users/me'), 'C:\\Users\\me')
+  })
+
+  check('~ expands, and only where it is a home directory', () => {
+    assert.equal(parseUserPath('macos', '~/dev', '/Users/me'), '/Users/me/dev')
+    assert.equal(parseUserPath('macos', '~', '/Users/me'), '/Users/me')
+    // Somebody else's home on POSIX, and an ordinary folder name anywhere.
+    assert.equal(parseUserPath('macos', '~root/bin', '/Users/me'), '~root/bin')
+    // No home known: left alone rather than mangled into a relative path.
+    assert.equal(parseUserPath('macos', '~/dev'), '~/dev')
+  })
+}
+
+// ---------------------------------------------------------- wheel to a program
+{
+  // A 15px cell, which is what 13px type at line-height 1 measures.
+  const CELL = 15
+  const ROWS = 24
+  const px = (deltaY) => ({ deltaY, deltaMode: 0 })
+
+  check('a Mac wheel notch reaches the program as three lines, not one', () => {
+    // The bug: xterm sends exactly one report per wheel event however far the
+    // wheel turned, and on macOS a notch is ~40px where Windows sends 100. So
+    // Claude Code moved a line where Terminal.app and iTerm2 move three.
+    assert.equal(wheelTicks(px(40), CELL, ROWS, 0).ticks, 3)
+    assert.equal(wheelTicks(px(-40), CELL, ROWS, 0).ticks, -3)
+  })
+
+  check('a notch covers the ground the pane itself would have covered', () => {
+    // 100px of wheel scrolls the pane's own scrollback 125px, which is 8 lines
+    // of a 15px cell. The program gets the same 8.
+    assert.equal(wheelTicks(px(100), CELL, ROWS, 0).ticks, 8)
+  })
+
+  check('a trackpad accumulates instead of rounding away to nothing', () => {
+    // Half a line each. Two of them are a line; on its own, one is nothing yet.
+    const first = wheelTicks(px(6), CELL, ROWS, 0)
+    assert.equal(first.ticks, 0)
+    assert.equal(wheelTicks(px(6), CELL, ROWS, first.carry).ticks, 1)
+  })
+
+  check('the carry does not survive a change of direction as a jump', () => {
+    const down = wheelTicks(px(6), CELL, ROWS, 0)
+    assert.equal(wheelTicks(px(-6), CELL, ROWS, down.carry).ticks, 0)
+  })
+
+  check('a stuck device cannot fire a thousand lines at a program', () => {
+    // A screen at a time is the ceiling, so a real page-mode wheel still gets
+    // its whole page and nothing gets a hundred of them.
+    assert.equal(wheelTicks(px(100_000), CELL, ROWS, 0).ticks, ROWS)
+    assert.equal(wheelTicks(px(-100_000), CELL, ROWS, 0).ticks, -ROWS)
+  })
+
+  check('line and page deltas are read in their own units', () => {
+    // Firefox reports lines; nothing Chromium does reports pages, but the
+    // conversion is one line each way and cheaper than being wrong.
+    assert.equal(wheelTicks({ deltaY: 3, deltaMode: 1 }, CELL, ROWS, 0).ticks, 3)
+    assert.equal(wheelTicks({ deltaY: 1, deltaMode: 2 }, CELL, ROWS, 0).ticks, ROWS)
+  })
+}
+
 // --------------------------------------------------------------- orphans
 {
   // The only judgement in the app that ends a process the user did not ask to
@@ -932,6 +1034,103 @@ console.log('Session vault')
     bufferWhileHidden(b, 'from the old shell', 4)
     clearPending(b)
     assert.deepEqual(drainPending(b), { text: '', truncated: false })
+  })
+}
+
+// ------------------------------------------------------- agent conversations
+{
+  console.log('\nRecording an agent conversation')
+
+  const NOW = 1_700_000_000_000
+  const TRANSCRIPT = '/home/u/.claude/projects/-home-u-work/aaaaaaaa-bbbb-cccc.jsonl'
+  // The transcript of a conversation that has had a turn; anything else has not
+  // been written yet, which is what Claude Code does until the first turn ends.
+  const onDisk = (p) => p === TRANSCRIPT
+  const known = (over) => ({ tool: 'claude', id: 'old-session-id', at: NOW - 60_000, ...over })
+
+  check('a pane with nothing recorded takes what it is given', () => {
+    const rec = acceptSession(undefined, { id: 'new-id-9', transcript: '/nope' }, NOW, onDisk)
+    assert.equal(rec.id, 'new-id-9')
+    // Kept even though the file is not there yet: it is where the conversation
+    // will be written, and resuming is what checks whether it was.
+    assert.equal(rec.transcript, '/nope')
+  })
+
+  check('a startup id does not displace the conversation a pane was having', () => {
+    const rec = acceptSession(
+      known(),
+      { id: 'fresh-id-1', transcript: '/nope', hookEvent: 'SessionStart' },
+      NOW,
+      onDisk
+    )
+    assert.equal(rec, null)
+  })
+
+  check('a conversation with a transcript on disk does displace it', () => {
+    const rec = acceptSession(
+      known(),
+      { id: 'resumed-id', transcript: TRANSCRIPT, hookEvent: 'SessionStart' },
+      NOW,
+      onDisk
+    )
+    assert.equal(rec.id, 'resumed-id')
+  })
+
+  check('so does one the user has just submitted a prompt to', () => {
+    const rec = acceptSession(
+      known(),
+      { id: 'second-conv', transcript: '/nope', hookEvent: 'UserPromptSubmit' },
+      NOW,
+      onDisk
+    )
+    assert.equal(rec.id, 'second-conv')
+  })
+
+  check('the same conversation re-reporting is not written through every time', () => {
+    const rec = acceptSession(
+      known({ id: 'same-id-1' }),
+      { id: 'same-id-1', hookEvent: 'UserPromptSubmit' },
+      NOW,
+      onDisk
+    )
+    assert.equal(rec, null)
+  })
+
+  check('but it is written through often enough to keep its TTL fresh', () => {
+    const at = NOW - RECORD_REFRESH_MS - 1
+    const rec = acceptSession(known({ id: 'same-id-1', at }), { id: 'same-id-1' }, NOW, onDisk)
+    assert.equal(rec.at, NOW)
+  })
+
+  console.log('\nResuming an agent conversation')
+
+  check('a recorded conversation whose transcript is there is resumed', () => {
+    const line = resumeCommand(known({ id: 'aaaaaaaa-bbbb', transcript: TRANSCRIPT }), NOW, onDisk)
+    assert.equal(line, 'claude --resume aaaaaaaa-bbbb')
+  })
+
+  check('one whose transcript has gone is not — that is the error in the pane', () => {
+    const line = resumeCommand(known({ id: 'aaaaaaaa-bbbb', transcript: '/gone' }), NOW, onDisk)
+    assert.equal(line, null)
+  })
+
+  check('a record from before transcripts were carried is taken at its word', () => {
+    const line = resumeCommand(known({ id: 'aaaaaaaa-bbbb' }), NOW, onDisk)
+    assert.equal(line, 'claude --resume aaaaaaaa-bbbb')
+  })
+
+  check('a fortnight-old conversation is not reopened', () => {
+    const at = NOW - 15 * 24 * 60 * 60 * 1000
+    assert.equal(resumeCommand(known({ id: 'aaaaaaaa-bbbb', at }), NOW, onDisk), null)
+  })
+
+  check('an id that is not one Claude Code would issue never reaches a shell', () => {
+    const id = 'x; rm -rf /'
+    assert.equal(resumeCommand(known({ id, transcript: TRANSCRIPT }), NOW, onDisk), null)
+  })
+
+  check('a pane with no recorded conversation opens at a plain prompt', () => {
+    assert.equal(resumeCommand(undefined, NOW, onDisk), null)
   })
 }
 
