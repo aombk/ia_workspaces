@@ -46,7 +46,9 @@ import { fallbackCwd, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
 import { isWslPath } from '../shared/wsl'
 import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
+import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
+import { initMonitorDock, toggleMonitorDock } from './ui/monitorDock'
 
 let terminals: TerminalManager
 /** Guards against re-entrant mounts while a spawn is in flight. */
@@ -196,6 +198,10 @@ export async function start(): Promise<void> {
 
   initPalette(actions)
   initUsageMonitor()
+  initMonitorDock()
+  // The link at the bottom of the strip opens the panel. No workspace is
+  // involved any more, which is the whole point of it being a dock.
+  initSystemStrip(() => actions.openMonitor(''))
   window.addEventListener('palette-closed', () => terminals.focusActive())
 
   wireContextMenuFallback()
@@ -268,6 +274,7 @@ function render(): void {
   renderStatus()
   renderEmptyState()
   renderUsage()
+  syncSystemStrip()
   renderInbox()
   terminals?.applyAttention(store.attention)
   terminals?.applyPaneStatus()
@@ -627,6 +634,18 @@ const actions: UiActions = {
     }
     store.addTab(workspaceId, undefined, 'ports')
     void syncMountedTab()
+  },
+
+  /**
+   * The system panel, which is a dock rather than a tab.
+   *
+   * It takes a workspace id it does not use, because every opener in this list
+   * does and the callers pass one. Nothing about the machine or your account
+   * differs between two workspaces, so there is nothing for it to mean — which
+   * is precisely why this stopped being a tab.
+   */
+  openMonitor() {
+    toggleMonitorDock()
   },
 
   openSearch(workspaceId, cwd) {
@@ -1384,6 +1403,13 @@ function wireKeyboard(): void {
       if (ctrl && e.shiftKey && key === 'h') {
         e.preventDefault()
         if (workspace) actions.openHistory(workspace.id)
+        return
+      }
+      // Ctrl+Shift+M — the system panel, on and off. No workspace, because it
+      // is docked to the window rather than opened inside a project.
+      if (ctrl && e.shiftKey && key === 'm') {
+        e.preventDefault()
+        toggleMonitorDock()
         return
       }
       // Ctrl+Alt+D — a diff of any two files you pick, next door to the

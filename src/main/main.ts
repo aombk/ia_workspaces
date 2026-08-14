@@ -5,6 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { listProcesses } from './processes'
 import { readClaudeUsage } from './usage'
+import { readSystemStats } from './systemStats'
+import { readWeather } from './weather'
 import { PtyManager } from './ptyManager'
 import { Store } from './store'
 import { prepareIntegrationScript, listShells, listWslDistros, listSshHosts } from './shells'
@@ -65,7 +67,7 @@ import {
   MAC_TRAFFIC_LIGHTS,
 } from '../shared/platform'
 import { DEFAULT_THEME_ID, findInterfaceTheme, type InterfaceTheme } from '../shared/themes'
-import type { HistoryFilter, SpawnRequest } from '../shared/types'
+import type { HistoryFilter, SpawnRequest, WeatherRequest } from '../shared/types'
 
 /** The title bar's height. Must match `--titlebar-h` in styles.css. */
 const TITLEBAR_H = 36
@@ -702,6 +704,8 @@ function bootApp(): void {
     ipcMain.handle(IPC.wslDistros, () => listWslDistros())
     ipcMain.handle(IPC.sshHosts, () => listSshHosts())
     ipcMain.handle(IPC.claudeUsage, () => readClaudeUsage())
+    ipcMain.handle(IPC.systemStats, (_e, opts?: { drives?: boolean }) => readSystemStats(opts))
+    ipcMain.handle(IPC.weather, (_e, req: WeatherRequest) => readWeather(req))
     ipcMain.handle(IPC.gitStatus, (_e, cwd: string) => gitStatus(cwd))
     ipcMain.handle(IPC.isDirectory, (_e, dir: string) => isDirectory(dir))
     ipcMain.handle(IPC.createFile, (_e, parent: string, name: string) =>

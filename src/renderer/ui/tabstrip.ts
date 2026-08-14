@@ -288,14 +288,14 @@ function wireDragAndDrop(el: HTMLElement, index: number, workspaceId: string): v
  */
 function newTabEntries(workspaceId: string): MenuEntry[] {
   return [
-    { label: 'New terminal tab', shortcut: 'Ctrl+T', onClick: () => actions.newTab(workspaceId) },
+    { label: 'new terminal tab', shortcut: 'Ctrl+T', onClick: () => actions.newTab(workspaceId) },
     {
-      label: 'New file tree tab',
+      label: 'new file tree tab',
       shortcut: 'Ctrl+Shift+F',
       onClick: () => actions.newFileTab(workspaceId),
     },
     {
-      label: 'Editor',
+      label: 'editor',
       shortcut: 'Ctrl+Shift+O',
       onClick: () => actions.openEditor(workspaceId),
     },
@@ -304,36 +304,40 @@ function newTabEntries(workspaceId: string): MenuEntry[] {
       // inside it, and two menu items for two views of the same thing read as
       // two panes you have to choose between. The keys still land on the view
       // they name — that is where asking for History directly belongs.
-      label: 'Git',
+      label: 'git',
       shortcut: 'Ctrl+Shift+D',
       onClick: () => actions.openDiff(workspaceId),
     },
     {
-      label: 'Compare files…',
+      label: 'compare files…',
       shortcut: 'Ctrl+Alt+D',
       onClick: () => void actions.openCompare(workspaceId),
     },
     {
-      label: 'Search',
+      label: 'search',
       shortcut: 'Ctrl+Shift+S',
       onClick: () => actions.openSearch(workspaceId),
     },
     {
-      label: 'Images',
+      label: 'images',
       shortcut: 'Ctrl+Shift+G',
       onClick: () => actions.openImages(workspaceId),
     },
     {
-      label: 'Running processes',
+      label: 'running processes',
       shortcut: 'Ctrl+Shift+R',
       onClick: () => actions.openPorts(workspaceId),
     },
+    // No system monitor here. This menu makes tabs, and the monitor stopped
+    // being one — it is a panel docked to the window, reached by Ctrl+Shift+M
+    // or the pull-tab on the right edge. Listing it among the tab kinds was
+    // offering to open something that does not open here.
     // Only where a host can actually show a web page. A menu entry that opens
     // an empty box is worse than no entry.
     ...(backend().capabilities.browser
       ? [
           {
-            label: 'Browser',
+            label: 'browser',
             shortcut: 'Ctrl+Shift+B',
             onClick: () => actions.openBrowser(workspaceId),
           },

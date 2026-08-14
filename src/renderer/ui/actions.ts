@@ -35,6 +35,15 @@ export interface UiActions {
   openSearch(workspaceId: string, cwd?: string): void
   /** Focus the running-processes pane, opening it if none is open. */
   openPorts(workspaceId: string): void
+  /** Focus the machine monitor, opening it if none is open. */
+  /**
+   * Shows or hides the system panel.
+   *
+   * Takes a workspace id it ignores, so the menus that list it beside the tab
+   * openers can call it the same way. It is a dock, not a tab: nothing about
+   * the machine or your account differs between two workspaces.
+   */
+  openMonitor(workspaceId: string): void
   /**
    * Focus this workspace's images tab, opening it if it isn't already.
    *

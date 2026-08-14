@@ -60,14 +60,19 @@ export function gitWordFirst(term: string): HTMLElement {
 }
 
 /**
- * A button that says what it does, and shows the git command it runs.
+ * A button whose label *is* the git command, with the plain meaning after it.
  *
- * The stronger half of teaching the vocabulary, and the half that was missing:
- * brackets on a heading teach you a *word*, but the thing you eventually need
- * is the command, and there is exactly one moment when you are guaranteed to
- * care what `git commit` means — the moment you are about to press the button
- * that does it. So the command rides along on every button, dim and in a
- * monospace face so it reads as machinery rather than as label.
+ * The stronger half of teaching the vocabulary: brackets on a heading teach you
+ * a *word*, but the thing you eventually need is the command, and there is
+ * exactly one moment when you are guaranteed to care what `git commit` means —
+ * the moment you are about to press the button that does it.
+ *
+ * The command was the dim half riding along beside a friendly label, and it was
+ * the wrong way round for the same reason `gitWordFirst` exists. What is on the
+ * button is what will be run; that is the fact, and the English is the gloss on
+ * it. So `git push (send your saves to GitHub)` — command first, in a monospace
+ * face because it is something you could type, and the bracket exactly as every
+ * other translation in this pane is written.
  *
  * This is what `git_ia` does at the prompt: it prints the command it is about
  * to run and then asks. After a few times you know it, and the day you need to
@@ -81,17 +86,37 @@ export function gitButton(
   const button = document.createElement('button')
   button.className = opts.className ?? 'diff-btn'
 
-  const text = document.createElement('span')
-  text.textContent = label
-  button.appendChild(text)
-
   const cmd = document.createElement('code')
   cmd.className = 'gw-cmd'
   cmd.textContent = command
   button.appendChild(cmd)
 
+  const note = document.createElement('span')
+  note.className = 'gw-note'
+  note.textContent = `(${label})`
+  button.appendChild(note)
+
   if (opts.title) button.title = opts.title
   return button
+}
+
+/**
+ * Relabels a `gitButton` in place.
+ *
+ * In place, because the buttons that need this are the ones that count things —
+ * "save 3 picked files", "send 2 saves to GitHub" — and they are rebuilt on
+ * every poll and on every keystroke in the message box. Replacing the element
+ * would take the button out from under the cursor mid-press.
+ */
+export function setButtonLabel(button: HTMLButtonElement, label: string): void {
+  const note = button.querySelector('.gw-note')
+  if (note) note.textContent = `(${label})`
+}
+
+/** Same, for the half that is the command — `git push` vs `git push -u origin`. */
+export function setButtonCommand(button: HTMLButtonElement, command: string): void {
+  const cmd = button.querySelector('.gw-cmd')
+  if (cmd) cmd.textContent = command
 }
 
 /**

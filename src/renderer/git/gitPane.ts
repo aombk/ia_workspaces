@@ -32,7 +32,14 @@ import type { GitProgress, GitResult } from '../../shared/types'
 import { remoteHostOfPane, store } from '../state'
 import type { AuxPane } from '../auxPane'
 import { confirmDialog } from '../ui/confirm'
-import { explain, gitButton, gitWordFirst, showGlossary } from '../ui/gitWord'
+import {
+  explain,
+  gitButton,
+  gitWordFirst,
+  setButtonCommand,
+  setButtonLabel,
+  showGlossary,
+} from '../ui/gitWord'
 import { showToast } from '../ui/toast'
 import { ChangesView } from './changesView'
 import { gitRoot, text } from './common'
@@ -48,11 +55,30 @@ export class GitPane implements AuxPane {
   readonly element: HTMLDivElement
   private readonly headEl: HTMLDivElement
   private readonly switchEl: HTMLDivElement
+  private readonly titleEl: HTMLSpanElement
+  private readonly whereEl: HTMLSpanElement
   private readonly aboutEl: HTMLDivElement
+  private readonly actionsEl: HTMLDivElement
   private readonly bandEl: HTMLDivElement
   private readonly bodyEl: HTMLDivElement
   private readonly progress: GitProgressBar
   private readonly unsubscribeProgress: () => void
+
+  /**
+   * The four operations, built once and never rebuilt.
+   *
+   * They were made and thrown away on every poll, and which of them existed
+   * depended on what git had just said — so `git push` was in one place when you
+   * were ahead, somewhere else when you were also behind, and absent entirely
+   * for the second between a fetch finishing and the redraw. The whole strip now
+   * exists from the moment the pane opens: the same four buttons, in the same
+   * order, in the same pixels, greyed when they do not apply and carrying the
+   * reason in their tooltip. Nothing you are reaching for moves while you reach.
+   */
+  private readonly peekBtn: HTMLButtonElement
+  private readonly bringBtn: HTMLButtonElement
+  private readonly sendBtn: HTMLButtonElement
+  private readonly publishBtn: HTMLButtonElement
 
   private readonly changes: ChangesView
   private readonly history: HistoryView
@@ -80,9 +106,52 @@ export class GitPane implements AuxPane {
     this.switchEl.className = 'git-switch'
     this.headEl.appendChild(this.switchEl)
 
+    // The title takes the slack, so a longer branch name shortens the sentence
+    // beside it rather than shoving the buttons along the row.
+    this.titleEl = document.createElement('span')
+    this.titleEl.className = 'diff-title'
+    this.headEl.appendChild(this.titleEl)
+
+    this.whereEl = document.createElement('span')
+    this.whereEl.className = 'history-where'
+    this.headEl.appendChild(this.whereEl)
+
+    // No command beside this one, deliberately. That slot is a promise — it
+    // says "this is what pressing me runs" — and the honest answer here is
+    // "nothing, it opens a page".
+    const words = document.createElement('button')
+    words.className = 'diff-btn'
+    words.textContent = 'Words'
+    words.title = 'Every git word, in plain words.'
+    words.addEventListener('click', () => showGlossary())
+    this.headEl.appendChild(words)
+
     this.aboutEl = document.createElement('div')
     this.aboutEl.className = 'pane-about'
     this.element.appendChild(this.aboutEl)
+
+    this.actionsEl = document.createElement('div')
+    this.actionsEl.className = 'git-actions'
+    this.element.appendChild(this.actionsEl)
+
+    this.peekBtn = gitButton('look at what is online, change nothing here', 'git fetch')
+    explain(this.peekBtn, 'fetch')
+    this.peekBtn.addEventListener('click', () => void this.peek())
+    this.actionsEl.appendChild(this.peekBtn)
+
+    this.bringBtn = gitButton('bring in the saves from online', 'git pull --rebase')
+    explain(this.bringBtn, 'pull', 'rebase')
+    this.bringBtn.addEventListener('click', () => void this.bringIn())
+    this.actionsEl.appendChild(this.bringBtn)
+
+    this.sendBtn = gitButton('send your saves online', 'git push', { className: 'diff-btn primary' })
+    explain(this.sendBtn, 'push')
+    this.sendBtn.addEventListener('click', () => void this.send())
+    this.actionsEl.appendChild(this.sendBtn)
+
+    this.publishBtn = gitButton('put this project online', 'git remote add origin')
+    this.publishBtn.addEventListener('click', () => void this.publish())
+    this.actionsEl.appendChild(this.publishBtn)
 
     this.bandEl = document.createElement('div')
     this.bandEl.className = 'history-band'
@@ -251,73 +320,124 @@ export class GitPane implements AuxPane {
 
   private renderHead(): void {
     this.renderSwitch()
-
-    // Everything after the switch is rebuilt; the switch itself is kept so the
-    // button under the cursor does not move on every poll.
-    while (this.headEl.children.length > 1) this.headEl.lastElementChild!.remove()
+    this.renderActions()
 
     const status = this.snapshot?.status
     const remote = remoteHostOfPane(this.paneId)
-    if (remote || !status) return
 
-    const title = document.createElement('span')
-    title.className = 'diff-title'
+    if (remote || !status) {
+      this.titleEl.textContent = remote ? `shells run on ${remote}` : 'reading…'
+      this.whereEl.replaceChildren()
+      return
+    }
+
     if (this.view === 'changes') {
       const files = status.files
       const picked = files.filter((f) => f.picked && !f.conflicted).length
-      title.textContent = files.length
+      this.titleEl.textContent = files.length
         ? `${files.length} changed file${files.length === 1 ? '' : 's'}${picked ? `, ${picked} picked (staged)` : ''}`
         : 'No changes'
     } else {
-      title.textContent = 'the saves in this project'
+      this.titleEl.textContent = 'the saves in this project'
     }
-    this.headEl.appendChild(title)
 
+    this.whereEl.replaceChildren()
+    this.whereEl.className = 'history-where' + (status.detached ? ' detached' : '')
     if (status.detached) {
-      const chip = document.createElement('span')
-      chip.className = 'history-where detached'
-      chip.appendChild(gitWordFirst('detached HEAD'))
-      this.headEl.appendChild(chip)
+      this.whereEl.appendChild(gitWordFirst('detached HEAD'))
+      explain(this.whereEl, 'detached HEAD')
     } else if (status.branch) {
       // "you are on main (HEAD)" — the git word visible rather than hovered,
       // because HEAD is the word people meet first in every error message and
       // it is meaningless until somebody puts it beside "where you are".
-      const chip = document.createElement('span')
-      chip.className = 'history-where'
-      chip.textContent = 'you are on '
+      this.whereEl.appendChild(text('you are on '))
       const name = document.createElement('strong')
       name.textContent = status.branch
-      chip.appendChild(name)
+      this.whereEl.appendChild(name)
       const term = document.createElement('span')
       term.className = 'gw-alt'
       term.textContent = ' (HEAD)'
-      chip.appendChild(term)
-      explain(chip, 'HEAD', 'branch')
-      this.headEl.appendChild(chip)
+      this.whereEl.appendChild(term)
+      explain(this.whereEl, 'HEAD', 'branch')
+    }
+  }
+
+  /**
+   * The four buttons' labels and their reasons for being off.
+   *
+   * Never their existence and never their order — that is the point of the
+   * strip. Each one that is disabled says in its tooltip what would have to be
+   * true for it to work, because a greyed button with no explanation is the
+   * thing that sends people hunting, and the hunt is what hiding it was trying
+   * to avoid at the cost of a layout that jumped.
+   */
+  private renderActions(): void {
+    const status = this.snapshot?.status
+    const remote = remoteHostOfPane(this.paneId)
+    const where = hostLabel(this.snapshot?.remote)
+    const busy = this.busyFlag || !!remote
+
+    // An SSH workspace's folder is a path on the far machine — nothing in this
+    // strip could be true about it, and the band beside it says so.
+    if (remote) {
+      for (const btn of [this.peekBtn, this.bringBtn, this.sendBtn, this.publishBtn]) {
+        btn.disabled = true
+        btn.title = `This workspace's folder is on ${remote}. Run git in the terminal beside this pane.`
+      }
+      return
     }
 
-    const where = hostLabel(this.snapshot?.remote)
-    const peek = gitButton(`Peek at ${where}`, 'git fetch', { className: 'diff-btn' })
-    explain(peek, 'fetch')
-    peek.disabled = this.busyFlag || !status.hasRemote
-    peek.addEventListener('click', () =>
-      void this.run(
-        () => backend().git.peek(this.cwd),
-        `Looked at ${where}. Nothing here was touched.`,
-        `Looking at ${where}`
-      )
-    )
-    this.headEl.appendChild(peek)
+    const root = !!status?.root
+    const hasRemote = !!status?.hasRemote
+    const stopped = !!status?.inProgress
 
-    // No command beside this one, deliberately. That slot is a promise — it
-    // says "this is what pressing me runs" — and the honest answer here is
-    // "nothing, it opens a page".
-    const words = document.createElement('button')
-    words.className = 'diff-btn'
-    words.textContent = 'Words'
-    words.title = 'Every git word, in plain words.'
-    words.addEventListener('click', () => showGlossary())
-    this.headEl.appendChild(words)
+    setButtonLabel(this.peekBtn, `look at ${where}, change nothing here`)
+    this.peekBtn.disabled = busy || !hasRemote
+    if (!root) this.peekBtn.title = 'This folder is not a git project yet.'
+    else if (!hasRemote) this.peekBtn.title = 'This project has no copy online to look at.'
+    else explain(this.peekBtn, 'fetch')
+
+    const behind = status?.behind ?? 0
+    setButtonLabel(
+      this.bringBtn,
+      behind ? `bring in ${behind} save${behind === 1 ? '' : 's'} from ${where}` : `bring in ${where}'s saves`
+    )
+    this.bringBtn.disabled = busy || !hasRemote || behind === 0 || stopped
+    if (!root) this.bringBtn.title = 'This folder is not a git project yet.'
+    else if (!hasRemote) this.bringBtn.title = 'This project has no copy online to bring anything in from.'
+    else if (stopped) this.bringBtn.title = `A ${status?.inProgress} is part-way through. Finish it first.`
+    else if (behind === 0) this.bringBtn.title = `${where} has nothing you have not already got.`
+    else explain(this.bringBtn, 'pull', 'rebase')
+
+    const ahead = status?.ahead ?? 0
+    // A branch that has never been sent has no upstream to count against, so
+    // git reports nothing ahead — and "send" is exactly what it needs.
+    const firstSend = hasRemote && !status?.upstream && !!status?.branch
+    setButtonCommand(this.sendBtn, firstSend ? 'git push -u origin' : 'git push')
+    setButtonLabel(
+      this.sendBtn,
+      firstSend
+        ? `send "${status?.branch}" to ${where} for the first time`
+        : ahead
+          ? `send ${ahead} save${ahead === 1 ? '' : 's'} to ${where}`
+          : `send your saves to ${where}`
+    )
+    this.sendBtn.disabled = busy || !hasRemote || (ahead === 0 && !firstSend) || stopped
+    if (!root) this.sendBtn.title = 'This folder is not a git project yet.'
+    else if (!hasRemote) this.sendBtn.title = 'This project has no copy online to send to yet.'
+    else if (stopped) this.sendBtn.title = `A ${status?.inProgress} is part-way through. Finish it first.`
+    else if (ahead === 0 && !firstSend) this.sendBtn.title = `${where} already has every save you have.`
+    else explain(this.sendBtn, 'push')
+
+    setButtonCommand(this.publishBtn, root ? 'git remote add origin' : 'git init')
+    setButtonLabel(this.publishBtn, root ? 'put this project online' : 'start tracking this folder with git')
+    this.publishBtn.disabled = this.busyFlag || (root && hasRemote)
+    this.publishBtn.title =
+      root && hasRemote
+        ? `This project already has a copy on ${where}.`
+        : root
+          ? 'Walks through making a copy of this project online, so it is not only on this disk.'
+          : 'Walks through making this folder a git project, so its changes can be saved.'
   }
 
   private renderSwitch(): void {
@@ -380,12 +500,9 @@ export class GitPane implements AuxPane {
     if (!status.root) {
       const none = document.createElement('div')
       none.className = 'history-note'
-      none.append(
-        text(
-          `${this.cwd} is not being tracked by git, so there are no saves and nothing to compare against. `
-        )
-      )
-      none.appendChild(this.bandButton('Start tracking it…', () => void this.publish()))
+      none.textContent =
+        `${this.cwd} is not being tracked by git, so there are no saves and nothing to compare against. ` +
+        'The last button above — git init — walks through starting.'
       parts.push(none)
       this.bandEl.replaceChildren(...parts)
       this.bandEl.hidden = false
@@ -413,13 +530,17 @@ export class GitPane implements AuxPane {
       parts.push(changes)
     }
 
+    // Prose only, from here down. Every one of these used to end in the button
+    // that answered it, which is why `git push` had three homes and lived in a
+    // different one depending on what git had last said. The buttons are in the
+    // strip above, always, and the band's job is now purely to say what is true
+    // — which is the job it was best at.
     if (!status.hasRemote) {
       const alone = document.createElement('div')
       alone.className = 'history-note'
-      alone.append(
-        text('This project has no copy anywhere else. Every save is on this machine only — if the disk goes, they go. ')
-      )
-      alone.appendChild(this.bandButton('Put it online…', () => void this.publish()))
+      alone.textContent =
+        'This project has no copy anywhere else. Every save is on this machine only — if the disk goes, they go. ' +
+        'Put this project online, above, walks through fixing that.'
       parts.push(alone)
     } else if (status.ahead || status.behind) {
       const row = document.createElement('div')
@@ -447,24 +568,6 @@ export class GitPane implements AuxPane {
         both.append(text(` — bring ${where}'s in first, or sending will be refused. Nothing is lost either way.`))
         row.appendChild(both)
       }
-
-      const actions = document.createElement('span')
-      actions.className = 'history-note-actions'
-      if (status.behind) {
-        const bring = gitButton(`Bring in ${where}'s saves`, 'git pull --rebase', { className: 'diff-btn' })
-        explain(bring, 'pull', 'rebase')
-        bring.disabled = this.busyFlag
-        bring.addEventListener('click', () => void this.bringIn())
-        actions.appendChild(bring)
-      }
-      if (status.ahead) {
-        const send = gitButton('Send mine', 'git push', { className: 'diff-btn primary' })
-        explain(send, 'push')
-        send.disabled = this.busyFlag
-        send.addEventListener('click', () => void this.send())
-        actions.appendChild(send)
-      }
-      row.appendChild(actions)
       parts.push(row)
     } else if (status.upstream) {
       const level = document.createElement('div')
@@ -474,14 +577,7 @@ export class GitPane implements AuxPane {
     } else if (status.branch) {
       const never = document.createElement('div')
       never.className = 'history-note'
-      never.append(
-        text(`"${status.branch}" has never been sent, so ${where} has no copy of this line of saves. `)
-      )
-      const send = gitButton('Send it for the first time', 'git push -u origin', { className: 'diff-btn primary' })
-      explain(send, 'push', 'branch')
-      send.disabled = this.busyFlag
-      send.addEventListener('click', () => void this.send())
-      never.appendChild(send)
+      never.textContent = `"${status.branch}" has never been sent, so ${where} has no copy of this line of saves.`
       parts.push(never)
     }
 
@@ -535,6 +631,15 @@ export class GitPane implements AuxPane {
         this.activeView().update(this.snapshot)
       }
     }
+  }
+
+  private async peek(): Promise<void> {
+    const where = hostLabel(this.snapshot?.remote)
+    await this.run(
+      () => backend().git.peek(this.cwd),
+      `Looked at ${where}. Nothing here was touched.`,
+      `Looking at ${where}`
+    )
   }
 
   private async send(): Promise<void> {

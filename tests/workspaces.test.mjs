@@ -220,7 +220,9 @@ await check('an editor tab is named for its file, not its path', () => {
   // A trailing separator must not make the name empty.
   assert.equal(paneLabel(pane({ file: 'C:\\a\\b\\' })), 'e: b')
   // A tab with no file yet says so rather than naming a file it has not opened.
-  assert.equal(paneLabel(pane({})), 'e: Untitled')
+  // Lower case like every other tab name — the strip is the app's own furniture
+  // and it reads as one thing only if it is consistent about that.
+  assert.equal(paneLabel(pane({})), 'e: untitled')
   // A name the user typed always wins.
   assert.equal(paneLabel(pane({ file: 'C:\\x\\y.md', customTitle: 'Scratch' })), 'Scratch')
 })

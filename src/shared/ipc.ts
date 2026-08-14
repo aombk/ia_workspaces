@@ -65,6 +65,8 @@ export const IPC = {
   wslDistros: 'app:wslDistros',
   sshHosts: 'app:sshHosts',
   claudeUsage: 'app:claudeUsage',
+  systemStats: 'app:systemStats',
+  weather: 'app:weather',
   gitStatus: 'git:status',
   isDirectory: 'files:isDirectory',
   createDirectory: 'files:createDirectory',

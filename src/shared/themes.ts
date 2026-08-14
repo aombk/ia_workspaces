@@ -6,6 +6,36 @@
  * ANSI conventions while the surrounding UI follows its own, calmer palette.
  */
 
+/**
+ * The three colours the system monitor draws its readings in.
+ *
+ * Its own set, separate from the chrome, because they do a different job. A
+ * chrome colour says what a control *is*; these say which line on a graph
+ * belongs to which number, which means they must stay distinguishable from
+ * each other rather than harmonising with the window. The monitor's figures
+ * take the same three, so the reading and its line are recognisably one thing.
+ *
+ * The values are the iasm Rainmeter skin's own `GraphStyle`, and every theme
+ * gets the same three. That is deliberate rather than an oversight: the point
+ * of them is that blue always means load, green always means bytes held and
+ * orange always means heat, so a glance at a graph line means the same thing
+ * whichever theme is on. A theme may still override them, but none does.
+ */
+export interface MonitorPalette {
+  /** Load and throughput in: processor busy, graphics busy, download. */
+  load: string
+  /** Anything measured in bytes held: memory, video memory, upload. */
+  memory: string
+  /** Heat. */
+  temp: string
+}
+
+export const DEFAULT_MONITOR: MonitorPalette = {
+  load: '#40c0ff',
+  memory: '#80ff00',
+  temp: '#ff8000',
+}
+
 export interface ChromePalette {
   /** Window background and the terminal gutter. */
   bg: string
@@ -145,6 +175,11 @@ export interface InterfaceTheme {
    */
   workspaceDots?: 'circle' | 'square'
   chrome: ChromePalette
+  /**
+   * The monitor's own three. Absent means `DEFAULT_MONITOR`, so every theme
+   * written before this existed keeps working and looks the same.
+   */
+  monitor?: MonitorPalette
 }
 
 /**
@@ -531,10 +566,87 @@ const powershell: ThemeSeed = {
  */
 type ThemeSeed = InterfaceTheme & TerminalTheme
 
-const SEEDS: ThemeSeed[] = [graphite, mono, ember, claude, campbell, powershell]
+/**
+ * The iasm Rainmeter skin's palette, brought inside.
+ *
+ * Taken from that skin's `@Resources/theme.inc`, which is a single source of
+ * truth for every skin in the set — so these are its numbers rather than an
+ * impression of them:
+ *
+ *   PanelColor           56,56,56     the panel behind every readout
+ *   PanelBorderColor     100,100,100  its outline
+ *   graphBackgroundColor 32,32,32     the trough under a bar
+ *   Colorwhite           255,255,255  text
+ *   ColorGray            128,128,128  quiet text
+ *   Colorb               64,192,255   the blue it marks things with
+ *   Colorr / Colorg      255,128,0 / 128,255,0
+ *   vl→vh gradient       128,255,0 · 192,255,0 · 255,255,0 · 255,128,0 · 255,0,0
+ *
+ * Three of those map straight onto chrome: the trough is the window, the panel
+ * is everything raised off it, and the panel's outline is the strong border.
+ * The gradient is what makes it recognisable — a readout that goes lime, then
+ * yellow, then orange, then red as it fills — so `warn` and `danger` are its
+ * top two steps exactly, and the monitor's own bars light up in the skin's
+ * colours without anything being written to make them.
+ *
+ * The skin draws everything at alpha 192 over the desktop. That is not carried
+ * across: it is a widget sitting on a wallpaper and this is a window, so the
+ * translucency would be washing the colours out against nothing. Set the
+ * theme's opacity yourself if you want it.
+ *
+ * Two ANSI slots the skin has no answer for — magenta and cyan — are derived
+ * from its blue rather than invented: 64,192,255 with the channels rotated each
+ * way, which keeps them at the same saturation and lightness as everything
+ * else here.
+ */
+const rainmeter: ThemeSeed = {
+  id: 'rainmeter',
+  name: 'rainMeter',
+  builtin: true,
+  opacity: 1,
+  chrome: {
+    bg: '#202020',
+    bgRaised: '#383838',
+    bgHover: '#444444',
+    bgActive: '#505050',
+    border: '#4a4a4a',
+    borderStrong: '#646464',
+    text: '#ffffff',
+    textDim: '#a0a0a0',
+    textFaint: '#808080',
+    accent: '#40c0ff',
+    danger: '#ff0000',
+    warn: '#ff8000',
+  },
+  terminal: {
+    background: '#202020',
+    foreground: '#ffffff',
+    cursor: '#40c0ff',
+    cursorAccent: '#202020',
+    selectionBackground: '#4a4a4a',
+    black: '#383838',
+    red: '#ff0000',
+    green: '#80ff00',
+    yellow: '#ffff00',
+    blue: '#40c0ff',
+    magenta: '#c040ff',
+    cyan: '#40ffc0',
+    white: '#ffffff',
+    brightBlack: '#808080',
+    brightRed: '#ff5555',
+    brightGreen: '#aaff55',
+    brightYellow: '#ffff80',
+    brightBlue: '#80d8ff',
+    brightMagenta: '#d580ff',
+    brightCyan: '#80ffd8',
+    brightWhite: '#ffffff',
+  },
+}
+
+const SEEDS: ThemeSeed[] = [graphite, mono, ember, claude, campbell, powershell, rainmeter]
 
 export const BUILTIN_INTERFACE_THEMES: InterfaceTheme[] = SEEDS.map(
-  ({ id, name, builtin, opacity, backdrop, roundness, workspaceDots, chrome }) => ({
+  ({ id, name, builtin, opacity, backdrop, roundness, workspaceDots, chrome, monitor }) => ({
     id,
     name,
     builtin,
@@ -543,6 +655,7 @@ export const BUILTIN_INTERFACE_THEMES: InterfaceTheme[] = SEEDS.map(
     roundness,
     workspaceDots,
     chrome,
+    monitor,
   })
 )
 

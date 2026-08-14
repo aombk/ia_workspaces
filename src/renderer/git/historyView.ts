@@ -322,7 +322,7 @@ export class HistoryView implements GitView {
       this.branchEl.appendChild(chip)
     }
 
-    const start = gitButton('+ new line of saves', 'git switch -c', { className: 'history-branch new' })
+    const start = gitButton('start a new line of saves', 'git switch -c', { className: 'history-branch new' })
     explain(start, 'branch')
     start.addEventListener('click', () => void this.startBranch())
     this.branchEl.appendChild(start)
@@ -543,27 +543,33 @@ export class HistoryView implements GitView {
     })
     row.appendChild(copy)
 
+    // Always drawn, greyed when there is nowhere to open. It used to exist only
+    // when the project had a web remote, so the two buttons after it sat in one
+    // place on a project with a GitHub copy and 130px to the left on one without
+    // — including on the same project, in the second before the first fetch came
+    // back. A save that has not been sent is likewise disabled rather than
+    // dropped: a link that 404s reads as the app being wrong rather than as the
+    // save being unsent, which is a thing the row beside it already says.
     const web = commitWebUrl(this.snapshot?.remote, commit.sha)
-    if (web) {
-      const open = document.createElement('button')
-      open.className = 'diff-btn'
-      open.textContent = `Open on ${hostLabel(this.snapshot?.remote)}`
-      open.title = web
-      open.addEventListener('click', () => void backend().openExternal(web))
-      // A save that has not been sent is not there to be opened, and a link
-      // that 404s reads as the app being wrong rather than as the save being
-      // unsent — which is a thing the row beside it already says plainly.
-      open.disabled = (this.snapshot?.status.unsent ?? []).includes(commit.sha)
-      if (open.disabled) open.title = 'This save has not been sent yet, so there is nothing there to open.'
-      row.appendChild(open)
-    }
+    const unsent = (this.snapshot?.status.unsent ?? []).includes(commit.sha)
+    const open = document.createElement('button')
+    open.className = 'diff-btn'
+    open.textContent = `Open on ${hostLabel(this.snapshot?.remote)}`
+    open.disabled = !web || unsent
+    open.title = !web
+      ? 'This project has no copy online to open this save on.'
+      : unsent
+        ? 'This save has not been sent yet, so there is nothing there to open.'
+        : web
+    if (web) open.addEventListener('click', () => void backend().openExternal(web))
+    row.appendChild(open)
 
-    const tag = gitButton('Put a name on it', 'git tag', { className: 'diff-btn' })
+    const tag = gitButton('put a name on this save', 'git tag', { className: 'diff-btn' })
     tag.disabled = this.ctx.busy()
     tag.addEventListener('click', () => void this.tag(commit))
     row.appendChild(tag)
 
-    const revert = gitButton('Undo what it did', 'git revert', { className: 'diff-btn' })
+    const revert = gitButton('undo what this save did', 'git revert', { className: 'diff-btn' })
     revert.title =
       'Makes a new save that puts this one back the way it was. The save itself stays in the list — nothing is rewritten.'
     revert.disabled = this.ctx.busy() || !!this.snapshot?.status.inProgress

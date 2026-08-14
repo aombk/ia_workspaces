@@ -35,6 +35,7 @@
 import { backend } from '../../backend'
 import { GIT_HOSTS, hostById, readRemote, suggestRepoName, type GitHost } from '../../shared/gitHosts'
 import type { GitResult, HostTool, RepoStatus } from '../../shared/types'
+import { gitButton } from '../ui/gitWord'
 
 export interface PublishHooks {
   /** The folder being published. */
@@ -153,7 +154,7 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
             'Not one of your files is changed, moved or renamed, and nothing leaves this machine.'
         )
       )
-      const go = primary('Start tracking this folder', () =>
+      const go = command('git init', 'start tracking this folder', () =>
         step(
           () => backend().git.init(hooks.cwd()),
           'Tracked. Now make your first save in Changes.',
@@ -226,8 +227,9 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
             `This makes the project on ${host.name} and sends everything to it in one go.`
         )
       )
-      const go = primary(
-        working ? 'Working…' : `Create it on ${host.name} and send everything`,
+      const go = command(
+        `${host.cli!.command} repo create`,
+        working ? 'working…' : `create it on ${host.name} and send everything`,
         () =>
           step(
             () =>
@@ -282,7 +284,10 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
       body.appendChild(pasteRow())
 
       const remote = readRemote(pasted.trim())
-      const go = primary(working ? 'Working…' : 'Connect it and send everything', async () => {
+      const go = command(
+        'git remote add origin && git push -u',
+        working ? 'working…' : 'connect it and send everything',
+        async () => {
         const url = pasted.trim()
         await step(async () => {
           const set = await backend().git.setOrigin(hooks.cwd(), url)
@@ -292,7 +297,8 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
         // Only close once it has actually worked — a panel that vanishes on a
         // failure takes the address the user just pasted with it.
         if (hooks.status()?.hasRemote) finish()
-      })
+        }
+      )
       go.disabled = working || !remote
 
       body.appendChild(actions(go, plain('Not now', finish)))
@@ -431,7 +437,9 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
 
     function step1(button: HTMLButtonElement): HTMLElement {
       const wrap = document.createElement('div')
-      wrap.className = 'publish-actions publish-actions--step'
+      // No `--step` modifier any more: `.publish-actions` anchors from the left
+      // by itself now, which is all that class ever asked for.
+      wrap.className = 'publish-actions'
       wrap.appendChild(button)
       return wrap
     }
@@ -475,6 +483,25 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
       return btn
     }
 
+    /**
+     * A stage's main button, saying the command it runs.
+     *
+     * The same bargain the panes make: what is written on the button is what
+     * will be run, and the English is the gloss. Worth more here than anywhere,
+     * because this is the ladder somebody climbs exactly once per project, and
+     * `git init` and `git remote add origin` are the two commands they will
+     * otherwise meet for the first time in an error message.
+     */
+    function command(
+      cmd: string,
+      label: string,
+      onClick: () => void | Promise<void>
+    ): HTMLButtonElement {
+      const btn = gitButton(label, cmd, { className: 'btn primary publish-primary' })
+      btn.addEventListener('click', () => void onClick())
+      return btn
+    }
+
     function plain(label: string, onClick: () => void): HTMLButtonElement {
       const btn = document.createElement('button')
       btn.className = 'btn'
@@ -483,10 +510,19 @@ export function showPublish(hooks: PublishHooks): Promise<void> {
       return btn
     }
 
+    /**
+     * One stage's buttons, with Close always at the far end of the row.
+     *
+     * The order is the contract: whatever this stage's main action is comes
+     * first, at the left edge, and Close is pinned right. Every stage of the
+     * ladder therefore puts its primary button in the same pixels, which is
+     * what the stage before it had you clicking.
+     */
     function actions(...buttons: HTMLButtonElement[]): HTMLElement {
       const row = document.createElement('div')
       row.className = 'publish-actions'
       const close = plain('Close', finish)
+      close.classList.add('publish-close')
       row.append(...buttons, close)
       return row
     }

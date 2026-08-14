@@ -43,7 +43,7 @@ import {
 import { hostLabel } from '../../shared/gitHosts'
 import type { ChangedFile, RepoStatus } from '../../shared/types'
 import { confirmDialog } from '../ui/confirm'
-import { explain, gitButton, gitWordFirst, plainWord } from '../ui/gitWord'
+import { explain, gitButton, gitWordFirst, plainWord, setButtonLabel } from '../ui/gitWord'
 import { patchElement, splitResizer, text } from './common'
 import type { RepoSnapshot } from './repoWatch'
 import type { GitContext, GitView } from './view'
@@ -64,11 +64,12 @@ export class ChangesView implements GitView {
   private readonly messageEl: HTMLTextAreaElement
   private readonly saveBtn: HTMLButtonElement
   private readonly sendBtn: HTMLButtonElement
-  /** The label halves, so relabelling never touches the command beside them. */
-  private readonly saveLabel: HTMLSpanElement
-  private readonly sendLabel: HTMLSpanElement
   private readonly footNoteEl: HTMLDivElement
   private readonly undoRow: HTMLDivElement
+  /** Built once and relabelled, like the two above — see `renderUndo`. */
+  private readonly undoLabel: HTMLSpanElement
+  private readonly undoBtn: HTMLButtonElement
+  private readonly amendBtn: HTMLButtonElement
 
   private snapshot: RepoSnapshot | null = null
   private selected: Selection | null = null
@@ -127,14 +128,12 @@ export class ChangesView implements GitView {
     const buttons = document.createElement('div')
     buttons.className = 'diff-foot__buttons'
 
-    this.saveBtn = gitButton('Save', 'git commit', { className: 'diff-btn primary' })
-    this.saveLabel = this.saveBtn.firstChild as HTMLSpanElement
+    this.saveBtn = gitButton('save what you picked', 'git commit', { className: 'diff-btn primary' })
     this.saveBtn.addEventListener('click', () => void this.save())
     explain(this.saveBtn, 'commit')
     buttons.appendChild(this.saveBtn)
 
-    this.sendBtn = gitButton('Send', 'git push', { className: 'diff-btn' })
-    this.sendLabel = this.sendBtn.firstChild as HTMLSpanElement
+    this.sendBtn = gitButton('send your saves', 'git push', { className: 'diff-btn' })
     this.sendBtn.addEventListener('click', () => void this.send())
     explain(this.sendBtn, 'push', 'origin')
     buttons.appendChild(this.sendBtn)
@@ -148,8 +147,30 @@ export class ChangesView implements GitView {
     // The two ways back, on their own line under the two ways forward. Below
     // rather than beside, and never in the primary style: these are for the
     // minute after a save you did not mean to make, not part of the loop.
+    //
+    // Built once and kept, rather than built when they apply. They used to come
+    // and go with the last save's state, and a row that appears under the save
+    // button is a row that moves the save button — including in the half-second
+    // after you press it, which is the worst possible moment for it to happen.
     this.undoRow = document.createElement('div')
     this.undoRow.className = 'diff-foot__undo'
+
+    this.undoLabel = document.createElement('span')
+    this.undoLabel.className = 'diff-foot__undo-label'
+    this.undoRow.appendChild(this.undoLabel)
+
+    this.undoBtn = gitButton('undo the last save, keep my files', 'git reset --soft HEAD~1', {
+      className: 'diff-btn',
+    })
+    this.undoBtn.addEventListener('click', () => void this.undoLastSave())
+    this.undoRow.appendChild(this.undoBtn)
+
+    this.amendBtn = gitButton('add what is picked to the last save', 'git commit --amend', {
+      className: 'diff-btn',
+    })
+    this.amendBtn.addEventListener('click', () => void this.amend())
+    this.undoRow.appendChild(this.amendBtn)
+
     this.footEl.appendChild(this.undoRow)
 
     this.element.appendChild(this.footEl)
@@ -235,13 +256,22 @@ export class ChangesView implements GitView {
     // tooltip. A word you have to hover for is a word you never learn: the
     // whole point is that both are on screen at once, every time, until the
     // pair stops needing to be a pair.
+    // Both group actions are always drawn, and greyed rather than dropped when
+    // there is nothing for them to do. A button that comes and go with the file
+    // counts is a button that moves the heading beneath it every time a save
+    // lands — and these headings are two rows apart.
     this.group(
       [plainWord('staged'), text(' — going into the next save')],
       picked.length
         ? 'Untick to take one back out. Nothing on disk changes either way.'
         : 'Nothing is picked yet, so a save right now would hold nothing. Tick something below.',
       picked.map((file) => this.fileRow(file, 'picked')),
-      picked.length ? { label: 'Unpick all', command: 'git reset', run: () => this.unpick([]) } : undefined
+      {
+        label: 'unpick everything',
+        command: 'git reset',
+        enabled: picked.length > 0,
+        run: () => this.unpick([]),
+      }
     )
 
     this.group(
@@ -250,7 +280,12 @@ export class ChangesView implements GitView {
         ? 'Tick to put one into the next save, or open it to pick part of it.'
         : 'Everything that has changed is already picked.',
       changed.map((file) => this.fileRow(file, 'changed')),
-      changed.length ? { label: 'Pick all', command: 'git add -A', run: () => this.pick([]) } : undefined
+      {
+        label: 'pick everything',
+        command: 'git add -A',
+        enabled: changed.length > 0,
+        run: () => this.pick([]),
+      }
     )
   }
 
@@ -258,7 +293,9 @@ export class ChangesView implements GitView {
     title: Node[],
     note: string,
     rows: HTMLElement[],
-    action?: { label: string; command: string; run: () => void | Promise<void> }
+    // Optional only for the conflict group, which has no single command that
+    // resolves one — the two groups that do always carry theirs, enabled or not.
+    action?: { label: string; command: string; enabled: boolean; run: () => void | Promise<void> }
   ): void {
     const head = document.createElement('div')
     head.className = 'diff-group'
@@ -270,10 +307,11 @@ export class ChangesView implements GitView {
 
     if (action) {
       const btn = gitButton(action.label, action.command, { className: 'diff-group__action' })
-      btn.disabled = this.ctx.busy()
+      btn.disabled = this.ctx.busy() || !action.enabled
       btn.addEventListener('click', () => void action.run())
       head.appendChild(btn)
     }
+
     this.listEl.appendChild(head)
 
     const hint = document.createElement('div')
@@ -461,25 +499,30 @@ export class ChangesView implements GitView {
       : 'Tick single lines, or take a whole block with the button beside it.'
     bar.appendChild(summary)
 
-    if (count) {
-      const apply = gitButton(
-        picked ? `Unpick ${count} line${count === 1 ? '' : 's'}` : `Pick ${count} line${count === 1 ? '' : 's'}`,
-        picked ? 'git apply --cached -R' : 'git apply --cached',
-        { className: 'diff-btn primary' }
-      )
-      apply.disabled = this.ctx.busy()
-      apply.addEventListener('click', () => void this.applyTicked(patch.hunks))
-      bar.appendChild(apply)
+    // Both drawn from the start, greyed until something is ticked. They used to
+    // appear on the first tick, which pushed the entire patch down by a row
+    // under a cursor that was mid-way through ticking the next line.
+    const apply = gitButton(
+      picked
+        ? `unpick ${count || 'the'} ticked line${count === 1 ? '' : 's'}`
+        : `pick ${count || 'the'} ticked line${count === 1 ? '' : 's'}`,
+      picked ? 'git apply --cached -R' : 'git apply --cached',
+      { className: 'diff-btn primary' }
+    )
+    apply.disabled = this.ctx.busy() || count === 0
+    apply.addEventListener('click', () => void this.applyTicked(patch.hunks))
+    bar.appendChild(apply)
 
-      const clear = document.createElement('button')
-      clear.className = 'diff-btn'
-      clear.textContent = 'Clear ticks'
-      clear.addEventListener('click', () => {
-        this.ticked.clear()
-        this.renderPatch()
-      })
-      bar.appendChild(clear)
-    }
+    const clear = document.createElement('button')
+    clear.className = 'diff-btn'
+    clear.textContent = 'Clear ticks'
+    clear.disabled = count === 0
+    clear.addEventListener('click', () => {
+      this.ticked.clear()
+      this.renderPatch()
+    })
+    bar.appendChild(clear)
+
     this.diffEl.appendChild(bar)
 
     for (const hunk of patch.hunks) {
@@ -514,9 +557,11 @@ export class ChangesView implements GitView {
       head.appendChild(inWhat)
     }
 
-    const whole = document.createElement('button')
-    whole.className = 'diff-btn hunk-head__action'
-    whole.textContent = picked ? 'Unpick this block' : 'Pick this block'
+    const whole = gitButton(
+      picked ? 'unpick this block' : 'pick this block',
+      picked ? 'git apply --cached -R' : 'git apply --cached',
+      { className: 'diff-btn hunk-head__action' }
+    )
     whole.title = picked
       ? 'Take these lines back out of the next save. Your file is not touched.'
       : 'Put these lines into the next save, and leave the rest of the file out.'
@@ -716,12 +761,18 @@ export class ChangesView implements GitView {
     const hasMessage = this.messageEl.value.trim().length > 0
     const busy = this.ctx.busy()
 
-    this.saveLabel.textContent = picked ? `Save ${picked} picked file${picked === 1 ? '' : 's'}` : 'Save'
+    setButtonLabel(
+      this.saveBtn,
+      picked ? `save ${picked} picked file${picked === 1 ? '' : 's'}` : 'save what you picked'
+    )
     this.saveBtn.disabled = busy || picked === 0 || !hasMessage || conflicts || !!status?.inProgress
 
     const ahead = status?.ahead ?? 0
     const where = hostLabel(this.snapshot?.remote)
-    this.sendLabel.textContent = ahead ? `Send ${ahead} save${ahead === 1 ? '' : 's'} to ${where}` : `Send to ${where}`
+    setButtonLabel(
+      this.sendBtn,
+      ahead ? `send ${ahead} save${ahead === 1 ? '' : 's'} to ${where}` : `send your saves to ${where}`
+    )
     this.sendBtn.disabled =
       busy || !status?.hasRemote || (ahead === 0 && !!status?.upstream) || !!status?.inProgress
 
@@ -747,39 +798,44 @@ export class ChangesView implements GitView {
   }
 
   /**
-   * The two ways back, shown only while they are honest.
+   * The two ways back, always in the same place, greyed when they do not apply.
    *
-   * Both are hidden outright once the last save has been sent, rather than
-   * shown and disabled: a greyed button invites a hunt for the way to enable
-   * it, and the answer here is that there is deliberately no way — the
-   * operation that would do it anyway is a rewrite, and it lives in the
-   * terminal where it reads as one.
+   * They used to be hidden outright whenever they were not offerable, on the
+   * reasoning that a greyed button invites a hunt for the way to enable it.
+   * That reasoning cost more than it bought: this row is directly under the save
+   * button, so it appeared the instant a save landed and vanished the instant it
+   * was sent, moving the thing you had just pressed — twice, in the ten seconds
+   * either side of the two operations you use most.
+   *
+   * So the row is permanent and the label carries the reason, which answers the
+   * hunt better than an absence ever did: once a save has left this machine
+   * there is no way to change it from here, because the operation that would is
+   * a rewrite, and it lives in the terminal where it reads as one.
    */
   private renderUndo(status: RepoStatus | undefined, picked: number, busy: boolean): void {
-    this.undoRow.replaceChildren()
     const last = status?.lastSave
-    if (!last || status?.inProgress) return
-    const sent = !!status?.hasRemote && !status.unsent.includes(last.sha)
-    if (sent) return
+    const sent = !!last && !!status?.hasRemote && !status.unsent.includes(last.sha)
+    const changeable = !!last && !status?.inProgress && !sent
 
-    const label = document.createElement('span')
-    label.className = 'diff-foot__undo-label'
-    label.textContent = `Last save: “${truncate(last.subject, 48)}” — not sent yet, so it can still be changed:`
-    this.undoRow.appendChild(label)
+    this.undoLabel.textContent = !last
+      ? 'No saves yet — once you make one, it can be undone or added to from here until you send it.'
+      : status?.inProgress
+        ? `Last save: “${truncate(last.subject, 48)}” — cannot be changed while a ${status.inProgress} is part-way through.`
+        : sent
+          ? `Last save: “${truncate(last.subject, 48)}” — already sent, so it can no longer be changed from here.`
+          : `Last save: “${truncate(last.subject, 48)}” — not sent yet, so it can still be changed:`
 
-    const undo = gitButton('Undo it, keep my files', 'git reset --soft HEAD~1', { className: 'diff-btn' })
-    undo.title = 'Takes the save back. Every file stays exactly as it is, and what it held becomes picked again.'
-    undo.disabled = busy
-    undo.addEventListener('click', () => void this.undoLastSave())
-    this.undoRow.appendChild(undo)
+    this.undoBtn.title = changeable
+      ? 'Takes the save back. Every file stays exactly as it is, and what it held becomes picked again.'
+      : 'Only the last save, and only while it has not been sent anywhere.'
+    this.undoBtn.disabled = busy || !changeable
 
-    const add = gitButton('Add what is picked to it', 'git commit --amend', { className: 'diff-btn' })
-    add.title = picked
-      ? 'Folds what is picked into that save instead of making a second one.'
-      : 'Nothing is picked, so there is nothing to add to it yet.'
-    add.disabled = busy || picked === 0
-    add.addEventListener('click', () => void this.amend())
-    this.undoRow.appendChild(add)
+    this.amendBtn.title = !changeable
+      ? 'Only the last save, and only while it has not been sent anywhere.'
+      : picked
+        ? 'Folds what is picked into that save instead of making a second one.'
+        : 'Nothing is picked, so there is nothing to add to it yet.'
+    this.amendBtn.disabled = busy || !changeable || picked === 0
   }
 
   dispose(): void {

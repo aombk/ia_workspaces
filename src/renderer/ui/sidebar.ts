@@ -370,48 +370,52 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
   showContextMenu(x, y, [
     { label: 'New terminal', shortcut: 'Ctrl+T', onClick: () => actions.newTab(workspaceId) },
     {
-      label: 'New file tree tab',
+      label: 'new file tree tab',
       shortcut: 'Ctrl+Shift+F',
       onClick: () => actions.newFileTab(workspaceId, workspace.cwd),
     },
     {
-      label: 'Editor',
+      label: 'editor',
       shortcut: 'Ctrl+Shift+O',
       onClick: () => actions.openEditor(workspaceId),
     },
     // One entry for one pane; History is the switch inside it. See the same
     // list in `tabstrip.ts`.
     {
-      label: 'Git',
+      label: 'git',
       shortcut: 'Ctrl+Shift+D',
       onClick: () => actions.openDiff(workspaceId),
     },
     {
-      label: 'Compare files…',
+      label: 'compare files…',
       shortcut: 'Ctrl+Alt+D',
       onClick: () => void actions.openCompare(workspaceId),
     },
     {
-      label: 'Search',
+      label: 'search',
       shortcut: 'Ctrl+Shift+S',
       onClick: () => actions.openSearch(workspaceId),
     },
     {
-      label: 'Images',
+      label: 'images',
       shortcut: 'Ctrl+Shift+G',
       onClick: () => actions.openImages(workspaceId),
     },
     {
-      label: 'Running processes',
+      label: 'running processes',
       shortcut: 'Ctrl+Shift+R',
       onClick: () => actions.openPorts(workspaceId),
     },
+    // No system monitor: this is the same list of tab kinds the tab strip
+    // offers, and the monitor is a docked panel rather than a tab. It stays in
+    // the command palette, which is a list of things to *do* rather than a list
+    // of tabs to make.
     // Only where a host can actually show a web page. A menu entry that opens
     // an empty box is worse than no entry.
     ...(backend().capabilities.browser
       ? [
           {
-            label: 'Browser',
+            label: 'browser',
             shortcut: 'Ctrl+Shift+B',
             onClick: () => actions.openBrowser(workspaceId),
           },

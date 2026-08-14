@@ -19,9 +19,21 @@ rem  Windows can find it. Neither replaces the other, and the installer is
 rem  skipped rather than fatal when Inno Setup is absent.
 rem
 rem  Usage:
-rem    build_windows.bat            typecheck, test, bundle, package, collect
-rem    build_windows.bat --clean    wipe out\ first
-rem    set SKIP_INSTALLER=1         portable only, for fast iteration
+rem    build_windows.bat                 typecheck, test, bundle, package, collect
+rem    build_windows.bat --fast          unpacked tree only — about ten seconds
+rem    build_windows.bat --no-portable   installer only — about thirty seconds
+rem    build_windows.bat --clean         wipe out\ first
+rem    set SKIP_INSTALLER=1              portable exe only, no installer
+rem
+rem  --fast is the one to use while working. The full run spends eighty-five of
+rem  its hundred-odd seconds inside NSIS, compressing a third of a gigabyte of
+rem  Electron on one thread to make the portable exe; --fast stops after the
+rem  unpacked tree, which is a runnable app at
+rem  out\electron-pack\win-unpacked\ia_workspaces.exe. It still typechecks and
+rem  still runs the tests — those are seven seconds between them and they are
+rem  the two steps you would least want to skip. See tools\packWindows.mjs for
+rem  the measurements and for why the portable exe and the installer are now
+rem  built at the same time rather than one after the other.
 rem
 rem  This used to ask which runtimes to build, back when there were two. There
 rem  is one now: Tauri was dropped, because its browser pane was a native view
@@ -43,9 +55,17 @@ where npm >nul 2>&1 || (
   exit /b 1
 )
 
-if /i "%~1"=="--clean" (
-  echo [*] cleaning out\
-  call node tools\clean.mjs
+set "FASTFLAG="
+set "PACKFLAGS="
+for %%a in (%*) do (
+  if /i "%%~a"=="--fast" set "FASTFLAG=--fast"
+  rem The middle gear: skip the portable exe, which is eighty-five of the
+  rem hundred seconds, and still get the installer most people actually use.
+  if /i "%%~a"=="--no-portable" set "PACKFLAGS=--no-portable"
+  if /i "%%~a"=="--clean" (
+    echo [*] cleaning out\
+    call node tools\clean.mjs
+  )
 )
 
 if not exist "node_modules\" (
@@ -62,38 +82,30 @@ call npm test || goto :fail_tests
 echo [*] bundling  (%TIME%)
 call node build.mjs || goto :fail_build
 
-echo [*] packaging (portable exe + unpacked tree)  (%TIME%)
-call npx electron-builder --win || goto :fail_build
+rem Packaging — the unpacked tree, then the portable exe and the Inno Setup
+rem installer alongside each other. All of it lives in one script now, because
+rem "run these two and wait for both" is not a thing batch can say without a
+rem sentinel file and a polling loop, and because that script is where the
+rem timings that justify the arrangement are written down.
+rem
+rem Inno Setup rather than electron-builder's NSIS for the installer: it is what
+rem the rest of the range ships with, so one wizard, one publisher folder, one
+rem uninstall entry style across ia glitch, ia pixelCam and this. ISCC is not a
+rem dependency of the portable build, so a machine without it still produces the
+rem exe and is told what it did not produce, rather than failing the run.
+echo [*] packaging  (%TIME%)
+call node tools\packWindows.mjs %FASTFLAG% %PACKFLAGS% || goto :fail_build
 
-rem ── Installer ──────────────────────────────────────────────────────────────
-rem Inno Setup rather than electron-builder's NSIS: it is what the rest of the
-rem range ships with, so one wizard, one publisher folder, one uninstall entry
-rem style across ia glitch, ia pixelCam and this. ISCC is not a dependency of
-rem the portable build, so a machine without it still produces the exe and is
-rem told what it did not produce, rather than failing the run.
-set "ISCC="
-if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-if exist "C:\Program Files\Inno Setup 6\ISCC.exe"       set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
-if exist "C:\Program Files (x86)\Inno Setup 7\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 7\ISCC.exe"
-if exist "C:\Program Files\Inno Setup 7\ISCC.exe"       set "ISCC=C:\Program Files\Inno Setup 7\ISCC.exe"
-
-rem The version is read out here, at the top level, and not inside the block
-rem below. Everything in a parenthesised block is expanded when the block is
-rem parsed, so a %APP_VERSION% set inside one is still empty on the line that
-rem uses it — the installer would have been stamped with nothing at all.
-for /f "tokens=2 delims=:, " %%v in ('findstr /r "\"version\":" package.json') do (
-  if not defined APP_VERSION set APP_VERSION=%%~v
-)
-if not defined APP_VERSION set APP_VERSION=0.0.0
-
-if "%SKIP_INSTALLER%"=="1" (
-  echo [*] skipping installer ^(SKIP_INSTALLER=1^)
-) else if "%ISCC%"=="" (
-  echo [!] Inno Setup not found — portable exe only.
-  echo     Install it from https://jrsoftware.org/isdl.php to build the installer.
-) else (
-  echo [*] packaging installer %APP_VERSION%  ^(%TIME%^)
-  "%ISCC%" /Q /DMyAppVersion=%APP_VERSION% installer\ia_workspaces.iss || goto :fail_installer
+rem `^(` and `^)`, not `(` and `)`. Everything in a parenthesised block is
+rem expanded when the block is *parsed*, so an unescaped `(%TIME%)` becomes
+rem `(13:05:02.83)` and its closing bracket ends the `if` two lines early —
+rem which quietly promoted the `exit /b 0` below to unconditional and skipped
+rem the collect step on every full build. Same trap as the %APP_VERSION% note
+rem this file used to carry: batch expands first and reads the brackets after.
+if defined FASTFLAG (
+  echo.
+  echo === done ===  ^(%TIME%^)
+  exit /b 0
 )
 
 echo.
@@ -118,9 +130,6 @@ echo [x] tests failed — fix them before building a release
 exit /b 1
 :fail_build
 echo [x] build failed
-exit /b 1
-:fail_installer
-echo [x] Inno Setup failed to build the installer
 exit /b 1
 :fail_collect
 echo [x] collecting artifacts failed

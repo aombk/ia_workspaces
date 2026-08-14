@@ -43,7 +43,26 @@
         </div>
       </header>
 
-      <div class="body">
+      <!--
+        Everything under the title bar, and whatever is docked against it.
+
+        The dock is here rather than beside the terminals so that "left" means
+        the left of the window — outside the sidebar, not between it and the
+        tabs — and "top" spans the whole width. One flex container whose
+        direction is the whole of the snapping: `row`, `row-reverse`, `column`
+        and `column-reverse` put the same two children on the four sides.
+      -->
+      <div id="shell" class="shell">
+        <aside id="monitor-dock" class="monitor-dock" hidden aria-label="System monitor"></aside>
+        <div
+          id="monitor-resizer"
+          class="sidebar-resizer monitor-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          hidden
+        ></div>
+
+        <div class="body">
         <aside id="sidebar" class="sidebar">
           <div class="sidebar-head">
             <span class="sidebar-title">Workspaces</span>
@@ -80,6 +99,12 @@
             </button>
 
             <div id="sidebar-usage" class="sidebar-usage" hidden></div>
+            <!--
+              Under the Claude rows, and the same shape: how much of your limit
+              is left, then how much of your machine. Off unless asked for —
+              see `showSystemMonitor`.
+            -->
+            <div id="sidebar-system" class="sidebar-system" hidden></div>
           </div>
         </aside>
 
@@ -116,6 +141,18 @@
             <span id="status-runtime" class="status-runtime"></span>
           </footer>
         </main>
+      </div>
+
+      <!--
+        The pull-tab. A monitor you have to remember a chord to reach is a
+        monitor nobody opens twice, so there is something to click: a sliver on
+        the right edge with an arrow on it, in the place a drawer's handle
+        would be. It hides itself while the panel is open, because then it
+        would be an arrow pointing at something already on screen.
+      -->
+      <button id="monitor-handle" class="monitor-handle" title="System monitor (Ctrl+Shift+M)" aria-label="Open the system monitor">
+        &#8249;
+      </button>
       </div>
     </div>
 

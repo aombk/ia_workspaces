@@ -655,6 +655,18 @@ export class TerminalManager {
       case 'ports':
         pane = new PortsPane(state.id, this.portsHooks!)
         break
+      // The system readings are a dock now, not a tab — see `monitorDock.ts`.
+      // The kind stays so a document written before that still round-trips
+      // rather than being rewritten as a terminal, and the tab says where its
+      // contents went. Deliberately not a second `MonitorPane`: that would be
+      // a second poll of the machine, and the poll costs a process.
+      case 'monitor':
+        pane = new UnavailablePane(
+          'The machine readings moved',
+          'They are a panel now rather than a tab, because nothing they show belongs to one project. ' +
+            'Press Ctrl+Shift+M to show it, and close this tab.'
+        )
+        break
       case 'images':
         pane = new ImagesPane(state.id, this.imagesHooks!)
         break

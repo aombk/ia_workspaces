@@ -15,6 +15,8 @@ import {
   type PaneActivity,
   type PaneAgentState,
   type PaneNode,
+  MONITOR_BLOCKS,
+  type MonitorDock,
   type PaneKind,
   type PaneState,
   type PersistedState,
@@ -96,6 +98,9 @@ const SCHEMA_VERSION = 4
 /** Notification history is bounded so a long session can't grow without end. */
 const MAX_NOTIFICATIONS = 200
 
+/** The four edges and "off", for checking what came off disk. */
+const MONITOR_DOCKS = new Set<MonitorDock>(['off', 'left', 'right', 'top', 'bottom'])
+
 const EMPTY: PersistedState = {
   version: SCHEMA_VERSION,
   workspaces: [],
@@ -105,6 +110,17 @@ const EMPTY: PersistedState = {
   treeWidth: 260,
   gitFilesWidth: 300,
   gitHistoryWidth: 420,
+  // Checked on the way in rather than trusted: this comes off disk, and a
+  // document carrying `monitorDock: "banana"` would otherwise put a CSS class
+  // of that name on the layout and hide the terminals behind a panel with no
+  // size. Same reason `PANE_KINDS` is checked at runtime.
+  // Off until asked for. It starts a small process every few seconds, and that
+  // is not a thing to switch on for somebody without being asked — the same
+  // judgement the sidebar strip already makes.
+  monitorDock: 'off' as MonitorDock,
+  monitorDockSize: 300,
+  monitorHidden: [] as string[],
+  monitorOrder: [] as string[],
   window: { width: 1360, height: 860, maximized: false },
   settings: DEFAULT_SETTINGS,
 }
@@ -1404,6 +1420,66 @@ class WorkspaceState {
     this.commit()
   }
 
+  get monitorDock(): MonitorDock {
+    return this.data.monitorDock
+  }
+
+  get monitorDockSize(): number {
+    return this.data.monitorDockSize
+  }
+
+  /**
+   * Where the machine monitor sits, and how big.
+   *
+   * The size is kept when it is switched off rather than reset, so turning it
+   * back on gives you the panel you had rather than the default one — and it is
+   * remembered across sides for the same reason a sidebar width is: a panel
+   * dragged wide once is a preference.
+   */
+  /**
+   * The monitor's blocks in the order to draw them.
+   *
+   * The saved order first, then anything it does not mention in the built-in
+   * order — which is what makes a new block appear at the bottom of a panel
+   * somebody has rearranged, instead of not appearing at all.
+   */
+  get monitorBlocks(): Array<{ id: string; label: string }> {
+    const known = new Map(MONITOR_BLOCKS.map((b) => [b.id as string, { id: b.id as string, label: b.label as string }]))
+    const ordered = this.data.monitorOrder.map((id) => known.get(id)).filter((b): b is { id: string; label: string } => !!b)
+    const seen = new Set(ordered.map((b) => b.id))
+    return [...ordered, ...[...known.values()].filter((b) => !seen.has(b.id))]
+  }
+
+  /** Moves one block to sit at `index` in the drawn order. */
+  moveMonitorBlock(id: string, index: number): void {
+    const ids = this.monitorBlocks.map((b) => b.id)
+    const from = ids.indexOf(id)
+    if (from < 0 || from === index) return
+    ids.splice(from, 1)
+    ids.splice(Math.max(0, Math.min(ids.length, index)), 0, id)
+    this.data.monitorOrder = ids
+    this.commit()
+  }
+
+  /** True when a block of the system monitor is switched on. */
+  monitorShows(id: string): boolean {
+    return !this.data.monitorHidden.includes(id)
+  }
+
+  setMonitorBlock(id: string, shown: boolean): void {
+    const hidden = new Set(this.data.monitorHidden)
+    if (shown) hidden.delete(id)
+    else hidden.add(id)
+    this.data.monitorHidden = [...hidden]
+    this.commit()
+  }
+
+  setMonitorDock(dock: MonitorDock, size?: number): void {
+    this.data.monitorDock = dock
+    if (size !== undefined && Number.isFinite(size)) this.data.monitorDockSize = Math.round(size)
+    this.commit()
+  }
+
 }
 
 // ------------------------------------------------------------ layout helpers
@@ -1773,6 +1849,22 @@ function normalize(raw: unknown): PersistedState {
     treeWidth: Number(doc.treeWidth ?? EMPTY.treeWidth),
     gitFilesWidth: Number(doc.gitFilesWidth ?? EMPTY.gitFilesWidth),
     gitHistoryWidth: Number(doc.gitHistoryWidth ?? EMPTY.gitHistoryWidth),
+    monitorDock: MONITOR_DOCKS.has(doc.monitorDock as MonitorDock)
+      ? (doc.monitorDock as MonitorDock)
+      : EMPTY.monitorDock,
+    monitorDockSize: Number(doc.monitorDockSize) || EMPTY.monitorDockSize,
+    // Checked against the known ids, so a document naming a block that no
+    // longer exists cannot hide one that does.
+    monitorHidden: Array.isArray(doc.monitorHidden)
+      ? (doc.monitorHidden as unknown[]).filter(
+          (id): id is string => typeof id === 'string' && MONITOR_BLOCKS.some((b) => b.id === id)
+        )
+      : [],
+    monitorOrder: Array.isArray(doc.monitorOrder)
+      ? (doc.monitorOrder as unknown[]).filter(
+          (id): id is string => typeof id === 'string' && MONITOR_BLOCKS.some((b) => b.id === id)
+        )
+      : [],
     window: { ...EMPTY.window, ...((doc.window as object) ?? {}) },
     settings,
   }
@@ -2048,22 +2140,27 @@ export function paneLabel(pane: PaneState): string {
   // `[\\/]`, not `[\/]`: the second is a class holding one escaped forward
   // slash, so a Windows path has nothing to split on and the "file name" comes
   // back as the whole path.
-  if (pane.kind === 'reader') return fileName(pane.file) || 'File'
-  if (pane.kind === 'editor') return `e: ${fileName(pane.file) || 'Untitled'}`
+  // Lower case throughout, deliberately. These are labels on the app's own
+  // furniture rather than sentences, several of them are the commands you would
+  // type — `git`, `search` — and the monitor's rows have always been `cpu` and
+  // `memory`. A strip mixing "Changes" with "cpu" reads as two apps.
+  if (pane.kind === 'reader') return fileName(pane.file) || 'file'
+  if (pane.kind === 'editor') return `e: ${fileName(pane.file) || 'untitled'}`
   // One name for both kinds, because they are one pane: the kind records which
   // of its two views is showing, and a tab that renamed itself every time you
   // pressed the switch inside it would read as a second tab appearing.
-  if (pane.kind === 'diff' || pane.kind === 'history') return 'Git'
+  if (pane.kind === 'diff' || pane.kind === 'history') return 'git'
   // Both names, because which two files this pane holds is the whole of what it
   // is — and a workspace can hold several compares at once.
   if (pane.kind === 'compare') {
     const left = fileName(pane.compareLeft ?? '')
     const right = fileName(pane.compareRight ?? '')
-    return left && right ? `${left} → ${right}` : 'Compare'
+    return left && right ? `${left} → ${right}` : 'compare'
   }
-  if (pane.kind === 'search') return 'Search'
-  if (pane.kind === 'ports') return 'Running'
-  if (pane.kind === 'images') return 'Images'
+  if (pane.kind === 'search') return 'search'
+  if (pane.kind === 'ports') return 'running'
+  if (pane.kind === 'monitor') return 'system'
+  if (pane.kind === 'images') return 'images'
   if (pane.kind === 'browser') return browserLabel(pane.url)
   const leaf = pane.cwd.split(/[\\/]/).filter(Boolean).pop() || 'Terminal'
   if (pane.kind === 'files') return `${leaf} tree`

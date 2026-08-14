@@ -90,6 +90,8 @@ export function createElectronBackend(): Backend {
     wslDistros: () => api.wslDistros(),
     sshHosts: () => api.sshHosts(),
     claudeUsage: () => api.claudeUsage(),
+    systemStats: (opts) => api.systemStats(opts),
+    weather: (req) => api.weather(req),
     gitStatus: (cwd) => api.gitStatus(cwd),
     isDirectory: (dir) => api.isDirectory(dir),
     files: {

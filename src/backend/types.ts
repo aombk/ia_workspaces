@@ -14,6 +14,7 @@ import type {
   TerminalMeta,
   SearchHit,
   ProcessInfo,
+  SystemStats,
   UsageReport,
   SessionHostInfo,
   AgentConfigInfo,
@@ -28,6 +29,8 @@ import type {
   GitProgress,
   HistoryFilter,
   HostTool,
+  WeatherReading,
+  WeatherRequest,
 } from '../shared/types'
 
 /**
@@ -333,6 +336,28 @@ export interface Backend {
   sshHosts(): Promise<SshHost[]>
   /** Claude Code's own usage limits, for the status bar monitor. */
   claudeUsage(): Promise<UsageReport>
+  /**
+   * Machine load, memory, disks, network and GPU, for the monitor pane and the
+   * sidebar strip. One sample per call — the rates inside it are measured
+   * against the previous call, so a caller that polls irregularly gets rates
+   * over its own interval rather than a fixed one.
+   */
+  /**
+   * One sample of what the machine is doing.
+   *
+   * `drives` false skips the disk throughput and health probe entirely, which
+   * is the one expensive part — 246ms of PowerShell against the rest of the
+   * sample's 129ms. The panel passes false when its drives block is hidden, so
+   * turning a block off buys back real work rather than only tidying up.
+   */
+  systemStats(opts?: { drives?: boolean }): Promise<SystemStats>
+  /**
+   * The weather and air where you said you are.
+   *
+   * Answers `{ error: 'no-location' }` without touching the network until a
+   * place is set, which is the only third-party call this app makes.
+   */
+  weather(req: WeatherRequest): Promise<WeatherReading>
   /** Working-tree status for the file tree's change markers. */
   gitStatus(cwd: string): Promise<GitStatusMap>
   /** True when the path exists and is a directory — validates the path bar. */

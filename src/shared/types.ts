@@ -148,6 +148,7 @@ export const PANE_KINDS = [
   'browser',
   'compare',
   'images',
+  'monitor',
 ] as const
 
 export type PaneKind = (typeof PANE_KINDS)[number]
@@ -416,6 +417,376 @@ export interface UsageReport {
   buckets: UsageBucket[]
 }
 
+/**
+ * What the machine is doing, from what the OS hands to any process.
+ *
+ * The line this type is drawn along: **nothing here needs a driver, a helper, a
+ * sensor daemon or an administrator.** CPU load, memory, uptime, free space and
+ * network throughput are counters every OS keeps for everyone, and they are
+ * therefore true on all three platforms with no setup and no install.
+ *
+ * Temperatures are the other side of that line, and how many you get depends
+ * entirely on the machine. There is no portable way to read one: on Windows it
+ * takes a signed kernel driver (which is what HWiNFO and LibreHardwareMonitor
+ * *are*), and on Apple Silicon it takes `powermetrics` under sudo. So three
+ * things are read where they are free and nothing is read where it is not —
+ * every sensor Linux publishes under `hwmon`, an NVIDIA card through the
+ * `nvidia-smi` that ships with its driver, and LibreHardwareMonitor's own
+ * readings on Windows *if the user already runs it*. On a Windows machine with
+ * none of that, there are no temperatures, and `sources.temperatureNote` says
+ * so in a sentence rather than leaving an empty row to be mistaken for a bug.
+ *
+ * Every optional reading is `null` rather than `0` when it could not be taken,
+ * and `sources` says which probes answered. A monitor that renders "0 °C" for
+ * "no sensor" is worse than one that renders nothing — see `UsageReport`, which
+ * refuses to show a plausible zero for the same reason.
+ */
+export interface SystemStats {
+  /** When this sample was taken, so a stale one can be shown as stale. */
+  at: number
+  cpu: CpuStats
+  memory: MemoryStats
+  /** Seconds since the machine booted. */
+  uptimeSeconds: number
+  /** This app's own footprint, summed over its processes. */
+  app: AppFootprint
+  disks: DiskStats[]
+  /** How hard the hardware under those volumes is working. Empty until sampled twice. */
+  diskIo: DiskIoStats[]
+  /** The storage stack's verdict per drive, where one is free to obtain. */
+  health: DiskHealth[]
+  /** Whatever could be read without a driver — usually nothing but Linux. */
+  temperatures: TemperatureStats[]
+  networks: NetworkStats[]
+  /** Empty when nothing could answer — not a zeroed entry. */
+  gpus: GpuStats[]
+  battery: BatteryStats | null
+  /** Which optional probes answered, so the panes can say why a row is missing. */
+  sources: {
+    /** The tool that answered for GPUs, or null if none is installed. */
+    gpu: string | null
+    /** True once the platform probe has answered at least once. */
+    platform: boolean
+    /** What answered for disk throughput, or null where nothing did. */
+    diskIo: string | null
+    /** What answered for drive health. */
+    health: string | null
+    /** What answered for temperatures. Null on most Windows and macOS machines. */
+    temperature: string | null
+    /**
+     * Why there are no temperatures, in a sentence, when there are none.
+     *
+     * The difference between a monitor that is broken and one that is telling
+     * the truth about a machine that will not say. "Windows does not give a CPU
+     * temperature to a program without a driver" is a complete answer; an empty
+     * row is not, and invites a bug report that has no fix.
+     */
+    temperatureNote: string | null
+  }
+}
+
+export interface CpuStats {
+  model: string
+  cores: number
+  /**
+   * Percent busy across all cores since the previous sample, or null on the
+   * very first one — there is no delta to divide by yet, and 0% would be a lie
+   * told at exactly the moment somebody is looking hardest.
+   */
+  load: number | null
+  /** Per-core percentages, same rule. Empty until the second sample. */
+  perCore: number[]
+  /**
+   * The 1/5/15-minute averages, or null on Windows.
+   *
+   * Node returns `[0, 0, 0]` there rather than failing, which is indistinguish-
+   * able from a genuinely idle machine — so it is turned into "we do not know"
+   * here, where the platform is known, rather than in three separate views.
+   */
+  loadAverage: [number, number, number] | null
+}
+
+/**
+ * Where the memory went, which is a harder question than "how much is left".
+ *
+ * `used` was `total - free` for a long time and that is the wrong subtraction
+ * on every modern OS: it counts the standby cache — pages held only because
+ * nothing else wanted the space yet — as memory that is gone, when it is handed
+ * back the instant anything asks. On a 15 GB machine that is the difference
+ * between reporting 88% and reporting 78%, and the smaller number is the true
+ * one.
+ *
+ * The two fields under it are the ones that actually answer "where has it all
+ * gone", and neither is visible in any process list:
+ *
+ * - **committed** is what every program has been *promised*. It routinely
+ *   exceeds physical memory and that is not a fault: a promise is a ledger
+ *   entry, and memory that is committed but never touched is stored nowhere at
+ *   all — neither in RAM nor in the page file. What matters is this against
+ *   `commitLimit`, not against `total`: Windows refuses an allocation the
+ *   moment the ledger is full, so a program that runs out does not slow down,
+ *   it fails.
+ * - **kernel** is the driver pools. It belongs to no process, so it is missing
+ *   from Task Manager's list entirely, and a leaky driver hides there.
+ */
+export interface MemoryStats {
+  total: number
+  /** Bytes in use — total minus what the OS calls *available*, not free. */
+  used: number
+  free: number
+  /**
+   * Free plus everything reclaimable. The number worth worrying about, and the
+   * one Task Manager calls "Available". Null where the platform will not say.
+   */
+  available: number | null
+  /** What has been promised to programs, which may be more than exists. */
+  committed: number | null
+  /** The ceiling on that promise — physical memory plus the page file. */
+  commitLimit: number | null
+  /** Driver pools, paged and non-paged together. Belongs to no process. */
+  kernel: number | null
+}
+
+/** What this app costs, which in a terminal with twenty panes is a fair question. */
+export interface AppFootprint {
+  processes: number
+  /** Percent of one core, summed across the app's processes. */
+  cpu: number
+  /** Resident bytes, summed. */
+  memory: number
+}
+
+export interface DiskStats {
+  /** `C:` on Windows, a mount point elsewhere. */
+  mount: string
+  /** The volume's own name, when it has one. */
+  label: string
+  total: number
+  free: number
+}
+
+/**
+ * How hard a physical disk is being worked, as opposed to how full it is.
+ *
+ * A separate list from `DiskStats` because they are not the same things: that
+ * one is volumes — `C:`, `/home` — and this one is the hardware underneath, and
+ * on any machine with a partitioned disk or a spanned volume the two do not
+ * line up. "Which of my drives is being hammered" cannot be answered per
+ * volume, and that is the question this exists for.
+ */
+export interface DiskIoStats {
+  /**
+   * The counter's own name — `0 C:` on Windows, `nvme0n1` or `disk0` elsewhere.
+   *
+   * Ugly on Windows and kept that way, because it is the key the rates are
+   * matched on between samples and a name that changes is a rate that resets.
+   * `label` is the one to put on screen.
+   */
+  name: string
+  /** The drive's product name, when the platform will connect the two. */
+  label: string | null
+  /** Bytes per second since the previous sample; null on the first. */
+  readPerSec: number | null
+  writePerSec: number | null
+  /**
+   * Percent of the interval the disk spent working, when the platform counts it.
+   *
+   * Worth more than the byte rates on a slow disk: a drive can be at 100% busy
+   * while moving very little, which is exactly what a queue of small random
+   * writes looks like and exactly when a machine feels stuck.
+   */
+  busyPercent: number | null
+  readTotal: number
+  writeTotal: number
+}
+
+/**
+ * Whether a drive is in trouble, from whatever would say so without an
+ * administrator.
+ *
+ * Deliberately coarse. The detailed figures — wear, reallocated sectors, hours
+ * powered on, temperature — all live behind elevation on Windows and behind
+ * root on Linux, and this app does not ask for either. What is left is still
+ * the thing worth knowing: the storage stack's own verdict on each drive, which
+ * on Windows is free and takes 64ms, and which turns from Healthy to Warning
+ * before a disk dies rather than after.
+ */
+export interface DiskHealth {
+  name: string
+  /** The verdict, when there is one. `unknown` is a real and common answer. */
+  status: 'ok' | 'warning' | 'bad' | 'unknown'
+  kind: 'ssd' | 'hdd' | 'unknown'
+  size: number | null
+  /** Degrees Celsius, where a sensor source is running. */
+  temperature: number | null
+  /**
+   * Percent of the drive's rated write life used up.
+   *
+   * The figure that says a solid-state drive is wearing out, and the one
+   * Windows keeps behind an administrator. It arrives from a sensor source
+   * instead — see `lhm.ts` — and is null without one.
+   */
+  wearPercent: number | null
+  /** Hours the drive has been powered, which is the other half of its age. */
+  powerOnHours: number | null
+  /**
+   * What the sensor source calls this drive, when that is not what the storage
+   * stack calls it.
+   *
+   * Only ever different when there is an enclosure in the way: Windows reports
+   * the USB bridge — `ADATA ED600` — and the sensor source reports the disk
+   * inside it, `Samsung SSD 870 QVO 8TB`. Both are true of different things, so
+   * neither replaces the other and the panel shows both.
+   */
+  model?: string
+}
+
+/**
+ * One temperature, from whatever could be read without a driver.
+ *
+ * Almost always empty on Windows and macOS, and that is the honest outcome
+ * rather than a gap to be filled: see `SystemStats` for why. On Linux the
+ * kernel publishes CPU and NVMe temperatures to any process that can read a
+ * file, so there they simply work.
+ */
+export interface TemperatureStats {
+  /** `Core (Tctl/Tdie)`, `Composite Temperature` — whatever the sensor calls itself. */
+  name: string
+  celsius: number
+  /**
+   * What is being measured, because what counts as hot is not the same for
+   * each: a processor at 75 is working, a drive at 75 is throttling itself and
+   * losing endurance, and memory sits somewhere between.
+   */
+  kind: 'cpu' | 'gpu' | 'disk' | 'memory' | 'other'
+  /** The hardware it belongs to, so a drive's reading can find its row. */
+  device?: string
+}
+
+export interface NetworkStats {
+  name: string
+  /** Bytes per second since the previous sample; null on the first. */
+  rxPerSec: number | null
+  txPerSec: number | null
+  /** Cumulative counters since boot, which is what the rates are derived from. */
+  rxTotal: number
+  txTotal: number
+}
+
+export interface GpuStats {
+  name: string
+  /** Percent busy, or null when the source does not report it. */
+  load: number | null
+  /** Degrees Celsius. The one temperature available without a driver. */
+  temperature: number | null
+  memoryUsed: number | null
+  memoryTotal: number | null
+  /** Watts. */
+  power: number | null
+}
+
+export interface BatteryStats {
+  /** 0-100. */
+  percent: number
+  /** True while on mains. Null when the platform would not say. */
+  charging: boolean | null
+  /** Seconds left on the current charge, when the OS estimates one. */
+  secondsLeft: number | null
+  /**
+   * How much of its designed capacity the battery has lost to age.
+   *
+   * The one figure that says whether the battery itself is still any good, as
+   * opposed to how full it happens to be. Windows does not report it — this
+   * comes from a sensor source, and is null without one.
+   */
+  wearPercent: number | null
+  /** Watts going in or out right now. Positive charging, negative discharging. */
+  rateWatts: number | null
+  /** Watt-hours left, and what the pack holds now and when it was new. */
+  remainingWh: number | null
+  fullWh: number | null
+  designWh: number | null
+}
+
+/**
+ * Where the weather and air readings come from.
+ *
+ * `open-meteo` is the default because it needs no key and no signup, so the
+ * blocks work as soon as they know where you are. `openweathermap` is there
+ * because the Rainmeter skin uses it and somebody who already has a key should
+ * not have to abandon it.
+ */
+export type WeatherProvider = 'open-meteo' | 'openweathermap'
+
+export const WEATHER_PROVIDERS: readonly { id: WeatherProvider; label: string; needsKey: boolean }[] = [
+  { id: 'open-meteo', label: 'Open-Meteo (no key needed)', needsKey: false },
+  { id: 'openweathermap', label: 'OpenWeatherMap', needsKey: true },
+]
+
+export interface Weather {
+  /** The name you gave the place, or the provider's if it offers one. */
+  place: string
+  /** `clear sky`, `light rain` — the provider's own phrase. */
+  description: string
+  /** Degrees Celsius. */
+  temperature: number | null
+  feelsLike: number | null
+  /** Percent. */
+  humidity: number | null
+  /** Hectopascals. */
+  pressure: number | null
+  /** Kilometres per hour, whichever provider answered. */
+  windSpeed: number | null
+  /** Degrees clockwise from north — where the wind is coming *from*. */
+  windDegrees: number | null
+}
+
+/**
+ * The air, in µg/m³ plus whatever index the provider computes.
+ *
+ * The index needs its scale carried with it, because the two providers use
+ * different ones: Open-Meteo reports the European index, which runs from 0 to
+ * past 100, and OpenWeatherMap reports 1 to 5. A bare number would be
+ * unreadable and, worse, would look fine.
+ */
+export interface AirQuality {
+  index: number | null
+  scale: 'european' | 'owm'
+  pm2_5: number | null
+  pm10: number | null
+  o3: number | null
+  no2: number | null
+  so2: number | null
+  co: number | null
+  nh3: number | null
+}
+
+/** What to ask, and of whom. */
+export interface WeatherRequest {
+  provider: WeatherProvider
+  lat: number
+  lon: number
+  /** Only OpenWeatherMap needs one. Open-Meteo ignores it. */
+  key?: string
+  /** What to call the place, since a coordinate is not a name. */
+  place?: string
+}
+
+export interface WeatherReading {
+  weather: Weather | null
+  air: AirQuality | null
+  /** When this was fetched, so the block can say how old it is. */
+  at: number
+  /**
+   * What went wrong, or `no-location` / `no-key` when nothing was asked at all.
+   *
+   * Those two are not failures and are not logged as such — they are the state
+   * a block is in before it has been told where you are, and the block says
+   * what to do about it rather than looking broken.
+   */
+  error: string | null
+}
+
 /** A process running under one of this app's panes. */
 export interface ProcessInfo {
   pid: number
@@ -635,6 +1006,16 @@ export interface Settings {
    */
   showUsageMonitor: boolean
   /**
+   * Show this machine's load, memory, disk and network under the usage rows.
+   *
+   * Four lines rather than the whole monitor pane: the question the sidebar
+   * answers is "is the machine coping", and the pane is there for "with what".
+   * Off by default, unlike the usage rows above it — those come from a network
+   * call this app makes anyway, and this one starts a small process every few
+   * seconds, which is not a thing to switch on for somebody without asking.
+   */
+  showSystemMonitor: boolean
+  /**
    * Keep each pane's screen on disk so a restored pane comes back with what it
    * was showing. Only reached when the shell itself did not survive — see
    * `keepSessionsAlive`.
@@ -682,6 +1063,17 @@ export interface Settings {
    * how a file gets edited: by the editor you already use.
    */
   externalEditor: string
+  /**
+   * Where the weather and air blocks look, and which service answers.
+   *
+   * Empty coordinates mean the blocks say so and ask nothing of the network —
+   * see `readWeather`. The key is only read by the provider that needs one.
+   */
+  weatherProvider: WeatherProvider
+  weatherPlace: string
+  weatherLat: string
+  weatherLon: string
+  weatherKey: string
   /** "Open in ia_workspaces" on folder right-click. Writes to HKCU. */
   explorerContextMenu: boolean
   /** Which glyph marks a nested workspace. See `NestingMarker`. */
@@ -757,9 +1149,62 @@ export interface PersistedState {
   /** Where the grip sits in each half of the git pane, shared by every git pane. */
   gitFilesWidth: number
   gitHistoryWidth: number
+  /**
+   * Where the machine monitor is docked, and how big it is.
+   *
+   * Beside the window size rather than inside a workspace, because what it
+   * shows is a property of the machine and not of any project — the reason it
+   * stopped being a tab. Opening a different workspace should not move it or
+   * close it, and it does not.
+   */
+  monitorDock: MonitorDock
+  monitorDockSize: number
+  /**
+   * Blocks of the system monitor the user has turned off, by id.
+   *
+   * Held as what is *hidden* rather than what is shown, so a block added in a
+   * later version arrives switched on instead of invisible until somebody
+   * finds the menu. The ids are `MONITOR_BLOCKS`.
+   */
+  monitorHidden: string[]
+  /**
+   * The order the blocks are drawn in, by id.
+   *
+   * Partial on purpose: anything not named here is drawn after whatever is, in
+   * the order `MONITOR_BLOCKS` states. So a block added in a later version
+   * appears at the bottom of a rearranged panel rather than vanishing, and a
+   * document written before this existed needs no migration at all.
+   */
+  monitorOrder: string[]
   window: WindowState
   settings: Settings
 }
+
+/** Which edge the monitor is attached to, or `off` when it is not shown. */
+export type MonitorDock = 'off' | 'left' | 'right' | 'top' | 'bottom'
+
+/**
+ * The blocks the system monitor can show, in the order it shows them.
+ *
+ * A list rather than a set of booleans so the order is stated once and the
+ * right-click menu, the renderer and the persisted document cannot disagree
+ * about it. `drives` is the one that costs something to collect — see
+ * `readSystemStats` — so turning it off buys back a process every five seconds
+ * rather than only shortening the panel.
+ */
+export const MONITOR_BLOCKS = [
+  { id: 'cpu', label: 'processor, memory and temperature' },
+  { id: 'gpu', label: 'graphics' },
+  { id: 'network', label: 'network' },
+  { id: 'drives', label: 'drives, volumes and health' },
+  { id: 'temperatures', label: 'temperatures' },
+  { id: 'claude', label: 'claude usage limits' },
+  { id: 'system', label: 'battery and uptime' },
+  { id: 'weather', label: 'weather' },
+  { id: 'air', label: 'air quality' },
+] as const
+
+export type MonitorBlock = (typeof MONITOR_BLOCKS)[number]['id']
 
 /**
  * One shell the session broker is holding.
@@ -1253,11 +1698,17 @@ export const DEFAULT_SETTINGS: Settings = {
   imageRecursive: false,
   imageFit: false,
   showUsageMonitor: true,
+  showSystemMonitor: false,
   restoreScrollback: true,
   keepSessionsAlive: true,
   refreshChangedFiles: 'auto',
   resumeAgentSessions: true,
   externalEditor: '',
+  weatherProvider: 'open-meteo',
+  weatherPlace: '',
+  weatherLat: '',
+  weatherLon: '',
+  weatherKey: '',
   explorerContextMenu: false,
   nestingMarker: 'hook',
   agentIntegration: 'unset',

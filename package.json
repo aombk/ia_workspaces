@@ -50,6 +50,9 @@
       "output": "out/electron-pack"
     },
     "afterPack": "tools/stampExe.mjs",
+    "electronLanguages": [
+      "en-US"
+    ],
     "files": [
       "out/electron/**/*",
       "package.json"

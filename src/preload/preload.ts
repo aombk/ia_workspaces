@@ -21,6 +21,7 @@ import type {
   VaultEntry,
   Worktree,
   SessionHostInfo,
+  SystemStats,
   UsageReport,
   RepoStatus,
   Commit,
@@ -30,6 +31,8 @@ import type {
   GitProgress,
   HistoryFilter,
   HostTool,
+  WeatherReading,
+  WeatherRequest,
 } from '../shared/types'
 
 /**
@@ -169,6 +172,9 @@ const api = {
   wslDistros: (): Promise<string[]> => ipcRenderer.invoke(IPC.wslDistros),
   sshHosts: (): Promise<SshHost[]> => ipcRenderer.invoke(IPC.sshHosts),
   claudeUsage: (): Promise<UsageReport> => ipcRenderer.invoke(IPC.claudeUsage),
+  systemStats: (opts?: { drives?: boolean }): Promise<SystemStats> =>
+    ipcRenderer.invoke(IPC.systemStats, opts),
+  weather: (req: WeatherRequest): Promise<WeatherReading> => ipcRenderer.invoke(IPC.weather, req),
   gitStatus: (cwd: string): Promise<GitStatusMap> => ipcRenderer.invoke(IPC.gitStatus, cwd),
   isDirectory: (dir: string): Promise<boolean> => ipcRenderer.invoke(IPC.isDirectory, dir),
   files: {

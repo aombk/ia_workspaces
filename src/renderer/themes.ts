@@ -8,6 +8,7 @@ import {
   findInterfaceTheme,
   findTerminalTheme,
   roundnessOf,
+  DEFAULT_MONITOR,
   type InterfaceTheme,
   type TerminalTheme,
 } from '../shared/themes'
@@ -126,6 +127,14 @@ export function applyChrome(theme: InterfaceTheme): void {
   for (const key of CHROME_KEYS) {
     root.style.setProperty(CSS_VAR[key], theme.chrome[key])
   }
+
+  // The monitor's own three, so a graph line and the number it belongs to are
+  // the same colour. Defaulted rather than required: a theme written before
+  // these existed still paints the monitor the way it always did.
+  const monitor = theme.monitor ?? DEFAULT_MONITOR
+  root.style.setProperty('--mon-load', monitor.load)
+  root.style.setProperty('--mon-memory', monitor.memory)
+  root.style.setProperty('--mon-temp', monitor.temp)
 
   root.style.setProperty('--opacity', String(opacity))
   // The page itself must stop painting, or there is nothing for the terminal's

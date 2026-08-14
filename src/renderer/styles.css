@@ -14,7 +14,19 @@
   --danger: #d16a63;
   --warn: #d1a45f;
   --titlebar-h: 36px;
-  --tabstrip-h: 36px;
+  /*
+    The tab strip, and the system monitor's title bar, which sit side by side
+    whenever the panel is docked left or right — so a difference of even three
+    pixels reads as one of them being crooked.
+
+    They were sized independently and drifted: the strip declared 36px and the
+    header was whatever its padding happened to add up to, which was 33. Both
+    now take this, so the next change to either moves both.
+  */
+  --tabstrip-h: 33px;
+  /* The system monitor's pull-tab. Wide enough to hit without aiming, narrow
+     enough to sit over a scrollbar without hiding much of it. */
+  --handle-w: 16px;
   --status-h: 24px;
   /* Corner rounding, in three tiers, overwritten by the theme's roundness.
      `sm` is badges and chips, `md` is panels, rows and inputs, `lg` is what
@@ -35,6 +47,19 @@
   --radius-dot: 50%;
   --radius-workspace-dot: 50%;
   --guide-line: #4a4a4a;
+  /* Overwritten by the active theme at startup; here so the monitor is never
+     unstyled on the first frame. See `applyChrome`. */
+  --mon-load: #40c0ff;
+  --mon-memory: #80ff00;
+  --mon-temp: #ff8000;
+  /* The bottom three rungs of the air quality ramp, which the themes do not
+     set: they are not this app's colours to choose. Green, lime and yellow are
+     what every agency prints the same bands in, and the top two rungs are the
+     panel's own `--warn` and `--danger` so an alarming reading looks alarming
+     in the way the rest of the window already does. */
+  --mon-good: #80ff00;
+  --mon-fair: #c0e000;
+  --mon-mid: #e8d000;
 }
 
 * {
@@ -1827,12 +1852,34 @@ kbd {
   flex: none;
 }
 
+/* Takes all the slack in the head, and gives it up first. A long branch name
+   beside it then shortens this rather than pushing the buttons along the row —
+   the head's right-hand end is a fixed place, whatever git has just said. */
 .diff-title {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 11px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-faint);
+}
+
+/* The four operations, in one permanent strip.
+
+   Wrapping rather than scrolling, and every button in it a fixed member: which
+   of them apply changes constantly — that is what a repository *is* — and the
+   pane's answer to that is `disabled`, never absence. See `renderActions`. */
+.git-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
 }
 
 .diff-btn {
@@ -1996,22 +2043,26 @@ kbd {
   color: var(--text-faint);
 }
 
-/* The git command a button runs, riding along beside its label.
+/* The git command a button runs — the label itself, now, rather than something
+   riding along beside one.
 
-   Monospace and dim so it reads as machinery rather than as part of the label —
-   the eye can skip it entirely on the hundredth press, which is what stops a
-   teaching device becoming clutter. It is the half of the vocabulary you
-   eventually have to type. */
+   Monospace because it is a thing you could type, and in the button's own
+   colour because it is what the button says. The English after it is the gloss,
+   dim and bracketed exactly as every other translation in these panes. */
 .gw-cmd {
-  margin-left: 7px;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 0.85em;
-  color: var(--text-faint);
-  opacity: 0.85;
+  font-size: 0.95em;
+  color: inherit;
 }
 
-button:disabled .gw-cmd {
-  opacity: 0.6;
+.gw-note {
+  margin-left: 6px;
+  color: var(--text-faint);
+}
+
+button:disabled .gw-cmd,
+button:disabled .gw-note {
+  opacity: 0.75;
 }
 
 /* The changes pane's file groups. A heading and a sentence, because a list
@@ -3804,8 +3855,108 @@ thead .csv-cell {
   color: var(--danger);
 }
 
+/* ------------------------------------------------ this machine, in the rail
+
+   Deliberately the same shape as the usage rows above: label, number, bar.
+   They are neighbouring halves of one question — how much of your Claude limit
+   is left, and how much of your machine — and two visual languages for that
+   would hide the relationship. */
+
+.sidebar-system {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px 6px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-system.muted {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.system-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.system-row__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+/* Traffic has no ceiling to draw against, so its row is text alone and lays
+   itself out in one line rather than two. */
+.system-row--text {
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.system-row__label {
+  flex: none;
+}
+
+.system-row__value {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.system-row__track {
+  display: block;
+  width: 100%;
+  height: 4px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.system-row__fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-sm);
+  background: var(--text-dim);
+  transition: width 240ms ease-out;
+}
+
+.system-row--warn .system-row__fill {
+  background: var(--warn);
+}
+.system-row--warn .system-row__value {
+  color: var(--warn);
+}
+.system-row--high .system-row__fill {
+  background: var(--danger);
+}
+.system-row--high .system-row__value {
+  color: var(--danger);
+}
+
+.system-more {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.system-more:hover {
+  color: var(--accent);
+}
+
 /* The rail has no room for any of this. */
 .app.sidebar-collapsed .sidebar-usage,
+.app.sidebar-collapsed .sidebar-system,
 .app.sidebar-collapsed .inbox-count {
   display: none;
 }
@@ -5682,15 +5833,24 @@ html.translucent .titlebar {
   font-size: 10px;
 }
 
+/* Left-aligned, with Close pinned to the far end.
+
+   It was right-aligned, which meant every button in the row was positioned from
+   the right edge inwards — so a stage with one button and a stage with two put
+   their *primary* in two different places, and walking the ladder moved the
+   button you were repeatedly clicking. Anchoring from the left instead fixes the
+   primary at one edge and Close at the other, and only the optional middle
+   button varies, in a slot nothing else ever occupies. */
 .publish-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.publish-actions--step {
-  justify-content: flex-start;
+.publish-actions > .publish-close {
+  margin-left: auto;
 }
 
 /* ------------------------------------------------------- what git is doing */
@@ -5782,4 +5942,1259 @@ html.translucent .titlebar {
     animation: none;
     opacity: 0.5;
   }
+}
+
+/* ------------------------------------------------------------ the machine pane
+
+   A grid of cards rather than a fixed layout: the pane can be a narrow split
+   beside a terminal or the whole window, and `auto-fill` with a minimum means
+   one column in the first case and four in the second without a media query
+   guessing at pane widths it cannot see. */
+
+.monitor-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The minimum is what decides how many blocks fit across, and it is what a
+   second column costs: below twice this, one block has the whole width.
+
+   260, not the 168 this started at. 168 was the narrowest a block stays
+   *readable* at — the floor a drag may not go below — and using the floor as
+   the threshold meant a panel split into two columns the moment it passed
+   336px, with the air table clipping in both of them while there was width to
+   spare. 260 is what the widest block actually wants: eight pollutants at four
+   to a line, or a drive's name beside its three readings, without a number
+   being cut short. */
+/* A block is as tall as what is in it, and no taller.
+
+   Stretching was the old spelling and it is where every block's bottom gap came
+   from: a grid row is as tall as its tallest cell, so `battery` beside `cpu`
+   grew a band of nothing under `uptime` — the panel's own background, boxed and
+   bordered as though the block meant to reserve it. Only a block with a graph
+   in it can actually *use* extra height, and those are told to take it a few
+   rules down; everything else now ends where its last line does. */
+.monitor-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 5px;
+  padding: 5px;
+  align-content: start;
+  align-items: start;
+}
+
+/* One gap, used everywhere inside a block.
+   The rows had four different spacings between them — a card gap, a graph's
+   margin, a list's margin, a drive's padding — which read as sections nobody
+   meant to draw. Every one of them is now this, and it is half what the largest
+   of them was. The padding matches it, so the distance from a word to the edge
+   of the block is the same distance as between two lines. */
+.monitor-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* `--bg-raised`, not `--bg-active`. Active is the *pressed control* colour —
+     the brightest grey a theme has — and a wall of cards painted in it made the
+     panel glow next to everything else in the window. Raised is the panel
+     colour, which under the rainMeter theme is literally the skin's own
+     PanelColor. */
+  background: var(--bg-raised);
+  min-width: 0;
+}
+
+.monitor-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The readings live on the heading's line, which is the whole of the skin's
+   space management: `cpu 41% 52°C ram 68%` is one line where a name over a row
+   of figures is two, and the name was a part number nobody rereads. It takes
+   whatever the word leaves and may shrink to nothing, so the block still
+   narrows to its column. */
+.monitor-card__head .monitor-figures {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The drive head is a grid, so its readings get a column rather than the
+   leftovers — see `.monitor-drive__head`. All this has to do is let that column
+   be narrower than the numbers in it. */
+.monitor-drive__head .monitor-figures {
+  min-width: 0;
+}
+
+.monitor-card__head h3 {
+  margin: 0;
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+/* Takes the slack and gives it up first, so a long GPU name shortens itself
+   rather than widening the card past its grid track. */
+.monitor-card__sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.monitor-reading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.monitor-reading__label {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.monitor-reading__value {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.monitor-reading__value.muted {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.monitor-reading--warn .monitor-reading__value {
+  color: var(--warn);
+}
+
+.monitor-reading--high .monitor-reading__value {
+  color: var(--danger);
+}
+
+.monitor-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------- the graphs */
+
+.monitor-graph {
+  position: relative;
+  /* The skin's own graph height. 44 was a guess and it was the tallest thing in
+     every block; 32 still shows the shape of a spike, and the four pixels a
+     block saves are four pixels per block. */
+  height: 32px;
+  margin: 0;
+}
+
+.spark {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* The pair overlap in one box rather than sitting in two, because the question
+   is which of up and down is happening — which is a comparison, and a
+   comparison across two boxes is not one. */
+.monitor-graph--pair .spark {
+  position: absolute;
+  inset: 0;
+}
+
+.spark__line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  /* The viewBox is stretched to the element, so a plain stroke-width would be
+     scaled with it and come out thick and lumpy at wide sizes. */
+  vector-effect: non-scaling-stroke;
+}
+
+.spark__area {
+  fill: var(--accent);
+  opacity: 0.14;
+  stroke: none;
+}
+
+.spark--down .spark__line {
+  stroke: var(--ok, #7ec87e);
+}
+
+.spark--up .spark__line {
+  stroke: var(--warn);
+}
+
+/* --------------------------------------------------------------- per-core */
+
+.monitor-cores {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 16px;
+  margin: 0;
+}
+
+.monitor-core {
+  flex: 1;
+  min-width: 2px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.monitor-core__fill {
+  width: 100%;
+  background: var(--accent);
+  transition: height 240ms ease-out;
+}
+
+.monitor-core--warn .monitor-core__fill {
+  background: var(--warn);
+}
+
+.monitor-core--high .monitor-core__fill {
+  background: var(--danger);
+}
+
+/* ------------------------------------------------------------ disks and lists */
+
+.monitor-disk {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+
+.monitor-disk__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.monitor-disk__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.monitor-disk__value {
+  flex: none;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Under a drive's bar: how busy it is, whether it is healthy, what kind it is.
+   Quieter than the line above because it is the slow-moving half — the rates
+   change every sample and none of this changes in a year. */
+.monitor-disk__facts {
+  font-size: 10px;
+  color: var(--text-faint);
+  opacity: 0.85;
+}
+
+.monitor-bar {
+  display: block;
+  width: 100%;
+  height: 5px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.monitor-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-sm);
+  background: var(--text-dim);
+  transition: width 240ms ease-out;
+}
+
+.monitor-bar--warn .monitor-bar__fill {
+  background: var(--warn);
+}
+
+.monitor-bar--high .monitor-bar__fill {
+  background: var(--danger);
+}
+
+.monitor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+
+.monitor-list__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.monitor-list__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-faint);
+}
+
+.monitor-list__value {
+  flex: none;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------- the dock */
+
+/*
+  Everything under the title bar, and whatever is docked against it.
+
+  The dock is a child of this rather than of the terminal area, so "left" means
+  the left of the *window* — outside the sidebar — and "top" spans the full
+  width. One flex container whose direction is the whole of the snapping: the
+  dock and its grip are always the first two children in the same order, and
+  the four directions put them on the four sides. Moving the elements in the
+  DOM per side would rebuild the panel every time, and a panel that is torn
+  down loses its scroll position and restarts its poll.
+*/
+.shell {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.shell--right {
+  flex-direction: row-reverse;
+}
+
+.shell--top {
+  flex-direction: column;
+}
+
+.shell--bottom {
+  flex-direction: column-reverse;
+}
+
+.shell > .body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.monitor-dock {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  border-color: var(--border);
+  border-style: solid;
+  border-width: 0;
+}
+
+/* The border goes on the edge facing the work, so the dock reads as attached
+   to the window rather than floating in it. */
+.shell .monitor-dock {
+  border-right-width: 1px;
+}
+
+.shell--right .monitor-dock {
+  border-right-width: 0;
+  border-left-width: 1px;
+}
+
+.shell--top .monitor-dock {
+  border-right-width: 0;
+  border-bottom-width: 1px;
+}
+
+.shell--bottom .monitor-dock {
+  border-right-width: 0;
+  border-top-width: 1px;
+}
+
+/* A dock above or below is dragged by its horizontal edge, so the grip has to
+   turn with it — a col-resize cursor on a bar you drag up and down is the kind
+   of small lie that makes a control feel broken. */
+.shell--top .monitor-resizer,
+.shell--bottom .monitor-resizer {
+  width: auto;
+  height: 4px;
+  margin: -2px 0;
+  cursor: row-resize;
+}
+
+/* The title bar is the grip: press it anywhere but the cross and drag. */
+.monitor-dock__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Exactly the tab strip's height: the two are adjacent when the panel is
+     docked to a side, and their bottom edges have to be one line. */
+  height: var(--tabstrip-h);
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
+  cursor: grab;
+  user-select: none;
+}
+
+.monitor-dock__head.dragging {
+  cursor: grabbing;
+}
+
+.monitor-dock__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.monitor-dock__btn {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.monitor-dock__btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+/* The pane inside already scrolls its own card list, so this must not scroll
+   too — two nested scrollers on one panel means a wheel over the cards moves
+   whichever one the pointer happened to be inside. */
+.monitor-dock__body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.monitor-dock__body .monitor-pane {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The pane's own description is written for a tab, where it is the only thing
+   naming what you are looking at. The dock has a title bar saying what it is
+   two lines above it, so it would be the same sentence twice. */
+.monitor-dock__body .pane-about {
+  display: none;
+}
+
+/* Docked left or right the cards stack; docked top or bottom there is width to
+   spare and height to save, so they run across instead. */
+/*
+  A grid that stretches, not a multi-column flow.
+
+  Multi-column was the previous spelling and it packed the blocks tightly, which
+  is the wrong thing to optimise for a panel you leave open: it sizes each
+  column to the fixed width you name and leaves whatever is left over at the
+  right-hand end as nothing. `auto-fit` with a `1fr` maximum does the opposite —
+  it works out how many columns of at least 260px fit and then hands the
+  remainder back to them, so the blocks always span the full width however wide
+  the window is.
+
+  The objection to a grid was that a row is as tall as its tallest cell, so a
+  long block left a band of empty space beside a short one. That is answered by
+  stretching rather than by packing: every card fills its cell, and the graph
+  inside it is the part that grows, so the leftover height becomes taller graphs
+  in the short blocks instead of a gap.
+
+  The rows are `minmax(min-content, 1fr)`: they share the height evenly while
+  there is height to share, and stop at the height of what is in them. A fixed
+  `120px` floor was the old spelling and it is what put one block on top of
+  another — a row pinned to 120px does not grow for a block that needs 200, so
+  the block simply drew over the row below it. Now the row grows, the grid
+  passes the panel's height, and `.monitor-body`'s own `overflow-y` scrolls.
+*/
+.shell--top .monitor-dock__body .monitor-body,
+.shell--bottom .monitor-dock__body .monitor-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-auto-rows: minmax(min-content, 1fr);
+  align-content: stretch;
+  height: 100%;
+}
+
+/* And the same division of the row's height as the column makes of its own: a
+   block fills its cell where there is a graph to put the height into, and stops
+   at its last line where there is not.
+
+   The 120px that used to size the row lives here instead, and only on these: it
+   is the height a graph needs to be worth drawing, so it belongs to the blocks
+   that have one. On the rest it would be a floor under a block that is already
+   finished — a bordered box with a band of nothing under its last line, which
+   is the thing `align-items: start` was set to stop.
+
+   As a minimum on the card rather than on the row, because a row pinned to a
+   height does not grow for a block that needs more: it overflowed instead, and
+   drew over the row below it. A card's minimum lifts the row it is in. */
+.shell--top .monitor-dock__body .monitor-card:has(> .monitor-graph),
+.shell--bottom .monitor-dock__body .monitor-card:has(> .monitor-graph) {
+  align-self: stretch;
+  min-height: 120px;
+}
+
+/* ------------------------------------------------------------ the pull-tab */
+
+/*
+  A sliver on the right edge with an arrow on it, where a drawer's handle would
+  be. Deliberately small and quiet: a way in for the times you have not learned
+  the chord yet, not a piece of furniture.
+
+  It floats over the terminal rather than reserving a strip of its own, and the
+  terminal's scrollbar runs under exactly those pixels. That is a real cost and
+  it is the right one: the tab is 46 pixels tall against a scrollbar that is the
+  full height of the pane, so what is lost is one short stretch of a bar you can
+  still grab anywhere above or below it — where a reserved strip would cost
+  every pane its full height, permanently, for a button pressed once a session.
+
+  What it does need is to win the click in those 46 pixels, which is what the
+  stacking order below is for.
+*/
+.monitor-handle {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  /* Above the panes and their drop hints, below the find bar and any dialog. */
+  z-index: 15;
+  width: var(--handle-w);
+  height: 46px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-radius: var(--radius) 0 0 var(--radius);
+  background: var(--bg-raised);
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition:
+    opacity 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.monitor-handle:hover {
+  opacity: 1;
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* ------------------------------------------------------- dragging it about */
+
+/* While a drag is in flight nothing else should react to the pointer — a
+   terminal that starts selecting text under a panel being moved is the classic
+   version of this going wrong. */
+body.monitor-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+body.monitor-dragging .terminal-host,
+body.monitor-dragging .monitor-dock__body {
+  pointer-events: none;
+}
+
+/*
+  Where a release would put it.
+
+  A band on the target edge rather than the panel itself moving under the
+  cursor: relocating it live would re-lay-out the whole window several times a
+  second and reflow every terminal with it.
+*/
+.monitor-ghost {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.monitor-ghost--left,
+.monitor-ghost--right {
+  top: 0;
+  bottom: 0;
+  width: 280px;
+}
+
+.monitor-ghost--left {
+  left: 0;
+}
+
+.monitor-ghost--right {
+  right: 0;
+}
+
+.monitor-ghost--top,
+.monitor-ghost--bottom {
+  left: 0;
+  right: 0;
+  height: 200px;
+}
+
+.monitor-ghost--top {
+  top: 0;
+}
+
+.monitor-ghost--bottom {
+  bottom: 0;
+}
+
+/* ------------------------------------------------------ figures and graphs */
+
+/*
+  A row of numbers that carry their own units.
+
+  The layout the Rainmeter skin uses, and the reason it works: 72% needs no
+  label reading "busy", so one row holds three or four facts where a label
+  column would spend a line on each. Tabular figures, so a number counting up
+  does not shuffle the ones beside it.
+*/
+/*
+  A grid of equal columns, not a flex row.
+
+  The columns are what make this stable: each reading owns a fixed share of the
+  width, so `4%` growing to `100%` cannot shove the temperature beside it along.
+  A flex row re-spaces on every sample, and a number that jumps sideways as it
+  changes is one you cannot watch out of the corner of your eye — which is the
+  whole job of this panel. The column count is set per row in `figures()`.
+*/
+.monitor-figures {
+  display: grid;
+  align-items: baseline;
+  gap: 6px;
+  /* A step above the labels around them and a step below the body's own size:
+     the readings are what the panel is for, so they stay the largest thing in
+     a block, but three of them have to fit across a 168px column. */
+  font-size: 12px;
+  /* Hard against the graph below it. The readings and the picture of those
+     readings are one thing, and a six-pixel gutter made them read as two. */
+  margin: 0;
+}
+
+/* Every cell may shrink to nothing rather than holding the panel open. What
+   sets the panel's minimum width is the widest figure that refuses to clip, so
+   they all clip — a number cut short is better than a panel that will not
+   narrow. */
+.monitor-figure {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.monitor-figure__value,
+.monitor-figure__label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+}
+
+/* First hard left, last hard right, anything between centred in its own
+   column — so a row reads as spanning the card rather than as a huddle. */
+.monitor-figure--start {
+  justify-self: start;
+}
+
+.monitor-figure--center {
+  justify-self: center;
+}
+
+.monitor-figure--end {
+  justify-self: end;
+}
+
+/* The same size as every other number in the panel. A figure set larger reads
+   as a heading, and these are readings — the row is already distinguished by
+   being a row. */
+.monitor-figure__value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.monitor-figure__value.muted {
+  color: var(--text-faint);
+}
+
+.monitor-figure--warn .monitor-figure__value {
+  color: var(--warn);
+}
+
+.monitor-figure--high .monitor-figure__value {
+  color: var(--danger);
+}
+
+/*
+  The three quiet bands the air block needs and nothing else uses.
+
+  Green, lime, yellow, then the panel's own amber and red: the five-step ramp
+  every air quality index is printed with, and the skin's own Colorvl…Colorvh.
+  A machine reading gets three tones because "fine" has no gradations worth
+  colouring — an air reading gets five because the scale it is quoted on has
+  five, and a number this app calls yellow should be yellow on the map too.
+*/
+.monitor-figure--good .monitor-figure__value {
+  color: var(--mon-good);
+}
+
+.monitor-figure--fair .monitor-figure__value {
+  color: var(--mon-fair);
+}
+
+.monitor-figure--mid .monitor-figure__value {
+  color: var(--mon-mid);
+}
+
+/* Only where the number is genuinely ambiguous alone — ram, vram. */
+.monitor-figure__label {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/*
+  Several series over one trough, told apart by colour.
+
+  The colours are the skin's own GraphStyle: LineColor blue, LineColor2 orange,
+  LineColor3 green, over the dark trough its graphBackgroundColor sets. Under
+  the rainMeter theme these resolve to the skin's exact values; under every
+  other theme they are the accent, the warning colour and a green, so the graph
+  still reads as three things rather than one.
+*/
+.spark--stacked {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-sm);
+}
+
+/* Blue is load, orange is heat, green is bytes held — the same three in every
+   theme, so a line means the same thing whichever one is on. The figures take
+   them too, which is what makes a number and its line recognisably one thing. */
+.spark__line--a {
+  stroke: var(--mon-load);
+}
+
+.spark__line--b {
+  stroke: var(--mon-temp);
+}
+
+.spark__line--c {
+  stroke: var(--mon-memory);
+}
+
+.monitor-figure--load .monitor-figure__value {
+  color: var(--mon-load);
+}
+
+.monitor-figure--temp .monitor-figure__value {
+  color: var(--mon-temp);
+}
+
+.monitor-figure--memory .monitor-figure__value {
+  color: var(--mon-memory);
+}
+
+/* -------------------------------------------------- rearranging the blocks */
+
+/* The heading is the handle: the rest of a card holds things you click, and a
+   card that starts moving when you press a drive row is a card you cannot use. */
+.monitor-card__head[draggable='true'] {
+  cursor: grab;
+}
+
+.monitor-card__head[draggable='true']:active {
+  cursor: grabbing;
+}
+
+/* Where a release would drop it. A line on the edge being approached rather
+   than the list reordering live — reordering under the cursor makes the target
+   move as you reach for it. */
+.monitor-card.drop-before,
+.monitor-card.drop-after {
+  position: relative;
+}
+
+.monitor-card.drop-before::before,
+.monitor-card.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.monitor-card.drop-before::before {
+  top: -3px;
+}
+
+.monitor-card.drop-after::after {
+  bottom: -3px;
+}
+
+/* Where the cards run across, the line turns with them.
+
+   Marked on the card by the drag itself rather than inferred from where the
+   panel is docked. The dock position is not the same question: the pane in a
+   tab is one column when it is narrow and three when it is wide, and keying off
+   the shell drew a horizontal line in the wide case while the drop was being
+   decided on the horizontal axis — the line saying one thing and the release
+   doing another. `MonitorPane.horizontal()` decides once, and both the line and
+   the drop follow it. */
+.monitor-card.drop-across.drop-before::before,
+.monitor-card.drop-across.drop-after::after {
+  left: auto;
+  right: auto;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  height: auto;
+}
+
+.monitor-card.drop-across.drop-before::before {
+  left: -3px;
+}
+
+.monitor-card.drop-across.drop-after::after {
+  right: -3px;
+}
+
+
+/* ------------------------------------------------------------------ drives */
+
+/* One drive and the volumes on it, as one group. They were two cards, which
+   put "C: is 86% full" a screen away from the temperature of the disk C: is on
+   — two halves of one question about one piece of hardware. */
+.monitor-drive {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 3px;
+}
+
+.monitor-drive + .monitor-drive {
+  border-top: 1px solid var(--border);
+}
+
+/* The drive's name and its three readings on one line, the same trade the
+   block headings make: a name over a row of figures is two lines, and there is
+   one of these per drive in the machine.
+
+   A grid rather than a flex row, and that is the whole of the alignment fix.
+   Under flex the name took whatever width it needed and the readings started
+   wherever it stopped — so a drive called `SAMSUNG MZVL21T0HCLR-00BL2 in 0 C:`
+   pushed its load and temperature a centimetre right of the drive above it, and
+   three drives read as three unrelated rows rather than as a table. Fixed
+   fractions give every drive the same two columns, so the names line up down
+   the left and each reading sits under its own. The name ellipsises where it
+   no longer fits, which is the cost, and it is one word at the end of a part
+   number nobody reads twice.
+
+   The readings take what they need and the name takes the rest. `2fr` was the
+   old spelling and it gave two thirds of every drive's line to three short
+   numbers — so `SAMSUNG MZVL21T0HCLR-00BL2 in 0 C:` was cut off at the model
+   while a centimetre of nothing sat beside `3%`. The readings' column is now
+   sized in `.monitor-figures--drive`, in characters, and everything left over
+   is name. */
+.monitor-drive__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+/*
+  Three readings, hard right, in columns that do not move.
+
+  Right rather than left: the name they follow is a ragged string of any length,
+  so the only edge the three of them can share with the drive above and below is
+  the far one. And the columns have to be fixed in *character* widths rather than
+  sized to their contents — `9%` becoming `100%` is an extra character, and with
+  `auto` columns that one character shoves the two readings beside it along, on
+  the sample where you are watching them.
+
+  So each value owns a box wide enough for its longest form and is set right
+  inside it, in tabular numerals. A digit arriving grows the number leftwards
+  into its own box; nothing beside it moves, and the drive name keeps whatever
+  the three boxes do not need.
+*/
+.monitor-figures--drive {
+  grid-template-columns: repeat(3, auto);
+  justify-content: end;
+  /* Enough to read as three readings, little enough to read as one group —
+     the name is what the space saved goes to. */
+  gap: 7px;
+}
+
+.monitor-figures--drive .monitor-figure {
+  justify-self: end;
+  gap: 3px;
+}
+
+/* Wide enough for `100%` and for `--°C`, which are the longest either column
+   ever holds. */
+.monitor-figures--drive .monitor-figure__value {
+  min-width: 3em;
+  text-align: right;
+}
+
+.monitor-drive__name {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A volume, as two values and no bar. A bar shows one proportion well and four
+   numbers badly, and every reading here already carries its unit — so the space
+   goes to the graph above instead, which shows the things that actually move. */
+/* Indented under the drive it is on, and hung off a rule down the left.
+   The grouping is real — the counter names its instance `0 C:`, so which
+   letters are on which disk is free — and this is what makes it *look* real
+   rather than like two lists that happen to be adjacent. */
+/*
+  Three columns the whole block shares, so every bar starts and ends at the
+  same X.
+
+  Under flex each row set its own two edges: the bar began wherever that row's
+  name stopped and ended wherever its figure started, so `C: (Windows)` and `X:`
+  drew bars of different lengths in different places and the column of them read
+  as a ragged edge rather than as one scale. The widths come from the widest
+  name and the widest figure in the block — measured in `alignVolumes`, since
+  the rows are in separate drives and no amount of `auto` reaches across them —
+  which puts every bar at the shortest one's start and end. Both are `minmax(0,
+  …)` so a narrow block still shrinks them rather than overflowing.
+*/
+.monitor-volume {
+  display: grid;
+  grid-template-columns:
+    minmax(0, var(--vol-name, max-content))
+    minmax(18px, 1fr)
+    minmax(0, var(--vol-value, max-content));
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  margin-left: 3px;
+  padding-left: 5px;
+  border-left: 1px solid var(--border);
+}
+
+.monitor-volume__name {
+  color: var(--text-faint);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The one bar left in the panel, and the only place a bar is the right shape:
+   how full a volume is, is one proportion. It sits between the name and the
+   figure so the row reads as a sentence. */
+.monitor-volume__bar {
+  min-width: 0;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.monitor-volume__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--mon-memory);
+}
+
+.monitor-volume__bar--warn .monitor-volume__fill {
+  background: var(--warn);
+}
+
+.monitor-volume__bar--high .monitor-volume__fill {
+  background: var(--danger);
+}
+
+/* Hard against the block's right edge, so the figures line up on their end as
+   the bars do on theirs — the column is as wide as the longest of them, and a
+   shorter one left-aligned in it would hang in the middle of nowhere. */
+.monitor-volume__value {
+  justify-self: end;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-volume__value.warn {
+  color: var(--warn);
+}
+
+.monitor-volume__value.high {
+  color: var(--danger);
+}
+
+/* ------------------------------------------------- weather, air, no heading */
+
+/* A block with no heading still has the row, because that row is what the
+   block is dragged by — a block without one could not be moved. The word goes;
+   the grip stays. */
+.monitor-card--untitled .monitor-card__head {
+  min-height: 12px;
+}
+
+/* The gear floats, so the heading line has to keep its corner clear — the last
+   reading on that line ends exactly where the gear appears. Held open whether
+   the gear is showing or not: a number that jumps aside when the pointer nears
+   it is worse than one sitting eighteen pixels in. */
+.monitor-card--sited .monitor-card__head {
+  padding-right: 18px;
+}
+
+/* The gear on the two blocks that read from outside this machine. Quiet until
+   the block is under the pointer: it is set once and then never again. */
+.monitor-gear {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.monitor-card:hover .monitor-gear,
+.monitor-gear:focus-visible {
+  opacity: 1;
+}
+
+.monitor-gear:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+/* The gear is positioned against its block.
+
+   `container-type` is here for the air table below: a block is as wide as the
+   dock, the window and how many blocks are switched on happen to make it, and
+   none of those is a viewport width a media query could ask about. Inline-size
+   only, so the block's height is still its content's. */
+.monitor-card {
+  position: relative;
+  container-type: inline-size;
+}
+
+/*
+  Eight pollutants, on one line where there is room for one and two where there
+  is not.
+
+  Four to a line is the arrangement that has to work, because it is the one a
+  260px block gets, and the two rows line up as a table because both are the
+  same four columns. But a block docked across the top of a wide window has
+  three times that width, and splitting eight readings over two lines there is a
+  line spent on nothing — so past the point where all eight fit, they take one.
+
+  Written as a container query rather than as `auto-fit`, which would also flow
+  them and would pass through five, six and seven per line on the way. Those
+  break the table: `so2` ends up under `pm10` and the row above no longer says
+  which column is which. Four or eight, and nothing in between.
+*/
+.monitor-figures--air {
+  grid-template-columns: repeat(4, 1fr);
+  /* The columns need 6px to stay apart; the two lines are one table and want
+     the block's own line spacing, which is 2. They were two elements before
+     this and got that for free from the card's gap. */
+  row-gap: 2px;
+}
+
+/*
+  The numbers line up, not the words in front of them.
+
+  `pm2.5` is four characters longer than `o3`, so with each cell packed from its
+  own left edge the readings began at eight different places — and a table whose
+  values have no column to read down is not doing the one thing a table is for.
+  The label takes the width of the longest of the eight and sits against the
+  right of it, which puts every value at the same X. What goes ragged instead is
+  the labels, and they are the same eight words in the same eight places every
+  sample, so nothing is read off their left edge anyway.
+*/
+.monitor-figures--air .monitor-figure__label {
+  min-width: 2.7em;
+  text-align: right;
+}
+
+/* Three, where every other row uses four: the label column has to come out of
+   something, and in a 260px block that is the space beside it. */
+.monitor-figures--air .monitor-figure {
+  gap: 3px;
+}
+
+@container (min-width: 520px) {
+  .monitor-figures--air {
+    grid-template-columns: repeat(8, 1fr);
+  }
+}
+
+
+/* ------------------------------------------------ filling the docked panel */
+
+/*
+  Whatever is switched on shares whatever is left over, on whichever axis the
+  panel is long.
+
+  Docked to a side the panel is a column, and with every block at its natural
+  height a tall panel ended in a band of nothing. `flex: 1 1 auto` hands that
+  band to the blocks instead — and since the graph inside each one is the part
+  that grows, the extra height becomes taller graphs rather than padding.
+
+  Docked across the top or bottom the same thing happens on the other axis, and
+  the grid above does it: `1fr` columns divide the full width between however
+  many blocks are on, and stretching them to their cell fills the height too. So
+  switching a block off gives its space to the others rather than leaving a hole
+  where it was, which is the whole reason the blocks are switchable.
+
+  Slack only. There is no matching rule for the other direction: when the blocks
+  want more height than the panel has, they keep it and the panel scrolls. A
+  flex column will happily compress its items to nothing, and it did — every
+  block gave up a few pixels each, so switching one on made all the others
+  slightly worse and nothing anywhere said what had happened. A scrollbar says
+  it, and leaves each block the size it needs to be read.
+*/
+.shell--left .monitor-dock__body .monitor-body,
+.shell--right .monitor-dock__body .monitor-body {
+  display: flex;
+  flex-direction: column;
+  /* A column, so this is the cross axis: the blocks take the panel's width.
+     The grid above wants `start` on its own axis, which is a different axis and
+     the same declaration, so it has to be said again here. */
+  align-items: stretch;
+}
+
+/* Nothing shrinks. `flex-shrink: 0` on every block is the whole of the "use a
+   scrollbar rather than squashing things" rule — see above. */
+.shell--left .monitor-dock__body .monitor-card,
+.shell--right .monitor-dock__body .monitor-card {
+  flex: 0 0 auto;
+}
+
+/* Only a block that can spend the height gets given any.
+   The slack used to go to every block equally, and the ones with nothing that
+   grows — battery, weather, air, usage, and drives, whose graphs are nested a
+   level down inside each drive — simply held it at the bottom as a gap. Now it
+   all lands on the blocks whose graph is a child of the block itself, which
+   turns it into taller graphs rather than into empty boxes. */
+.shell--left .monitor-dock__body .monitor-card:has(> .monitor-graph),
+.shell--right .monitor-dock__body .monitor-card:has(> .monitor-graph) {
+  /* Grows into what is spare, never shrinks below what it holds. */
+  flex: 1 0 auto;
+}
+
+/* The graph takes the slack, in either arrangement. */
+.monitor-dock__body .monitor-graph {
+  flex: 1 1 auto;
+  min-height: 28px;
+  display: flex;
+}
+
+.monitor-dock__body .monitor-graph .spark {
+  height: 100%;
+  width: 100%;
+}
+
+/* -------------------------------------------------------- volume grouping */
+
+/*
+  A volume belongs to the drive *above* it, and the spacing has to say so.
+
+  Evenly spaced, "C: 142 GB free" sat exactly as close to the drive below it as
+  to the one it is actually on — and with a rule drawn above each drive, closer
+  to the wrong one. Tight under its own drive, with the gap before the next.
+*/
+.monitor-drive {
+  gap: 1px;
+  padding-top: 8px;
+}
+
+.monitor-volume {
+  padding-left: 10px;
+}
+
+.monitor-drive__name {
+  margin-bottom: 1px;
 }

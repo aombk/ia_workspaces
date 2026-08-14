@@ -5,6 +5,7 @@ import { renderThemeSection } from './themeEditor'
 import { showToast } from './toast'
 import { DEFAULT_URL } from '../browserPane'
 import { refreshUsageNow } from './usageMonitor'
+import { syncSystemStrip } from './systemStrip'
 import { appVersion, checkForUpdates, describeUpdate } from '../updates'
 import type { AgentConfigInfo } from '../../shared/types'
 import type { ShellProfile, Settings, SoundName } from '../../shared/types'
@@ -458,6 +459,18 @@ async function render(): Promise<void> {
         toggle(s.showUsageMonitor, (v) => {
           patch({ showUsageMonitor: v })
           refreshUsageNow()
+        })
+      ),
+      field(
+        'This machine in the sidebar',
+        'Processor, memory, the fullest disk and network traffic, under the ' +
+          'Claude rows. Read from counters the system keeps for every program — ' +
+          'nothing is installed and no driver is loaded. Off by default because ' +
+          'it starts a small process every few seconds; the Machine pane shows ' +
+          'the same readings with graphs, and only while it is open.',
+        toggle(s.showSystemMonitor, (v) => {
+          patch({ showSystemMonitor: v })
+          syncSystemStrip()
         })
       ),
       field(

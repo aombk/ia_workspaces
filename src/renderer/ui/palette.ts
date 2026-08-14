@@ -293,15 +293,21 @@ function collect(): Command[] {
       },
       {
         kind: 'Action',
-        label: 'Git — history',
+        label: 'git — history',
         detail: 'every save in this project, and the lines they sit on — Ctrl+Shift+H',
         run: () => actions.openHistory(id),
       },
       {
         kind: 'Action',
-        label: 'Running processes',
+        label: 'running processes',
         detail: 'what each pane is running, and what is holding a port — Ctrl+Shift+R',
         run: () => actions.openPorts(id),
+      },
+      {
+        kind: 'Action',
+        label: 'system',
+        detail: 'load, memory, disks, network and graphics — how this computer is coping',
+        run: () => actions.openMonitor(id),
       },
       {
         kind: 'Action',

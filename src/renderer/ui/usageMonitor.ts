@@ -210,3 +210,20 @@ async function refresh(): Promise<void> {
 export function refreshUsageNow(): void {
   void refresh()
 }
+
+/**
+ * The last report, for anything that wants to draw it somewhere else.
+ *
+ * Read rather than subscribed to, because the two windows this describes move
+ * on the scale of hours: whatever asks gets whatever the five-minute poll last
+ * fetched, and a second consumer costs nothing and adds no request. Null before
+ * the first answer, which is a different thing from a report saying zero.
+ */
+export function latestUsage(): UsageReport | null {
+  return latest
+}
+
+/** How long until a window resets, in the same words the sidebar uses. */
+export function usageResetLine(resetsAt: string | null): string {
+  return resetLine(resetsAt)
+}
