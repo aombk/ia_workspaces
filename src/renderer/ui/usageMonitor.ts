@@ -28,6 +28,16 @@ const RETRY_MS = 45 * 1000
 
 let timer: ReturnType<typeof setTimeout> | null = null
 let latest: UsageReport | null = null
+/**
+ * Whether the next read should ask the macOS keychain again.
+ *
+ * A dismissed keychain dialog is remembered in the main process so the
+ * five-minute poll cannot raise another one every five minutes. Opening the
+ * monitor panel is a deliberate act that means "show me this", so it is the
+ * moment worth spending a second dialog on — and the only one, since it is
+ * cleared as soon as it has been used.
+ */
+let retryKeychain = false
 
 /**
  * The sidebar's own footer, not the status bar.
@@ -122,6 +132,9 @@ const EXPLANATION: Record<string, string> = {
   expired: 'Claude usage — sign-in expired',
   unmetered: 'Claude usage — not metered',
   error: 'Claude usage — unavailable',
+  // The one that is not a failure. macOS keeps Claude Code's login in the
+  // keychain, and the keychain asked whether we could read it and was told no.
+  locked: 'Claude usage — keychain not allowed',
 }
 
 /** Colour bands. Only the top one is loud, or it stops meaning anything. */
@@ -190,24 +203,41 @@ async function refresh(): Promise<void> {
   if (timer) clearTimeout(timer)
   timer = null
 
-  if (!store.settings.showUsageMonitor) {
-    // Nothing is drawn, so nothing should be asked for either.
+  // Deliberately not gated on `showUsageMonitor`. That setting is about the
+  // *sidebar footer*, and this used to skip the request whenever it was off —
+  // which was right when the footer was the only thing drawing these numbers,
+  // and became a bug the moment the monitor pane started drawing them too: the
+  // pane's block sat on "Reading your usage limits…" for as long as the app ran,
+  // because nothing was ever going to ask. One request every five minutes is
+  // also the wrong thing to be economising on when a second consumer exists.
+  if (!store.settings.showUsageMonitor && !store.monitorShows('claude')) {
+    // Neither of the two places that draw this is showing it, so now there is
+    // genuinely nothing to ask for.
     timer = setTimeout(() => void refresh(), POLL_MS)
     renderUsage()
     return
   }
 
   try {
-    latest = await backend().claudeUsage()
+    latest = await backend().claudeUsage(retryKeychain)
   } catch {
     latest = { status: 'error', buckets: [] }
   }
+  retryKeychain = false
   renderUsage()
   timer = setTimeout(() => void refresh(), latest.status === 'ok' ? POLL_MS : RETRY_MS)
 }
 
-/** Called when the setting is switched on, so it fills in immediately. */
-export function refreshUsageNow(): void {
+/**
+ * Called when the setting is switched on, or the monitor panel is opened.
+ *
+ * `askKeychain` is what separates the two. Turning the sidebar row on should not
+ * raise a macOS permission dialog out of nowhere; opening the panel that draws
+ * these numbers, having previously dismissed one, is exactly when to offer it
+ * again.
+ */
+export function refreshUsageNow(askKeychain = false): void {
+  if (askKeychain && latest?.status === 'locked') retryKeychain = true
   void refresh()
 }
 

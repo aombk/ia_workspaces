@@ -11,6 +11,8 @@ import type { PidMap } from './pidMap'
 import type { SessionVault } from './vault'
 import { connectPtyHost, createLocalBackend, type PtyBackend, type PtyBackendHooks } from './ptyHost'
 import { selectOrphans } from './orphans'
+import { renderReplay } from './replayRender'
+import { REPLAY_RESET, stripInteractive } from './replaySafe'
 import type { AskResult } from './controlServer'
 import { acceptSession, resumeCommand } from './agentSessions'
 import { hasQuirk, platformKind, withBinDir } from '../shared/platform'
@@ -307,6 +309,20 @@ export class PtyManager {
     // make a legitimate process look like a recycled pid.
     const spawnedAt = Date.now()
 
+    // Prepared here, before there is a shell, and that ordering is the whole
+    // reason it is not done where it is used. Reconstructing a saved screen
+    // takes milliseconds — measured at 12 for a full ring — and a shell that
+    // printed its prompt during them would have it painted over by a restore
+    // arriving late. Worse, `handleData` drops output for a pane that is not in
+    // `sessions` yet, so those milliseconds are a window in which the prompt is
+    // not merely reordered but lost. Nothing has been started yet here, so there
+    // is no window.
+    //
+    // Read rather than consumed, because whether this is used at all is not
+    // known until the spawn returns: a pane that reattached to a live session
+    // gets its output from the broker and must leave the saved copy alone.
+    const replay = await this.prepareReplay(req.paneId)
+
     const host = await this.host()
     const started = await host.spawn({
       id: req.paneId,
@@ -350,7 +366,11 @@ export class PtyManager {
     // and a stale copy from disk on top of that would be a second, older
     // rendering of the same pane.
     const reattached = started.existing
-    if (!reattached) this.replayScrollback(req.paneId, req.rows)
+    // The pane's size is what makes the replay legible next time round; recorded
+    // here as well as on every resize so a pane that is never resized still has
+    // one. See `ScrollbackStore.setSize`.
+    this.deps.scrollback.setSize(req.paneId, req.cols, req.rows)
+    if (!reattached) this.emitReplay(req.paneId, replay, req.rows)
 
     const session: Session = {
       id: req.paneId,
@@ -595,7 +615,13 @@ export class PtyManager {
   resize(paneId: string, cols: number, rows: number): void {
     const s = this.sessions.get(paneId)
     if (!s || s.exited) return
-    this.backend?.resize(paneId, Math.max(cols, 2), Math.max(rows, 1))
+    const width = Math.max(cols, 2)
+    const height = Math.max(rows, 1)
+    this.backend?.resize(paneId, width, height)
+    // The saved stream is painted against whatever the width is now, so the two
+    // have to be recorded together or a restore reconstructs one against the
+    // other. Cheap, and a no-op when the size has not actually changed.
+    this.deps.scrollback.setSize(paneId, width, height)
   }
 
   /**
@@ -1001,17 +1027,49 @@ export class PtyManager {
    * prompt, exactly as ConPTY believes it has, and the last session is one
    * scroll up. Nothing is padded on macOS or Linux, where no such repaint comes
    * and the restored screen stays where it is written.
+   *
+   * The bytes themselves are not handed over as they were saved, and that is the
+   * fix for a bug that looked like two. They were written by a program that is
+   * no longer there — a full-screen agent that turned mouse reporting on, asked
+   * the terminal what it was, and painted in absolute coordinates for a pane of
+   * a different width. Replayed verbatim into a pane now running a bare shell,
+   * its mode sets took effect (every mouse movement arriving at the prompt as
+   * `35;24;9M`), its queries were answered *into the pty* (`ESC[?1;2c` splitting
+   * the restore's own `claude --resume …` into `zsh: command not found: 1`), and
+   * its painting landed in the wrong columns. So the stream is reconstructed
+   * into the screen it produced where that is possible, and filtered either way:
+   * `renderReplay`, then `replaySafe`.
+   *
+   * Split in two around its one slow step. `prepareReplay` does the reading and
+   * the reconstruction and is called before anything is spawned; `emitReplay` is
+   * synchronous and writes what it produced. See `spawn` for why that ordering
+   * is not a style preference.
    */
-  private replayScrollback(paneId: string, rows: number): void {
-    const restored = this.deps.scrollback.take(paneId)
-    if (!restored) return
+  private async prepareReplay(paneId: string): Promise<string | null> {
+    const saved = this.deps.scrollback.read(paneId)
+    if (!saved) return null
+
+    // Null whenever the reconstruction could not be trusted — no saved size, a
+    // serialiser that threw, a build without the packages. The filtered stream
+    // is then used as it stands: it looks worse and is exactly as safe, which is
+    // the right way round for a fallback.
+    const rendered = await renderReplay(saved.data, saved.cols, saved.rows)
+    return rendered ?? stripInteractive(saved.data)
+  }
+
+  private emitReplay(paneId: string, screen: string | null, rows: number): void {
+    if (screen === null) return
+    // Only now, because only now has the pane taken ownership of it. A spawn
+    // that reattached instead never reaches here and leaves the file alone.
+    this.deps.scrollback.consume(paneId)
+
     const padding = hasQuirk(PLATFORM, 'ptyClearsOnStart')
       ? '\r\n'.repeat(Math.min(Math.max(rows, 1), MAX_REPLAY_PADDING))
       : ''
     this.hooks.onData({
       paneId,
       data:
-        `\x1b[0m${restored}\x1b[0m\r\n\x1b[38;5;244m── restored from last session ──\x1b[0m\r\n` +
+        `\x1b[0m${screen}${REPLAY_RESET}\r\n\x1b[38;5;244m── restored from last session ──\x1b[0m\r\n` +
         padding,
     })
   }

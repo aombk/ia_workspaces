@@ -45,8 +45,10 @@
  * the difference between a monitor you can poll and one you cannot.
  */
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { readFile, readdir, statfs } from 'node:fs/promises'
 import os from 'node:os'
+import path from 'node:path'
 import { readLhm, type LhmBattery, type LhmDisk } from './lhm'
 import type {
   BatteryStats,
@@ -58,6 +60,7 @@ import type {
   NetworkStats,
   SystemStats,
   TemperatureStats,
+  ThermalPressure,
 } from '../shared/types'
 
 /**
@@ -115,18 +118,11 @@ function sampleCpu(): CpuStats {
 
   previousCpu = { at: now, perCore }
 
-  // Windows has no load average; Node returns [0,0,0] there, which reads as an
-  // idle machine rather than as an unanswered question.
-  const average = os.loadavg()
-  const loadAverage =
-    process.platform === 'win32' ? null : ([average[0], average[1], average[2]] as [number, number, number])
-
   return {
     model: cpus[0]?.model?.trim() ?? 'unknown',
     cores: cpus.length,
     load,
     perCore: percentages,
-    loadAverage,
   }
 }
 
@@ -237,6 +233,7 @@ async function windowsProbe(): Promise<PlatformProbe> {
           remainingWh: null,
           fullWh: null,
           designWh: null,
+          cycleCount: null,
         }
       }
     }
@@ -348,6 +345,7 @@ async function linuxBattery(): Promise<BatteryStats | null> {
         remainingWh: null,
         fullWh: null,
         designWh: null,
+        cycleCount: null,
       }
     }
   } catch {
@@ -431,6 +429,7 @@ async function macBattery(): Promise<BatteryStats | null> {
     remainingWh: null,
     fullWh: null,
     designWh: null,
+    cycleCount: null,
   }
 }
 
@@ -482,7 +481,18 @@ const EMPTY_SLOW: SlowProbe = {
   temperatures: [],
   memory: NO_MEMORY_DETAIL,
   battery: null,
-  sources: { diskIo: null, health: null, temperature: null, temperatureNote: null },
+  sources: {
+    diskIo: null,
+    health: null,
+    temperature: null,
+    // Not null, and that is the difference between two things a blank card
+    // cannot tell apart: a machine that will not report a temperature, and a
+    // probe that has not come back yet. The drives card already says this for
+    // the counters it shares a clock with; the sensors card had nothing to say
+    // for the first few seconds and looked broken instead.
+    temperatureNote:
+      'Temperatures are read on a slower clock than the rest of this panel, so the first sample after opening it is empty.',
+  },
 }
 
 let slowCache: { at: number; value: SlowProbe } | null = null
@@ -921,34 +931,415 @@ async function linuxTemperatures(): Promise<TemperatureStats[]> {
 // ----------------------------------------------------------- macOS: the slow bits
 
 /**
- * Throughput from `ioreg`, and nothing else.
+ * Throughput, the memory breakdown, the pack, and the storage stack's verdict.
  *
  * macOS keeps per-drive byte counters in the IOKit registry, where any process
  * can read them — `iostat` is the obvious alternative and reports one combined
  * transfer figure rather than reads and writes apart, which is the distinction
  * worth having.
  *
- * There is no temperature here, on purpose. The SMC needs a helper of our own,
- * `powermetrics` needs sudo, and the Apple Silicon sensors are behind a private
- * framework that has broken between releases. All three are the driver this
- * file exists not to ship.
+ * The rest of this was assumed unobtainable and turned out not to be. The same
+ * registry holds the battery's own controller, which publishes what the pack was
+ * built to hold, what it holds now, what is flowing through it and how many
+ * cycles it has been through — every field `pmset` leaves null, without a helper
+ * and without an administrator. `vm_stat` holds the page counts behind Activity
+ * Monitor's memory figures, which matter here because `os.freemem()` on macOS
+ * counts only *free* pages and reports a machine using its memory well as a
+ * machine that has run out. `diskutil` will state the storage stack's verdict on
+ * a drive for nothing.
+ *
+ * What is still missing is degrees. The processor and NAND sensors are real and
+ * readable without an administrator — `AppleEmbeddedNVMeTemperatureSensor`,
+ * product `NAND CH0 temp`, is right there in the registry — but their values are
+ * not registry properties: they come through `IOHIDEventSystemClient`, a C API
+ * with no command-line spelling, so reading one costs a native module. The
+ * battery is the exception and reports its temperature as a plain number, so
+ * that is the one degree figure here. `powerMonitor` supplies the rest of the
+ * answer in words rather than degrees — see `thermalPressure`.
  */
 async function macSlow(): Promise<SlowProbe> {
-  const stdout = await runCommand('ioreg', ['-c', 'IOBlockStorageDriver', '-r', '-w0']).catch(() => '')
-  const io = parseIoreg(stdout)
+  const [ioRaw, memory, battery, sensors] = await Promise.all([
+    // `-d 2` is what makes a drive's name available, and stopping there is the
+    // point. The driver node carries the counters and its whole-disk `IOMedia`
+    // child carries the `BSD Name`, so one level down is exactly enough — while
+    // the full subtree also contains every APFS container, each publishing a
+    // `Statistics` dictionary of its own that would be listed as a drive which
+    // does not exist. Two levels measured 1.8 KB here; all of them, 114 KB.
+    runCommand('ioreg', ['-c', 'IOBlockStorageDriver', '-r', '-l', '-w0', '-d', '2']).catch(() => ''),
+    macMemory(),
+    macBatterySensor(),
+    macSensors(),
+  ])
+
+  const io = parseIoreg(ioRaw)
+  const health = await macHealth(io, sensors)
+
+  // Every reading is labelled with what it measures rather than one of them
+  // being allowed to stand in for the rest. A pane that says "38 °C" without
+  // saying of what will be read as the processor, whatever it actually is.
+  const temperatures: TemperatureStats[] = [...sensors]
+  if (battery?.celsius != null && !temperatures.some((t) => t.device === 'Battery')) {
+    temperatures.push({ name: 'Battery', celsius: battery.celsius, kind: 'other', device: 'Battery' })
+  }
+
   return {
     io,
-    health: [],
-    temperatures: [],
-    memory: NO_MEMORY_DETAIL,
-    battery: null,
+    health,
+    temperatures,
+    memory,
+    battery,
     sources: {
       diskIo: io.length ? 'ioreg' : null,
-      health: null,
-      temperature: null,
-      temperatureNote:
-        'macOS does not give a program a CPU temperature without a helper running as root, so none is shown.',
+      health: health.length ? 'diskutil' : null,
+      temperature: temperatures.length ? (sensors.length ? 'the bundled sensor helper' : 'ioreg') : null,
+      temperatureNote: temperatures.length ? null : MAC_TEMPERATURE_NOTE,
     },
+  }
+}
+
+/**
+ * Why a Mac shows no degrees, in a sentence, when it shows none.
+ *
+ * Worth being exact about, because the usual phrasing — "macOS needs root" — is
+ * wrong and sends anybody who reads it looking for a `sudo` that would not help
+ * either: `powermetrics` is the root-only route and on Apple Silicon does not
+ * report a processor die temperature at all.
+ */
+const MAC_TEMPERATURE_NOTE =
+  'macOS keeps its processor and drive sensors behind IOHIDEventSystem, which has no command-line spelling, so ' +
+  'this app ships a small helper to read them — no administrator, nothing to install. Nothing answered here, ' +
+  'which means either the helper is missing from this build or the machine has no such sensors. The thermal ' +
+  'reading below is the OS’s own verdict and needs neither.'
+
+/**
+ * The sensors the bundled helper will name, classified and reduced.
+ *
+ * Everything the machine will say arrives here — 47 sensors on the Mac this was
+ * written on — and almost none of it belongs on a panel. Three judgements, all
+ * of them here rather than compiled into the helper, so that they are covered by
+ * the suite and can be changed without a compiler:
+ *
+ * - **`tcal` is not a reading.** Every power-management unit publishes one
+ *   beside its real sensors and it is a calibration constant: 51.82 °C on this
+ *   machine, unmoved under load, and the *hottest* thing in the list. Reported,
+ *   it would be the number the panel showed. The same trap the Windows path has
+ *   in `NOT_A_READING`, in different words.
+ * - **`tdie` is the die, `tdev` is not.** The die sensors are the processor;
+ *   the device ones sit near it and several read −22 °C, which is a sensor that
+ *   is not powered rather than a cold machine.
+ * - **One row, not twenty-four.** An Apple SoC publishes a die sensor per
+ *   cluster and they sit within two degrees of each other. The hottest is the
+ *   number that matters and the other twenty-three are noise, so they collapse
+ *   into one reading — named for what it is, since on this hardware the
+ *   processor and the graphics are the same piece of silicon and reporting the
+ *   figure twice under two headings would be inventing a second measurement.
+ *
+ * Exported for the tests.
+ */
+export function parseMacSensors(raw: string): TemperatureStats[] {
+  const die: number[] = []
+  const nand: number[] = []
+  let battery: number | null = null
+
+  for (const line of raw.split('\n')) {
+    const [degrees, ...rest] = line.split('\t')
+    const name = rest.join('\t').trim()
+    const celsius = Number(degrees)
+    if (!name || !Number.isFinite(celsius)) continue
+    // A sensor that is not powered reads far below freezing, and one that reads
+    // above 150 is a parse that went wrong rather than a machine on fire.
+    if (celsius <= 0 || celsius > 150) continue
+    if (/tcal/i.test(name)) continue
+
+    if (/tdie|^SOC |^CPU /i.test(name)) die.push(celsius)
+    else if (/NAND|SSD/i.test(name)) nand.push(celsius)
+    else if (/battery/i.test(name)) battery = Math.max(battery ?? 0, celsius)
+  }
+
+  const out: TemperatureStats[] = []
+  if (die.length) out.push({ name: 'SoC die', celsius: Math.max(...die), kind: 'cpu', device: 'SoC' })
+  if (nand.length) out.push({ name: 'NAND', celsius: Math.max(...nand), kind: 'disk', device: 'NAND' })
+  // The pack reports itself through `AppleSmartBattery` too and the two agree to
+  // a tenth of a degree. Whichever answers first wins and the other is skipped,
+  // because two rows called "Battery" reading 30.4 and 30.9 is a panel arguing
+  // with itself.
+  if (battery !== null) out.push({ name: 'Battery', celsius: battery, kind: 'other', device: 'Battery' })
+  return out
+}
+
+/**
+ * Where the sensor helper is, in a packaged app and in the dev tree.
+ *
+ * Checked once and remembered, including the answer "there isn't one": this runs
+ * every five seconds and a missing file should cost a `spawn` that fails once,
+ * not for the life of the process.
+ */
+let sensorBinary: string | null | undefined
+
+function macSensorsBinary(): string | null {
+  if (sensorBinary !== undefined) return sensorBinary
+
+  const packaged = process.resourcesPath
+    ? path.join(process.resourcesPath, 'resources', 'bin', 'macsensors')
+    : ''
+  const source = path.join(process.cwd(), 'resources', 'bin', 'macsensors')
+
+  sensorBinary = packaged && existsSync(packaged) ? packaged : existsSync(source) ? source : null
+  return sensorBinary
+}
+
+/** The helper's two columns, or nothing at all where it did not run. */
+async function macSensors(): Promise<TemperatureStats[]> {
+  const binary = macSensorsBinary()
+  if (!binary) return []
+  const stdout = await runCommand(binary, []).catch(() => '')
+  return parseMacSensors(stdout)
+}
+
+/**
+ * The memory figures behind Activity Monitor, from `vm_stat` and `sysctl`.
+ *
+ * Two processes rather than one because they answer unrelated questions and
+ * neither is expensive; both are on the five-second clock in any case.
+ */
+async function macMemory(): Promise<MemoryDetail> {
+  const [vm, swap] = await Promise.all([
+    runCommand('vm_stat', []).catch(() => ''),
+    runCommand('sysctl', ['-n', 'vm.swapusage']).catch(() => ''),
+  ])
+
+  const pages = parseVmStat(vm)
+  const swapping = parseSwapusage(swap)
+  const total = os.totalmem()
+
+  return {
+    available: pages.available,
+    // Wired is what the kernel and its drivers have pinned and no process can
+    // give back, which is the same thing this field carries on Windows under
+    // another name.
+    kernel: pages.wired,
+    // macOS has no commit charge, but it has the thing commit charge is *for*:
+    // how much has been promised against how much can be backed. Anonymous
+    // memory that no longer fits goes to swap, so the ceiling is physical
+    // memory plus whatever swap has been allocated, and the charge against it
+    // is what is in use plus what has already been pushed out. Swap on macOS
+    // grows on demand, so a machine that has never needed any reports a ceiling
+    // equal to its RAM — which is true, not missing.
+    committed: pages.available === null || swapping.used === null ? null : total - pages.available + swapping.used,
+    commitLimit: swapping.total === null ? null : total + swapping.total,
+  }
+}
+
+/**
+ * Page counts out of `vm_stat`, in bytes.
+ *
+ * The page size is read from the header rather than assumed, and that is not
+ * pedantry: Apple Silicon pages are 16 KB and the 4 KB every example on the
+ * internet hardcodes would report a quarter of the memory the machine has.
+ *
+ * "Available" is free plus what can be taken back without asking a process to
+ * give it up — inactive, speculative and purgeable pages. That is the same rule
+ * Linux's `MemAvailable` follows and it lands within a few hundred megabytes of
+ * what Activity Monitor computes from the other direction. Exported for the
+ * tests.
+ */
+export function parseVmStat(raw: string): { available: number | null; wired: number | null } {
+  const pageSize = Number(/page size of (\d+) bytes/.exec(raw)?.[1]) || 4096
+  const pages = (label: string): number | null => {
+    const found = new RegExp(`^${label}:\\s+(\\d+)\\.?\\s*$`, 'm').exec(raw)
+    return found ? Number(found[1]) : null
+  }
+
+  const reclaimable = [pages('Pages free'), pages('Pages inactive'), pages('Pages speculative'), pages('Pages purgeable')]
+  const wired = pages('Pages wired down')
+
+  // All four or none: a partial sum is a memory figure that is wrong by
+  // gigabytes and looks exactly like a machine under pressure.
+  const counted = reclaimable.filter((count): count is number => count !== null)
+
+  return {
+    available: counted.length === reclaimable.length ? counted.reduce((sum, count) => sum + count, 0) * pageSize : null,
+    wired: wired === null ? null : wired * pageSize,
+  }
+}
+
+/**
+ * `total = 2048.00M  used = 1234.50M  free = 813.50M  (encrypted)`, in bytes.
+ *
+ * Written to parse the whole line whether or not `sysctl` was asked for the
+ * name alongside the value, and to read the unit rather than assume megabytes —
+ * a machine swapping hard reports gigabytes and nothing else changes. Exported
+ * for the tests.
+ */
+export function parseSwapusage(raw: string): { total: number | null; used: number | null } {
+  const field = (name: string): number | null => {
+    const found = new RegExp(`${name}\\s*=\\s*([\\d.]+)([KMGT])?`, 'i').exec(raw)
+    if (!found) return null
+    const scale = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[found[2]?.toUpperCase() ?? 'M'] ?? 1024 ** 2
+    return Number(found[1]) * scale
+  }
+  return { total: field('total'), used: field('used') }
+}
+
+/**
+ * The pack itself, from its own controller.
+ *
+ * Everything `pmset -g batt` leaves null. `AppleSmartBattery` publishes the
+ * capacities in milliamp-hours and the voltage in millivolts, so watt-hours and
+ * watts are one multiplication away, and it publishes them to any process.
+ */
+async function macBatterySensor(): Promise<MacBattery | null> {
+  const stdout = await runCommand('ioreg', ['-rn', 'AppleSmartBattery', '-w0']).catch(() => '')
+  return parseSmartBattery(stdout)
+}
+
+/** `LhmBattery` plus the one degree figure a Mac gives up for free. */
+type MacBattery = LhmBattery & { celsius: number | null }
+
+/**
+ * `AppleSmartBattery`'s registry properties, in the units people use.
+ *
+ * Three conversions worth stating, because each has a trap in it:
+ *
+ * - **Watt-hours** are milliamp-hours times millivolts over a million. The pack
+ *   reports charge, not energy, and a percentage of a capacity in mAh is not
+ *   comparable between machines while watt-hours are.
+ * - **Amperage is signed, and printed unsigned.** `ioreg` renders the property
+ *   as a 64-bit unsigned integer, so a battery discharging at 277 mA reads
+ *   `18446744073709551339`. Read through `BigInt` and folded back below zero —
+ *   `Number` cannot hold the value long enough to subtract from it.
+ * - **Wear cannot go below zero.** A pack out of the factory holds *more* than
+ *   its design capacity, so the obvious subtraction gives a negative wear
+ *   figure and a panel that reports a new battery as −3% worn.
+ *
+ * Exported for the tests.
+ */
+export function parseSmartBattery(raw: string): MacBattery | null {
+  // Both spellings occur in one dump: `"Key" = 1` at the top level of a node
+  // and `"Key"=1` inside a nested dictionary printed on a single line.
+  const value = (key: string): bigint | null => {
+    const found = new RegExp(`"${key}"\\s*=\\s*(-?\\d+)`).exec(raw)
+    return found ? BigInt(found[1]) : null
+  }
+  const num = (key: string): number | null => {
+    const found = value(key)
+    return found === null ? null : Number(found)
+  }
+
+  const design = num('DesignCapacity')
+  const full = num('AppleRawMaxCapacity')
+  const remaining = num('AppleRawCurrentCapacity')
+  const millivolts = num('Voltage')
+  if (design === null && full === null && remaining === null) return null
+
+  const wh = (milliampHours: number | null): number | null =>
+    milliampHours === null || millivolts === null ? null : (milliampHours * millivolts) / 1_000_000
+
+  let rateWatts: number | null = null
+  const amperage = value('InstantAmperage')
+  if (amperage !== null && millivolts !== null) {
+    const signed = amperage >= 1n << 63n ? amperage - (1n << 64n) : amperage
+    rateWatts = (Number(signed) * millivolts) / 1_000_000
+  }
+
+  const centidegrees = num('Temperature')
+
+  return {
+    chargePercent: design === null || remaining === null ? null : clampPercent((100 * remaining) / design),
+    wearPercent: design === null || full === null || design === 0 ? null : Math.max(0, 100 * (1 - full / design)),
+    rateWatts,
+    remainingWh: wh(remaining),
+    fullWh: wh(full),
+    designWh: wh(design),
+    cycleCount: num('CycleCount'),
+    // Hundredths of a degree Celsius. A pack reading 90 °C is a parse that went
+    // wrong rather than a fire, so anything implausible is dropped.
+    celsius: centidegrees === null || centidegrees <= 0 || centidegrees > 8000 ? null : centidegrees / 100,
+  }
+}
+
+/**
+ * The storage stack's verdict per drive, from `diskutil`.
+ *
+ * A verdict and nothing more: Apple's internal NVMe does not expose its SMART
+ * log through `diskutil`, so there is a pass/fail and no attributes behind it —
+ * no wear indicator, no power-on hours, no temperature. Those need
+ * `smartmontools`, which is a program somebody has to install and this file does
+ * not ask for. What is here is still worth having, for the same reason the
+ * Windows health verdict is: it is the difference between a drive nobody has
+ * checked and a drive that has started failing.
+ *
+ * One call per drive, and the drives are the ones the counters already found, so
+ * the verdict lands on a row that exists rather than beside it. `diskutil` is
+ * asked by BSD name and the answer is filed under whatever the panel calls that
+ * row, which is the media's name where `ioreg` gave one — the two lists are
+ * joined on that string and on Windows they already are.
+ */
+async function macHealth(
+  drives: SlowProbe['io'],
+  sensors: readonly TemperatureStats[]
+): Promise<DiskHealth[]> {
+  // The NAND sensors are on the SoC's own storage controller, so the reading
+  // belongs to the built-in drive and to no other. An external disk in an
+  // enclosure has no such sensor and must not inherit this one — which is why
+  // `Internal` is read at all.
+  const nand = sensors.find((reading) => reading.device === 'NAND')?.celsius ?? null
+
+  const answers = await Promise.all(
+    drives.map(async (drive) => {
+      const plist = await runCommand('diskutil', ['info', '-plist', drive.name]).catch(() => '')
+      const info = parseDiskutilInfo(plist)
+      if (!info) return null
+      const { internal, ...health } = info
+      return { name: drive.label ?? drive.name, ...health, temperature: internal ? nand : null }
+    })
+  )
+  return answers.filter((entry): entry is DiskHealth => entry !== null)
+}
+
+/**
+ * `diskutil info -plist`, read by key rather than parsed as a plist.
+ *
+ * The four values wanted each sit on the line after their `<key>`, and the file
+ * has no repeated keys at the depth they are at, so matching the pair is exact
+ * and costs nothing. A plist parser would be a dependency to read four scalars.
+ * Exported for the tests.
+ */
+export function parseDiskutilInfo(raw: string): (Omit<DiskHealth, 'name'> & { internal: boolean }) | null {
+  const str = (key: string): string | null =>
+    new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(raw)?.[1] ?? null
+  const int = (key: string): number | null => {
+    const found = new RegExp(`<key>${key}</key>\\s*<integer>(\\d+)</integer>`).exec(raw)
+    return found ? Number(found[1]) : null
+  }
+  const bool = (key: string): boolean | null => {
+    const found = new RegExp(`<key>${key}</key>\\s*<(true|false)\\s*/>`).exec(raw)
+    return found ? found[1] === 'true' : null
+  }
+
+  const verdict = str('SMARTStatus')
+  const solid = bool('SolidState')
+  const size = int('TotalSize') ?? int('Size')
+  if (verdict === null && solid === null && size === null) return null
+
+  return {
+    // `Verified` is the pass. Everything else is either a failure or one of the
+    // several ways of saying the drive would not answer, and those are `unknown`
+    // rather than a problem — an internal Apple SSD reports `Not Supported` and
+    // is perfectly healthy.
+    status: verdict === 'Verified' ? 'ok' : /fail/i.test(verdict ?? '') ? 'bad' : 'unknown',
+    kind: solid === null ? 'unknown' : solid ? 'ssd' : 'hdd',
+    size,
+    // Filled in by `macHealth` for the built-in drive, from the NAND sensors.
+    // `diskutil` itself has no temperature and no SMART attributes behind its
+    // verdict — those need smartmontools, which is a program somebody has to
+    // install and this file does not ask for.
+    temperature: null,
+    wearPercent: null,
+    powerOnHours: null,
+    model: str('MediaName') ?? undefined,
+    // Whether the NAND reading is this drive's to inherit.
+    internal: bool('Internal') ?? false,
   }
 }
 
@@ -958,31 +1349,58 @@ async function macSlow(): Promise<SlowProbe> {
  * The output is a nested plist-ish tree, and the two numbers wanted are in a
  * `Statistics` dictionary printed on one line. Matched rather than parsed: the
  * format has no closing structure to anchor on, and the keys are unambiguous.
- * Exported for the tests.
+ *
+ * The name arrives on either side of the counters and both orders are real. A
+ * node that publishes its own `BSD Name` states it before its properties; the
+ * block storage *driver* has no name of its own and its counters are followed by
+ * the whole-disk `IOMedia` child that does — which is the order `macSlow`'s
+ * `-d 2` dump comes in, and the reason a drive is no longer called `disk0`
+ * because it happened to be first. So a name waits for counters, counters wait
+ * for a name, and whichever completes the pair emits it. Exported for the tests.
  */
 export function parseIoreg(raw: string): SlowProbe['io'] {
   const out: SlowProbe['io'] = []
   let name = ''
+  let label: string | null = null
+  let counters: { read: number; write: number } | null = null
+
+  const emit = (device: string, stats: { read: number; write: number }): void => {
+    out.push({ name: device, label, read: stats.read, write: stats.write, idle: null, stamp: null })
+    name = ''
+    label = null
+    counters = null
+  }
+
   for (const line of raw.split('\n')) {
-    const device = /"BSD Name" = "([^"]+)"/.exec(line)
-    if (device) {
-      name = device[1]
+    // What the media calls itself — `APPLE SSD AP0256Z Media`. The registry's
+    // own suffix, since every one of them is a `Media`, is not part of a name
+    // anybody would recognise.
+    const media = /\+-o (.+?) +<class IOMedia[,>]/.exec(line)
+    if (media) {
+      label = media[1].replace(/ Media$/, '')
       continue
     }
+
+    const device = /"BSD Name" = "([^"]+)"/.exec(line)
+    if (device) {
+      if (counters) emit(device[1], counters)
+      else name = device[1]
+      continue
+    }
+
     const read = /"Bytes \(Read\)"=(\d+)/.exec(line)
     const write = /"Bytes \(Write\)"=(\d+)/.exec(line)
     if (read && write) {
-      out.push({
-        name: name || `disk${out.length}`,
-        label: null,
-        read: Number(read[1]),
-        write: Number(write[1]),
-        idle: null,
-        stamp: null,
-      })
-      name = ''
+      const stats = { read: Number(read[1]), write: Number(write[1]) }
+      if (name) emit(name, stats)
+      else counters = stats
     }
   }
+
+  // Counters that never met a name. Numbered by position, which is what this
+  // did for every drive before the name was available and is still the only
+  // thing left to call one.
+  if (counters) emit(`disk${out.length}`, counters)
   return out
 }
 
@@ -1044,17 +1462,26 @@ function diskRates(counters: SlowProbe['io'], at: number): DiskIoStats[] {
 let gpuCache: { at: number; value: GpuStats[]; source: string | null } | null = null
 
 /**
- * NVIDIA cards, via the tool that ships with their driver.
+ * NVIDIA cards, via the tool that ships with their driver — or IOKit on a Mac.
  *
- * The whole of the GPU story on a machine with no sensor daemon. It is not a
- * dependency and never becomes one: absent, this returns nothing and the panes
- * say there is no GPU source, which is the truth on an AMD or Intel machine
- * whatever we do.
+ * On Windows and Linux `nvidia-smi` is the whole of the GPU story on a machine
+ * with no sensor daemon. It is not a dependency and never becomes one: absent,
+ * this returns nothing and the panes say there is no GPU source, which is the
+ * truth on an AMD or Intel machine whatever we do.
+ *
+ * macOS is the one platform where the graphics card answers for nothing, which
+ * is why it gets its own path rather than reporting the empty answer that was
+ * here before. See `macGpus`.
  */
 async function readGpus(): Promise<{ gpus: GpuStats[]; source: string | null }> {
   const now = Date.now()
   if (gpuCache && now - gpuCache.at < GPU_TTL_MS) {
     return { gpus: gpuCache.value, source: gpuCache.source }
+  }
+  if (process.platform === 'darwin') {
+    const answer = await macGpus()
+    gpuCache = { at: now, value: answer.gpus, source: answer.source }
+    return answer
   }
 
   let stdout = ''
@@ -1086,6 +1513,68 @@ async function readGpus(): Promise<{ gpus: GpuStats[]; source: string | null }> 
   const source = gpus.length ? 'nvidia-smi' : null
   gpuCache = { at: now, value: gpus, source }
   return { gpus, source }
+}
+
+/**
+ * The graphics card on a Mac, out of the IOKit registry.
+ *
+ * Every accelerator publishes a `PerformanceStatistics` dictionary — how busy
+ * the device is and how much memory it is holding — and its own `model` string
+ * beside it, to any process, in one command that measures a few milliseconds.
+ * `system_profiler SPDisplaysDataType` is the obvious alternative and is
+ * skipped: it costs a third of a second, it is the same name, and it has no
+ * utilisation figure at all.
+ *
+ * `-d 1` for the same reason `macSlow` uses `-d 2` — the accelerator's children
+ * publish statistics of their own, per command queue, and they are not the card.
+ */
+async function macGpus(): Promise<{ gpus: GpuStats[]; source: string | null }> {
+  const stdout = await runCommand('ioreg', ['-r', '-d', '1', '-w0', '-c', 'IOAccelerator']).catch(() => '')
+  const gpus = parseIoAccelerator(stdout)
+  return { gpus, source: gpus.length ? 'ioreg' : null }
+}
+
+/**
+ * `PerformanceStatistics` per accelerator, and what the accelerator is called.
+ *
+ * Two readings are deliberately null rather than guessed. **Total memory**,
+ * because Apple Silicon has none to report — the GPU shares the machine's
+ * memory, so the honest answer is how much it is using and no denominator, and
+ * filling in the system total would draw a card at 5% of the RAM as a card at 5%
+ * of its VRAM. **Temperature and watts**, because those live in `powermetrics`
+ * behind an administrator. Exported for the tests.
+ */
+export function parseIoAccelerator(raw: string): GpuStats[] {
+  const out: GpuStats[] = []
+
+  // Split on node boundaries rather than read line by line, because `ioreg`
+  // prints a node's properties in no useful order: on the machine this was
+  // written on `"model"` — the card's actual name, `Apple M4` — comes *after*
+  // the statistics it belongs to, and a streaming parser labels every card with
+  // its class instead, `AGXAcceleratorG16G`.
+  for (const node of raw.split(/^\s*\+-o /m).slice(1)) {
+    const stats = /"PerformanceStatistics" = \{(.*)\}/.exec(node)
+    if (!stats) continue
+
+    const field = (key: string): number | null => {
+      const found = new RegExp(`"${key}"\\s*=\\s*(\\d+)`).exec(stats[1])
+      return found ? Number(found[1]) : null
+    }
+
+    const model = /"model" = "?([^"\n<]+)"?/.exec(node)
+    const cls = /^(\S+) +<class /.exec(node)
+
+    out.push({
+      name: (model?.[1] ?? cls?.[1] ?? 'Graphics').trim(),
+      load: field('Device Utilization %'),
+      temperature: null,
+      // Already bytes, unlike nvidia-smi's mebibytes.
+      memoryUsed: field('In use system memory') ?? field('Alloc system memory'),
+      memoryTotal: null,
+      power: null,
+    })
+  }
+  return out
 }
 
 /** `[N/A]` is what nvidia-smi prints for a reading the card does not take. */
@@ -1125,7 +1614,53 @@ function rates(
   })
 
   previousNet = { at, byName }
-  return out
+  return interesting(out)
+}
+
+/**
+ * Lifetime traffic that makes an interface worth a row of its own.
+ *
+ * A megabyte is small enough that anything genuinely carrying traffic clears it
+ * within seconds of being used, and large enough to sit far above what an idle
+ * virtual interface accumulates — the ones this exists to hide had moved between
+ * 1 and 24 *bytes* since boot.
+ */
+const NETWORK_FLOOR_BYTES = 1024 * 1024
+
+/**
+ * The interfaces worth showing, out of everything the machine admits to having.
+ *
+ * A modern OS invents network interfaces for services it *might* use, and then
+ * leaves them up. A Mac reports upwards of twenty: `utun0`–`utun5` for iCloud
+ * Private Relay and the Continuity transports, `awdl0` for AirDrop, `llw0` for
+ * Sidecar, `ap1` for Internet Sharing, `bridge0` and `en1`–`en4` for Thunderbolt
+ * ports with nothing plugged into them, plus `gif0` and `stf0`, which have been
+ * there since the 2000s and are used by nothing. Windows adds one per VPN client
+ * and Hyper-V switch; Linux adds `docker0` and a `veth` per container. Almost
+ * none of them ever carry a byte, and listing them all buries the one interface
+ * the machine is actually on.
+ *
+ * Two ways to earn a row, because either one alone is wrong. *Has carried real
+ * traffic* on its own would hide a VPN that just came up. *Is carrying traffic
+ * now* on its own would make the Wi-Fi vanish from the panel whenever the
+ * machine went quiet, which is a monitor that deletes rows while you watch.
+ *
+ * The busiest interface is kept whatever it scores, so a freshly booted machine
+ * that has not yet moved a megabyte shows the connection it is on rather than an
+ * empty card.
+ *
+ * Exported for the tests.
+ */
+export function interesting(all: NetworkStats[]): NetworkStats[] {
+  const moving = (net: NetworkStats): boolean => (net.rxPerSec ?? 0) > 0 || (net.txPerSec ?? 0) > 0
+  const kept = all.filter((net) => net.rxTotal + net.txTotal >= NETWORK_FLOOR_BYTES || moving(net))
+  if (kept.length) return kept
+
+  const busiest = all.reduce<NetworkStats | null>(
+    (best, net) => (!best || net.rxTotal + net.txTotal > best.rxTotal + best.txTotal ? net : best),
+    null
+  )
+  return busiest ? [busiest] : []
 }
 
 // ------------------------------------------------------------------- memory
@@ -1163,6 +1698,30 @@ function appMetrics(): Array<{ cpu?: { percentCPUUsage?: number }; memory?: { wo
     return (require('electron') as typeof import('electron')).app.getAppMetrics()
   } catch {
     return []
+  }
+}
+
+/**
+ * How hot macOS thinks it is, in the only terms it will state without a helper.
+ *
+ * `NSProcessInfo.thermalState`, which Electron surfaces directly. Not a
+ * temperature and not a substitute for one, but it is the OS saying whether it
+ * has started slowing itself down — which is the thing a temperature is usually
+ * being read to find out, and the only answer to that question available here
+ * without a native module.
+ *
+ * Lazily required for the same reason the footprint is: this file has to stay
+ * runnable outside Electron or the suite cannot exercise it. Null everywhere but
+ * macOS, where the API exists on paper and answers `unknown`.
+ */
+function thermalPressure(): ThermalPressure | null {
+  if (process.platform !== 'darwin') return null
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const state = (require('electron') as typeof import('electron')).powerMonitor.getCurrentThermalState()
+    return state === 'unknown' ? null : state
+  } catch {
+    return null
   }
 }
 
@@ -1231,6 +1790,7 @@ export async function readSystemStats(opts: { drives?: boolean } = {}): Promise<
     temperatures,
     networks: rates(probe.networks, at),
     gpus: gpu.gpus,
+    thermalPressure: thermalPressure(),
     // The platform knows the percentage and the estimate; the sensor source
     // knows what the pack has lost to age and what it is drawing. Merged rather
     // than one replacing the other, because neither has all of it.
@@ -1242,6 +1802,7 @@ export async function readSystemStats(opts: { drives?: boolean } = {}): Promise<
           remainingWh: slow.battery?.remainingWh ?? null,
           fullWh: slow.battery?.fullWh ?? null,
           designWh: slow.battery?.designWh ?? null,
+          cycleCount: slow.battery?.cycleCount ?? null,
         }
       : null,
     sources: {

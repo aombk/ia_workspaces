@@ -93,10 +93,73 @@ async function copyStatic() {
   await writeFile(path.join(electronOut, 'renderer/index.html'), html)
 }
 
+/**
+ * The macOS temperature helper, compiled in place of being shipped prebuilt.
+ *
+ * Skipped entirely off macOS — there is no such sensor API to call and no
+ * compiler to assume — and skipped without failing where the command line tools
+ * are absent, because a missing temperature is a missing row and a build that
+ * stops is a build nobody can run. See `src/native/macsensors.c`.
+ *
+ * Both architectures in one pass. `clang` takes repeated `-arch` and emits a
+ * universal binary directly, which matters because the app ships as one: a
+ * helper built for the machine that packaged it would refuse to run for half the
+ * people who install it, and refuse silently, since a bad architecture looks
+ * exactly like a missing file from the other side of `spawn`.
+ *
+ * Lands in `resources/`, which `extraResources` already copies wholesale, so
+ * there is no packaging entry to keep in step with this.
+ *
+ * It does need one line of packaging config, and the reason is worth writing
+ * down because the error it prevents reads as the opposite of the truth.
+ * `@electron/universal` builds the app once per architecture and merges the two,
+ * and for every Mach-O file it finds it compares the two copies: different means
+ * "run lipo on them", identical means "somebody shipped a single-architecture
+ * binary in both builds", which is a real and serious mistake — so it refuses,
+ * with `Detected file … that's the same in both x64 and arm64 builds`. This file
+ * is identical in both because it is *already* universal, which is the one case
+ * that looks exactly like the mistake and is its opposite. `mac.x64ArchFiles`
+ * in `package.json` is how you say so, and it selects the branch that keeps the
+ * file as it is rather than lipo-ing it with itself.
+ *
+ * That is a claim rather than a guarantee, so it is checked instead of trusted:
+ * `tools/verifyUniversal.mjs` opens the packaged binary and fails the build if
+ * both slices are not actually in there.
+ */
+async function buildMacSensors() {
+  if (process.platform !== 'darwin') return
+  const outDir = path.join(root, 'resources', 'bin')
+  await mkdir(outDir, { recursive: true })
+
+  const done = await new Promise((resolve) => {
+    const clang = spawn(
+      'clang',
+      [
+        '-O2',
+        '-arch', 'arm64',
+        '-arch', 'x86_64',
+        // The oldest macOS the app supports. Without it clang targets whatever
+        // built it and the binary refuses to launch on anything older.
+        '-mmacosx-version-min=11.0',
+        '-o', path.join(outDir, 'macsensors'),
+        path.join(root, 'src/native/macsensors.c'),
+        '-framework', 'CoreFoundation',
+        '-framework', 'IOKit',
+      ],
+      { stdio: 'inherit' }
+    )
+    clang.on('error', () => resolve(false))
+    clang.on('exit', (code) => resolve(code === 0))
+  })
+
+  console.log(done ? '[build] macsensors (universal)' : '[build] macsensors skipped — no working clang')
+}
+
 const targets = electronTargets
 
 if (watch) {
   await copyStatic()
+  await buildMacSensors()
   const contexts = await Promise.all(targets.map((t) => context(t)))
   await Promise.all(contexts.map((c) => c.watch()))
   console.log('[build] watching…')
@@ -107,6 +170,6 @@ if (watch) {
 } else {
   await rm(electronOut, { recursive: true, force: true })
   await copyStatic()
-  await Promise.all(targets.map((t) => build(t)))
+  await Promise.all([...targets.map((t) => build(t)), buildMacSensors()])
   console.log('[build] done')
 }

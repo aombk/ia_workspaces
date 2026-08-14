@@ -46,7 +46,7 @@ import {
   systemHistory,
   type SystemHistory,
 } from './ui/systemMonitor'
-import { latestUsage, usageResetLine } from './ui/usageMonitor'
+import { latestUsage, refreshUsageNow, usageResetLine } from './ui/usageMonitor'
 
 /**
  * How often the pane samples.
@@ -130,6 +130,11 @@ export class MonitorPane implements AuxPane {
 
     // Its own clock, and a slow one. The collector caches for ten minutes, so
     // this mostly returns without touching the network — see `refreshWeather`.
+    // Opening this panel is the deliberate act that earns a keychain dialog on
+    // macOS, if one was dismissed earlier. Nothing happens on any other platform
+    // or in the ordinary case, where the last poll already has the numbers.
+    refreshUsageNow(true)
+
     void this.refreshWeather()
     this.weatherTimer = setInterval(() => void this.refreshWeather(), 60_000)
   }
@@ -397,11 +402,14 @@ export class MonitorPane implements AuxPane {
       card.appendChild(cores)
     }
 
-    // Windows keeps no load average, and Node answers [0,0,0] there rather than
-    // failing — which is a picture of a completely idle machine.
-    if (stats.cpu.loadAverage) {
-      card.appendChild(this.reading('load average', stats.cpu.loadAverage.map((v) => v.toFixed(2)).join('  ')))
-    }
+    // No load average. It was three numbers that read like percentages, are not
+    // percentages, and answer a question this card already answers better: the
+    // busy figure and the per-core bars say what the processor is doing now, and
+    // the run queue only adds to that on a machine deep enough into overload
+    // that you would know without being told. It is also not comparable between
+    // these machines — 6.0 across an Apple efficiency cluster and 6.0 across
+    // desktop cores are different amounts of work — so the one reading it could
+    // have supported was a misleading one.
     return card
   }
 
@@ -423,7 +431,8 @@ export class MonitorPane implements AuxPane {
       card.appendChild(
         this.note(
           'Graphics load and temperature come from nvidia-smi, which arrives with the NVIDIA driver. ' +
-            'AMD and Intel cards publish nothing a program can read without a sensor driver, so there is nothing to show here.'
+            'AMD and Intel cards publish nothing a program can read without a sensor driver, so there is nothing to show here. ' +
+            'A Mac publishes its own load and memory and needs nothing installed, so an empty card there means the registry did not answer.'
         )
       )
       return card
@@ -703,7 +712,6 @@ export class MonitorPane implements AuxPane {
 
     if (!stats.temperatures.length) {
       card.appendChild(this.note(stats.sources.temperatureNote ?? 'No temperature sensor answered.'))
-      return card
     }
 
     for (const reading of stats.temperatures) {
@@ -716,6 +724,20 @@ export class MonitorPane implements AuxPane {
           hot(reading)
         )
       )
+    }
+
+    // Under the degrees rather than instead of them, and only where there are
+    // any to be under. It answers the question the degrees are usually being
+    // read for — is this machine about to slow down — and on a Mac, where there
+    // are no degrees to read, it is the whole of the answer.
+    if (stats.thermalPressure) {
+      const row = this.reading(
+        'thermal',
+        THERMAL_WORDS[stats.thermalPressure],
+        stats.thermalPressure === 'critical' ? 'high' : stats.thermalPressure === 'serious' ? 'warn' : 'idle'
+      )
+      row.title = 'What the operating system says about its own heat, which is what it will say without a sensor driver.'
+      card.appendChild(row)
     }
     return card
   }
@@ -749,7 +771,14 @@ export class MonitorPane implements AuxPane {
             ? 'Claude Code is not signed in on this machine, so there are no limits to report.'
             : usage.status === 'unmetered'
               ? 'This account has no usage limit to report.'
-              : 'Your usage limits could not be read just now.'
+              : usage.status === 'locked'
+                ? // Not a failure, and the wording says so — the login is there
+                  // and the keychain was told not to hand it over. macOS asks
+                  // because the entry belongs to Claude Code rather than to this
+                  // app; "Always Allow" answers it once and for good.
+                  'macOS keeps Claude Code’s login in the keychain, and this app was not allowed to read it. ' +
+                  'Reopen this panel to be asked again, and choose “Always Allow” to be asked only once.'
+                : 'Your usage limits could not be read just now.'
         )
       )
       return card
@@ -839,10 +868,14 @@ export class MonitorPane implements AuxPane {
             label: 'worn',
             tone:
               (battery.wearPercent ?? 0) >= 30 ? 'high' : (battery.wearPercent ?? 0) >= 15 ? 'warn' : 'idle',
+            // The cycle count is the other half of this number and belongs
+            // beside it: a pack can read as unworn and still be old, and the two
+            // together say which of those you are looking at.
             title:
-              battery.designWh && battery.fullWh
+              (battery.designWh && battery.fullWh
                 ? `Holds ${battery.fullWh.toFixed(1)} Wh of the ${battery.designWh.toFixed(1)} Wh it was built with`
-                : 'How much capacity the battery has lost to age',
+                : 'How much capacity the battery has lost to age') +
+              (battery.cycleCount === null ? '' : `, over ${battery.cycleCount} charge cycles`),
           },
         ])
       )
@@ -1276,6 +1309,22 @@ const HEAT: Record<TemperatureStats['kind'], [number, number]> = {
   disk: [55, 68],
   memory: [80, 90],
   other: [80, 95],
+}
+
+/**
+ * The OS's four thermal states, said the way somebody would say them.
+ *
+ * Apple's own words are `nominal`, `fair`, `serious` and `critical`, and two of
+ * those mean the opposite of what they look like beside a temperature: `fair`
+ * reads as a middling temperature rather than as "getting warm", and `nominal`
+ * reads as jargon. What the states actually describe is whether the machine has
+ * started slowing itself down, so that is what they say.
+ */
+const THERMAL_WORDS: Record<NonNullable<SystemStats['thermalPressure']>, string> = {
+  nominal: 'comfortable',
+  fair: 'warm',
+  serious: 'throttling',
+  critical: 'throttling hard',
 }
 
 /**

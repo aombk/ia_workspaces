@@ -38,9 +38,19 @@ await build({
   external: ['electron'],
 })
 
-const { readSystemStats, parseDiskstats, parseIoreg, parseWindowsSlow } = await import(
-  `file://${out}/systemStats.js`
-)
+const {
+  readSystemStats,
+  parseDiskstats,
+  parseDiskutilInfo,
+  interesting,
+  parseIoAccelerator,
+  parseIoreg,
+  parseMacSensors,
+  parseSmartBattery,
+  parseSwapusage,
+  parseVmStat,
+  parseWindowsSlow,
+} = await import(`file://${out}/systemStats.js`)
 const { parseLhm, parseValue, parseBytes } = await import(`file://${out}/lhm.js`)
 const { parseOpenMeteo, parseOpenMeteoAir, parseOwm, parseOwmAir, readWeather } = await import(
   `file://${out}/weather.js`
@@ -72,13 +82,11 @@ test('the first sample has no CPU load, because there is no delta yet', () => {
   assert.deepEqual(first.cpu.perCore, [])
 })
 
-test('load average is null on Windows and three numbers everywhere else', () => {
-  if (process.platform === 'win32') {
-    assert.equal(first.cpu.loadAverage, null)
-  } else {
-    assert.equal(first.cpu.loadAverage.length, 3)
-    for (const value of first.cpu.loadAverage) assert.ok(Number.isFinite(value))
-  }
+test('the processor carries no reading the panel does not show', () => {
+  // The load average was removed rather than hidden. Collecting a figure nothing
+  // draws is how a collector ends up with a field that quietly stops working and
+  // nobody notices for a year.
+  assert.equal('loadAverage' in first.cpu, false)
 })
 
 test('memory is real and self-consistent', () => {
@@ -145,7 +153,10 @@ test('a GPU is either absent or fully described — never a zeroed placeholder',
     assert.equal(first.sources.gpu, null)
     return
   }
-  assert.equal(first.sources.gpu, 'nvidia-smi')
+  // Whichever source answered, and there is one per platform: the tool that
+  // ships with the NVIDIA driver, or IOKit on a Mac, where the card reports its
+  // load to any process and nothing has to be installed.
+  assert.ok(['nvidia-smi', 'ioreg'].includes(first.sources.gpu), `unknown GPU source ${first.sources.gpu}`)
   for (const gpu of first.gpus) {
     assert.ok(gpu.name.length > 0)
     // Each reading is a number or an admitted null, never undefined.
@@ -349,6 +360,279 @@ test("ioreg's byte counters are read per drive", () => {
   assert.equal(io[0].read, 4194304)
   assert.equal(io[0].write, 1048576)
   assert.equal(io[1].write, 1024)
+})
+
+test('a drive whose name follows its counters is still named', () => {
+  // Captured from `ioreg -c IOBlockStorageDriver -r -l -w0 -d 2` on an M4. The
+  // trap: the driver node carries the counters and has no name of its own, and
+  // the whole-disk `IOMedia` child that does carry one comes *after* them. A
+  // parser that only accepts name-then-counters calls this drive `disk0`
+  // because it happens to be first, and calls the second one `disk1` whatever
+  // it is really called.
+  const raw = [
+    '+-o IOBlockStorageDriver  <class IOBlockStorageDriver, id 0x100000853, registered, matched, active, busy 0 (35 ms), retain 8>',
+    '  |   "Statistics" = {"Operations (Write)"=707231,"Bytes (Read)"=31579725824,"Errors (Write)"=0,"Bytes (Write)"=20147040256,"Operations (Read)"=1885368}',
+    '  +-o APPLE SSD AP0256Z Media  <class IOMedia, id 0x100000856, registered, matched, active, busy 0 (35 ms), retain 12>',
+    '        "BSD Name" = "disk0"',
+  ].join('\n')
+
+  const io = parseIoreg(raw)
+  assert.equal(io.length, 1)
+  assert.equal(io[0].name, 'disk0')
+  assert.equal(io[0].read, 31579725824)
+  assert.equal(io[0].write, 20147040256)
+  // The registry's own suffix is on every one of them and is not part of a name
+  // anybody would recognise.
+  assert.equal(io[0].label, 'APPLE SSD AP0256Z', 'the media name is what the panel shows')
+})
+
+test('counters that never meet a name are still numbered', () => {
+  const raw = '  |   "Statistics" = {"Bytes (Read)"=512,"Bytes (Write)"=1024}'
+  assert.deepEqual(parseIoreg(raw).map((d) => d.name), ['disk0'])
+})
+
+// ---------------------------------------------------------------- macOS bits
+
+test("vm_stat's page counts are read at the page size it states", () => {
+  // Captured on an Apple Silicon machine, where the page size is 16 KB. The
+  // 4096 every example hardcodes would report a quarter of the memory here.
+  const raw = [
+    'Mach Virtual Memory Statistics: (page size of 16384 bytes)',
+    'Pages free:                                     6111.',
+    'Pages active:                                 310929.',
+    'Pages inactive:                               304579.',
+    'Pages speculative:                              4891.',
+    'Pages throttled:                                   0.',
+    'Pages wired down:                             149300.',
+    'Pages purgeable:                                3375.',
+    '"Translation faults":                       30222387.',
+    'Pages occupied by compressor:                 233331.',
+  ].join('\n')
+
+  const mem = parseVmStat(raw)
+  assert.equal(mem.available, 5225775104, 'free plus inactive, speculative and purgeable')
+  assert.equal(mem.wired, 2446131200)
+
+  // Active pages are in use and belong in neither figure — the check that this
+  // is a reclaimable-memory sum rather than "everything that parsed".
+  assert.ok(mem.available < 310929 * 16384 + mem.available)
+
+  const intel = parseVmStat(raw.replace('16384', '4096'))
+  assert.equal(intel.available, 5225775104 / 4, 'the header decides, not the parser')
+})
+
+test('a vm_stat missing a field reports no figure rather than a partial sum', () => {
+  const partial = ['Mach Virtual Memory Statistics: (page size of 16384 bytes)', 'Pages free: 100.'].join('\n')
+  assert.equal(parseVmStat(partial).available, null, 'a sum short by gigabytes looks like a machine under pressure')
+  assert.equal(parseVmStat('').wired, null)
+})
+
+test('swap is read with its unit rather than assumed to be megabytes', () => {
+  assert.deepEqual(parseSwapusage('total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)'), {
+    total: 0,
+    used: 0,
+  })
+  // With the name in front, which is what `sysctl` prints without `-n`.
+  assert.deepEqual(parseSwapusage('vm.swapusage: total = 2048.00M  used = 1234.50M  free = 813.50M  (encrypted)'), {
+    total: 2147483648,
+    used: 1294467072,
+  })
+  // A machine swapping hard reports gigabytes and nothing else about the line
+  // changes.
+  assert.equal(parseSwapusage('total = 4.00G  used = 1.00G  free = 3.00G').total, 4 * 1024 ** 3)
+  assert.deepEqual(parseSwapusage('nonsense'), { total: null, used: null })
+})
+
+test('the battery controller is read in watt-hours, watts and cycles', () => {
+  // Captured verbatim, including the nested `BatteryData` dictionary that
+  // repeats three of these keys on an earlier line — the parser takes the first
+  // match, so this is the check that the two agree and that the nested spelling
+  // (no spaces around `=`) does not throw the regexes off.
+  const raw = [
+    '    | {',
+    '      "AppleRawCurrentCapacity" = 2629',
+    '      "BatteryData" = {"Ra03"=78,"DesignCapacity"=4629,"CycleCount"=41,"Voltage"=11696}',
+    '      "InstantAmperage" = 18446744073709551386',
+    '      "Temperature" = 3040',
+    '      "DesignCapacity" = 4629',
+    '      "Voltage" = 11696',
+    '      "CycleCount" = 41',
+    '      "AppleRawMaxCapacity" = 4795',
+    '    }',
+  ].join('\n')
+
+  const battery = parseSmartBattery(raw)
+  assert.ok(battery)
+  assert.equal(battery.cycleCount, 41)
+  // Milliamp-hours times millivolts over a million. A percentage of a capacity
+  // in mAh is not comparable between machines; watt-hours are.
+  assert.ok(Math.abs(battery.fullWh - 56.08232) < 1e-6)
+  assert.ok(Math.abs(battery.designWh - 54.140784) < 1e-6)
+  assert.ok(Math.abs(battery.remainingWh - 30.748784) < 1e-6)
+
+  // The trap this exists for: ioreg renders a signed property as a 64-bit
+  // unsigned integer, so a battery discharging at 230 mA reads as 1.8e19. Read
+  // through Number instead of BigInt it is not merely wrong, it is positive —
+  // a machine on battery would be reported as charging.
+  assert.ok(battery.rateWatts < 0, 'a discharging pack draws negative watts')
+  assert.ok(Math.abs(battery.rateWatts - -2.69008) < 1e-6)
+
+  // Hundredths of a degree, and the only degrees a Mac gives a plain process.
+  assert.equal(battery.celsius, 30.4)
+
+  // A pack out of the factory holds more than its design capacity, so the
+  // obvious subtraction reports a new battery as −3.6% worn.
+  assert.equal(battery.wearPercent, 0)
+  assert.equal(parseSmartBattery('nothing here'), null)
+})
+
+test('a battery reporting an impossible temperature reports none', () => {
+  const raw = '"AppleRawMaxCapacity" = 4795\n"DesignCapacity" = 4629\n"Temperature" = 0'
+  assert.equal(parseSmartBattery(raw).celsius, null, 'zero is a sensor that did not answer, not ice')
+})
+
+test("diskutil's verdict is read, and only a pass counts as a pass", () => {
+  const raw = [
+    '\t<key>DeviceIdentifier</key>',
+    '\t<string>disk0</string>',
+    '\t<key>Internal</key>',
+    '\t<true/>',
+    '\t<key>MediaName</key>',
+    '\t<string>APPLE SSD AP0256Z</string>',
+    '\t<key>SMARTStatus</key>',
+    '\t<string>Verified</string>',
+    '\t<key>SolidState</key>',
+    '\t<true/>',
+    '\t<key>TotalSize</key>',
+    '\t<integer>251000193024</integer>',
+  ].join('\n')
+
+  const health = parseDiskutilInfo(raw)
+  assert.equal(health.status, 'ok')
+  assert.equal(health.kind, 'ssd')
+  assert.equal(health.size, 251000193024)
+  assert.equal(health.model, 'APPLE SSD AP0256Z')
+  // No SMART attributes come through diskutil, and inventing them would be
+  // worse than the nulls — these need smartmontools, which is not shipped.
+  assert.equal(health.temperature, null)
+  assert.equal(health.wearPercent, null)
+  // The NAND sensors are on the SoC's own controller, so only a built-in drive
+  // may inherit that reading — a disk in a USB enclosure has no such sensor and
+  // would otherwise be shown at the internal drive's temperature.
+  assert.equal(health.internal, true)
+  assert.equal(parseDiskutilInfo(raw.replace('<key>Internal</key>\n\t<true/>', '')).internal, false)
+
+  // `Not Supported` is what a healthy internal Apple SSD says, so it must not
+  // colour the row as a failing drive.
+  assert.equal(parseDiskutilInfo(raw.replace('Verified', 'Not Supported')).status, 'unknown')
+  assert.equal(parseDiskutilInfo(raw.replace('Verified', 'Failing')).status, 'bad')
+  assert.equal(parseDiskutilInfo(raw.replace('<key>SolidState</key>\n\t<true/>', '<key>SolidState</key>\n\t<false/>')).kind, 'hdd')
+  assert.equal(parseDiskutilInfo('<plist><dict></dict></plist>'), null)
+})
+
+test('an idle virtual interface does not earn a row, and the real one always does', () => {
+  // Names and counters taken from a stock Mac. The six `utun` tunnels are
+  // iCloud Private Relay and the Continuity transports; `awdl0` is AirDrop.
+  // Between them they had moved 258 kilobytes and 37 *bytes* since boot, and
+  // they filled seven of the eight rows in the panel.
+  const idle = (name, rx, tx) => ({ name, rxTotal: rx, txTotal: tx, rxPerSec: 0, txPerSec: 0 })
+  const all = [
+    idle('en0', 1901010698, 788172692),
+    idle('awdl0', 258317, 233143),
+    idle('utun0', 1, 0),
+    idle('utun1', 4, 0),
+    idle('utun2', 3, 0),
+    idle('utun4', 24, 0),
+  ]
+
+  assert.deepEqual(interesting(all).map((n) => n.name), ['en0'])
+
+  // A VPN that just came up has carried nothing yet, so lifetime traffic alone
+  // would hide the interface at exactly the moment it started being used.
+  const fresh = [...all, { name: 'utun6', rxTotal: 900, txTotal: 400, rxPerSec: 12000, txPerSec: 3000 }]
+  assert.deepEqual(interesting(fresh).map((n) => n.name), ['en0', 'utun6'])
+
+  // …and the other way round: a quiet Wi-Fi interface must not vanish from the
+  // panel while somebody is looking at it.
+  const quiet = all.map((n) => ({ ...n, rxPerSec: 0, txPerSec: 0 }))
+  assert.deepEqual(interesting(quiet).map((n) => n.name), ['en0'])
+
+  // A machine minutes into its first boot has not moved a megabyte anywhere.
+  // Showing nothing at all would read as a monitor that is broken.
+  const booting = [idle('en0', 4000, 2000), idle('utun0', 1, 0)]
+  assert.deepEqual(interesting(booting).map((n) => n.name), ['en0'])
+  assert.deepEqual(interesting([]), [])
+})
+
+test('the Mac sensor helper is reduced to the readings worth showing', () => {
+  // Captured verbatim from `resources/bin/macsensors` on an M4 — the machine
+  // publishes 47 of these and three of them belong on a panel.
+  const raw = [
+    '31.97\tPMU2 tdie5',
+    '32.61\tPMU tdie10',
+    '51.82\tPMU2 tcal',
+    '-22.15\tPMU tdev1',
+    '35.09\tPMU tdie8',
+    '51.82\tPMU tcal',
+    '32.00\tNAND CH0 temp',
+    '30.90\tgas gauge battery',
+    '33.32\tPMU tdev4',
+    '31.10\tgas gauge battery',
+    '',
+  ].join('\n')
+
+  const readings = parseMacSensors(raw)
+  assert.deepEqual(readings.map((r) => r.name), ['SoC die', 'NAND', 'Battery'])
+
+  // The trap this test exists for. `tcal` is a calibration constant, not a
+  // sensor: it never moves, both units publish the same 51.82, and it is the
+  // hottest thing in the list — so a parser that keeps it reports 51.82 °C as
+  // the processor temperature on an idle machine, forever.
+  assert.equal(readings[0].celsius, 35.09, 'the hottest die, and nothing that is not a die')
+  assert.equal(readings[0].kind, 'cpu')
+
+  assert.equal(readings[1].celsius, 32)
+  assert.equal(readings[1].kind, 'disk', 'a drive at 55 is worth knowing about and a processor at 55 is not')
+
+  // The other trap: several sensors read −22 °C, which is one that is not
+  // powered rather than a cold laptop, and `tdev` sensors sit near the die
+  // rather than on it.
+  assert.ok(!readings.some((r) => r.celsius < 0))
+  assert.equal(readings[2].celsius, 31.1, 'the warmer of the two the pack reports')
+
+  assert.deepEqual(parseMacSensors(''), [], 'no helper is no readings, not a zero')
+  assert.deepEqual(parseMacSensors('not\ttabbed numbers'), [])
+})
+
+test("the Mac's graphics readings are taken per accelerator, named by model", () => {
+  // Captured from `ioreg -r -d 1 -w0 -c IOAccelerator`. The ordering is the
+  // point: `"model"` — the name anybody would recognise — is printed *after*
+  // the statistics it belongs to, so a line-by-line parser labels the card
+  // `AGXAcceleratorG16G` instead of `Apple M4`.
+  const raw = [
+    '+-o AGXAcceleratorG16G  <class AGXAcceleratorG16G, id 0x1000003e0, registered, matched, active, busy 0 (272 ms), retain 71>',
+    '  {',
+    '      "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=2679144448,"Tiler Utilization %"=23,"Renderer Utilization %"=23,"Device Utilization %"=23,"In use system memory"=725286912}',
+    '      "IOClass" = "AGXAcceleratorG16G"',
+    '      "model" = "Apple M4"',
+    '  }',
+  ].join('\n')
+
+  const [gpu] = parseIoAccelerator(raw)
+  assert.equal(gpu.name, 'Apple M4')
+  assert.equal(gpu.load, 23)
+  assert.equal(gpu.memoryUsed, 725286912, 'already bytes, unlike nvidia-smi’s mebibytes')
+  // Unified memory has no separate total, and filling in the machine's would
+  // draw a card using 5% of the RAM as a card using 5% of its VRAM.
+  assert.equal(gpu.memoryTotal, null)
+  // Both live in powermetrics, behind an administrator.
+  assert.equal(gpu.temperature, null)
+  assert.equal(gpu.power, null)
+
+  // Without a model string the class name is all there is, and it beats nothing.
+  const nameless = parseIoAccelerator(raw.split('\n').filter((l) => !l.includes('"model"')).join('\n'))
+  assert.equal(nameless[0].name, 'AGXAcceleratorG16G')
+  assert.deepEqual(parseIoAccelerator(''), [])
 })
 
 test('the Windows probe reads counters, health and any temperature it finds', () => {

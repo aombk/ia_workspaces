@@ -95,6 +95,14 @@ export interface LhmBattery {
   remainingWh: number | null
   fullWh: number | null
   designWh: number | null
+  /**
+   * Charge cycles, where the source counts them.
+   *
+   * LibreHardwareMonitor does not publish one, so this is null on Windows and
+   * carries a figure only where the platform reads the pack directly — see
+   * `parseSmartBattery` in `systemStats.ts`.
+   */
+  cycleCount: number | null
 }
 
 export interface LhmReading {
@@ -222,6 +230,7 @@ export function parseLhm(root: unknown): LhmReading {
           remainingWh: null,
           fullWh: null,
           designWh: null,
+          cycleCount: null,
         }
         const value = parseValue(node.Value)
         if (name === 'Charge Level') battery.chargePercent = value

@@ -4,7 +4,7 @@ import os from 'node:os'
 
 import path from 'node:path'
 import { listProcesses } from './processes'
-import { readClaudeUsage } from './usage'
+import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readSystemStats } from './systemStats'
 import { readWeather } from './weather'
 import { PtyManager } from './ptyManager'
@@ -703,7 +703,10 @@ function bootApp(): void {
     })
     ipcMain.handle(IPC.wslDistros, () => listWslDistros())
     ipcMain.handle(IPC.sshHosts, () => listSshHosts())
-    ipcMain.handle(IPC.claudeUsage, () => readClaudeUsage())
+    ipcMain.handle(IPC.claudeUsage, (_e, retry?: boolean) => {
+      if (retry) forgetKeychainRefusal()
+      return readClaudeUsage()
+    })
     ipcMain.handle(IPC.systemStats, (_e, opts?: { drives?: boolean }) => readSystemStats(opts))
     ipcMain.handle(IPC.weather, (_e, req: WeatherRequest) => readWeather(req))
     ipcMain.handle(IPC.gitStatus, (_e, cwd: string) => gitStatus(cwd))

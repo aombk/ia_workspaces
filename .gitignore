@@ -5,6 +5,9 @@ node_modules/
 out/
 build/
 dist/
+# Compiled by build.mjs from src/native/, not checked in — it is a Mach-O binary
+# whose source is three files away and which every macOS build reproduces.
+resources/bin/
 
 borf/
 

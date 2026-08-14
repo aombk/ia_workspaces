@@ -116,6 +116,37 @@ if (!existsSync(app)) {
       problems.push(`@lydell/${pkg} contains ${archs.join('+')}, expected ${expected} alone`)
     }
   }
+
+  // The temperature helper. Unlike the prebuilds above it is one file for both
+  // architectures — `clang` is given both `-arch` flags and emits a fat binary
+  // directly, so there is nothing for lipo to merge and nothing chosen by name.
+  //
+  // Checked here because its failure is silent from the other side. The app
+  // spawns it exactly as it spawns `ioreg`, so a helper built for the wrong
+  // architecture does not crash anything: it fails to exec, the collector
+  // catches it, and the panel reports no temperature — which is
+  // indistinguishable from a Mac that has no sensors. That is precisely the kind
+  // of thing that ships.
+  const sensors = path.join(app, 'Contents', 'Resources', 'resources', 'bin', 'macsensors')
+  if (!existsSync(sensors)) {
+    problems.push(
+      'resources/bin/macsensors is missing from the bundle — the panel will show no processor or drive temperature on any Mac. It is compiled by build.mjs, which skips it where there is no clang.'
+    )
+  } else {
+    let archs
+    try {
+      archs = archsOf(sensors)
+    } catch (err) {
+      problems.push(`could not read the architectures of the sensor helper: ${err.message.trim()}`)
+      archs = null
+    }
+    const missing = archs ? REQUIRED_SLICES.filter((arch) => !archs.includes(arch)) : []
+    if (missing.length) {
+      problems.push(
+        `resources/bin/macsensors is ${archs.join('+')} — missing ${missing.join(' and ')}, so it will not run on that hardware and no temperature will be shown there.`
+      )
+    }
+  }
 }
 
 if (problems.length) {
@@ -125,4 +156,4 @@ if (problems.length) {
   process.exit(1)
 }
 
-console.log('  both slices in the executables, both node-pty prebuilds in the bundle')
+console.log('  both slices in the executables and the sensor helper, both node-pty prebuilds in the bundle')

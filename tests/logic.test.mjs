@@ -15,6 +15,8 @@ await build({
     activityMonitor: 'src/main/activityMonitor.ts',
     agentState: 'src/main/agentState.ts',
     scrollback: 'src/main/scrollback.ts',
+    replaySafe: 'src/main/replaySafe.ts',
+    replayRender: 'src/main/replayRender.ts',
     claudeConfig: 'src/main/claudeConfig.ts',
     phantomExit: 'src/main/phantomExit.ts',
     controlSurface: 'src/main/controlSurface.ts',
@@ -38,7 +40,9 @@ await build({
 
 const { ActivityMonitor } = await import(`file://${out}/activityMonitor.js`)
 const { AgentStateRegistry, keyBytes, encodeKey } = await import(`file://${out}/agentState.js`)
-const { RingBuffer, stripEscapes } = await import(`file://${out}/scrollback.js`)
+const { RingBuffer, ScrollbackStore, stripEscapes, splitHeader } = await import(`file://${out}/scrollback.js`)
+const { stripInteractive, sanitizeReplay, REPLAY_RESET } = await import(`file://${out}/replaySafe.js`)
+const { renderReplay } = await import(`file://${out}/replayRender.js`)
 const { isPhantomExit, classifyReapIdentity, mayReap } = await import(
   `file://${out}/phantomExit.js`
 )
@@ -475,6 +479,206 @@ console.log('Escape stripping')
     assert.equal(stripEscapes('a\tb\nc\x00\x07d'), 'a\tb\ncd')
   })
 }
+
+// ------------------------------------------------------------ replay safety
+console.log('Scrollback replay')
+{
+  // The stream a restored pane was being handed, in miniature: an agent turning
+  // mouse reporting on, asking the terminal what it is, painting a couple of
+  // frames in absolute coordinates for an 80-column pane, and never cleaning up
+  // because it was killed rather than exited.
+  const SAVED =
+    '\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h' +
+    '\x1b[c\x1b[>0c\x1b[6n\x1b[?u\x1b]11;?\x07' +
+    '\x1b[2J\x1b[H\x1b[1;1Hthinking…' +
+    '\x1b[1;1H\x1b[2K\x1b[32mDone.\x1b[0m Ran \x1b[1mbuild_windows.bat\x1b[0m\r\n' +
+    '\x1b[2;1HNext: the installer step.\r\n'
+
+  check('every mouse and focus mode is dropped from a replay', () => {
+    const safe = stripInteractive(SAVED)
+    // The reported bug, one mode at a time. 1003 is the one that fires on every
+    // pixel of movement, which is why the pane filled with `35;24;9M`.
+    for (const mode of [1000, 1002, 1003, 1004, 1005, 1006, 1015, 1016, 9, 1]) {
+      assert.ok(!safe.includes(`\x1b[?${mode}h`), `mode ${mode} survived the filter`)
+    }
+    // The alternate screen goes too: a replay that ends inside it leaves the
+    // pane showing a buffer the new shell is not writing to.
+    assert.ok(!safe.includes('\x1b[?1049h'))
+    assert.ok(!safe.includes('\x1b[?2004h'))
+  })
+
+  check('nothing left in a replay can make the terminal answer', () => {
+    const safe = stripInteractive(SAVED)
+    // Each of these is answered *into the pty*, which is a shell. The device
+    // attributes reply is the one that produced `zsh: command not found: 1` and
+    // turned an injected `claude --resume …` into `1;2cclaude --resume …`.
+    assert.ok(!safe.includes('\x1b[c'), 'primary device attributes')
+    assert.ok(!safe.includes('\x1b[>0c'), 'secondary device attributes')
+    assert.ok(!safe.includes('\x1b[6n'), 'cursor position report')
+    assert.ok(!safe.includes('\x1b[?u'), 'kitty keyboard flags')
+    assert.ok(!safe.includes('\x1b]11;?'), 'background colour query')
+  })
+
+  check('what draws the screen is left alone', () => {
+    const safe = stripInteractive(SAVED)
+    assert.ok(safe.includes('\x1b[32m'), 'colour is the reason the replay is byte-exact at all')
+    assert.ok(safe.includes('\x1b[1m'))
+    assert.ok(safe.includes('\x1b[2J'))
+    assert.ok(safe.includes('Done.') && safe.includes('installer step'))
+  })
+
+  check('an OSC that sets a colour is not mistaken for one that asks', () => {
+    // The distinction is the trailing `?`, and getting it wrong either way is a
+    // bug: strip the setter and the pane loses its colours, keep the query and
+    // the shell gets sent an answer.
+    assert.equal(stripInteractive('\x1b]11;?\x07'), '')
+    assert.equal(stripInteractive('\x1b]11;#1e1e2e\x07'), '\x1b]11;#1e1e2e\x07')
+    // A window title is a string somebody wrote, and may end in a question mark.
+    assert.equal(stripInteractive('\x1b]0;is it done?\x07'), '\x1b]0;is it done?\x07')
+  })
+
+  check('a mode set carrying several modes keeps the ones that draw', () => {
+    // xterm allows `CSI ? 1000 ; 25 h`, so dropping the whole sequence would
+    // take the cursor with the mouse.
+    assert.equal(stripInteractive('\x1b[?1000;25;1003h'), '\x1b[?25h')
+    assert.equal(stripInteractive('\x1b[?1000;1006h'), '')
+    assert.equal(stripInteractive('\x1b[?25h'), '\x1b[?25h')
+  })
+
+  check('the reset turns off everything the filter drops', () => {
+    for (const mode of [1000, 1002, 1003, 1004, 1006, 1049, 2004]) {
+      assert.ok(REPLAY_RESET.includes(`\x1b[?${mode}l`), `the reset leaves mode ${mode} on`)
+    }
+    // A program killed with the cursor hidden leaves a pane with no cursor at
+    // its prompt, and hiding it is a drawing instruction the filter keeps.
+    assert.ok(REPLAY_RESET.includes('\x1b[?25h'))
+    assert.ok(sanitizeReplay('x').endsWith(REPLAY_RESET))
+  })
+
+  check('a saved size rides in front of the bytes, and an old file still restores', () => {
+    const framed = Buffer.concat([Buffer.from('\0iaw1 120 30\n', 'ascii'), Buffer.from('hello', 'utf8')])
+    assert.deepEqual(splitHeader(framed), { body: Buffer.from('hello'), cols: 120, rows: 30 })
+
+    // Written by a build from before the header existed. Terminal output does
+    // not begin with a null byte, so there is no way to confuse the two — and
+    // these must still restore, with no size, which is what they always had.
+    const legacy = Buffer.from('\x1b[32mplain output', 'utf8')
+    assert.deepEqual(splitHeader(legacy), { body: legacy, cols: null, rows: null })
+
+    // Truncated inside the header: the bytes after it are not a stream.
+    assert.equal(splitHeader(Buffer.from('\0iaw1 120', 'ascii')).body.length, 0)
+    assert.equal(splitHeader(Buffer.from('\0iaw1 0 0\nx', 'ascii')).cols, null, 'a nonsense width is no width')
+  })
+}
+
+// The store's own round trip, because the header is written in two places — the
+// rolling dump and the synchronous one at quit — and only one of them is on a
+// path anything else here exercises.
+console.log('Scrollback store')
+await (async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iaw-scrollback-'))
+  const store = new ScrollbackStore(dir, () => true)
+
+  store.track('p1')
+  store.setSize('p1', 132, 43)
+  store.push('p1', '\x1b[32mhello\x1b[0m')
+  await store.flush('p1')
+  const restored = store.read('p1')
+
+  check('a pane comes back with its bytes and the width that drew them', () => {
+    assert.ok(restored)
+    assert.equal(restored.data, '\x1b[32mhello\x1b[0m')
+    assert.equal(restored.cols, 132)
+    assert.equal(restored.rows, 43)
+  })
+
+  check('reading does not consume, so a pane that reattached keeps its history', () => {
+    // The restore has to be *prepared* before the shell starts and *used* only
+    // if the spawn turned out to be a new shell rather than a reattach. A read
+    // that consumed would throw the history away in the case that did not use it.
+    assert.equal(store.read('p1').data, '\x1b[32mhello\x1b[0m')
+  })
+
+  check('consuming it stops a respawned pane being given it twice', () => {
+    store.consume('p1')
+    assert.equal(store.read('p1'), null)
+  })
+
+  // A pane the app never resized still gets a size, because `spawn` records one
+  // — but a store that was never told is the case that must not write a header
+  // claiming a width of NaN.
+  store.track('p2')
+  store.push('p2', 'no size was ever set')
+  await store.flush('p2')
+  const sizeless = store.read('p2')
+
+  check('a pane with no recorded size restores anyway, with none', () => {
+    assert.equal(sizeless.data, 'no size was ever set')
+    assert.equal(sizeless.cols, null)
+  })
+
+  store.dispose()
+  fs.rmSync(dir, { recursive: true, force: true })
+})()
+
+// The reconstruction, which is the half that needs a terminal to do its work.
+console.log('Scrollback reconstruction')
+await (async () => {
+  // Painted for 100 columns: a word at the left of each row and a marker at
+  // column 80, which is the shape that produces the run-together mangling when
+  // it is replayed at some other width.
+  let painted = '\x1b[2J\x1b[H\x1b[?1003h\x1b[?1004h'
+  const words = ['through', 'it', 'anyway,', 'so']
+  words.forEach((w, i) => {
+    painted += `\x1b[${i + 1};1H${w}\x1b[${i + 1};80Hmark`
+  })
+  painted += '\x1b[6;1H\x1b[33mthinking…\x1b[0m'
+  painted += '\x1b[6;1H\x1b[2K\x1b[33mthe answer\x1b[0m'
+
+  const rendered = await renderReplay(painted, 100, 24)
+  const noSize = await renderReplay(painted, null, null)
+  const empty = await renderReplay('', 100, 24)
+
+  check('the screen comes back as the frame that survived, not every frame', () => {
+    assert.ok(rendered, 'nothing was reconstructed')
+    // The whole point. Replaying the raw stream shows `thinking…` and then the
+    // answer that replaced it, one after the other, because a full-screen
+    // program paints rather than prints.
+    assert.ok(!rendered.includes('thinking…'), 'an overwritten frame came back with the screen')
+    assert.ok(rendered.includes('the answer'))
+    assert.ok(rendered.includes('\x1b[33m'), 'colour survives the round trip')
+  })
+
+  check('each word keeps its own line, which is what the width buys', () => {
+    // Reconstructed at 60 instead of 100, these run together on one line —
+    // `through·cit80·canyway,` — which is the reported symptom exactly.
+    const lines = rendered.split('\r\n')
+    for (const word of words) {
+      assert.ok(
+        lines.some((line) => line.includes(word) && line.includes('mark')),
+        `${word} did not stay on a row of its own`
+      )
+    }
+  })
+
+  check('the reconstruction cannot reintroduce what the filter removed', () => {
+    // Measured, not assumed: SerializeAddon's job is to reproduce terminal
+    // *state*, so given a stream that turned mouse reporting on it writes
+    // `?1003h` back out. That is the original bug arriving by a second route,
+    // and it is why the filter runs on both sides of this.
+    assert.ok(!rendered.includes('\x1b[?1003h'), 'mouse reporting came back out of the serialiser')
+    assert.ok(!rendered.includes('\x1b[?1004h'))
+    assert.ok(!rendered.includes('\x1b[?1049h'))
+  })
+
+  check('without a saved width there is nothing to gain, and it says so', () => {
+    // Reconstructing at a guessed width mangles exactly as replaying at a
+    // guessed width does, with a dependency in the way. Null sends the caller
+    // to the filtered stream instead.
+    assert.equal(noSize, null)
+    assert.equal(empty, null)
+  })
+})()
 
 // --------------------------------------------------------------- control tree
 console.log('Control surface')

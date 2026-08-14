@@ -335,7 +335,15 @@ export interface Backend {
   /** Hosts from `~/.ssh/config`, for the shell menus. Empty if there is none. */
   sshHosts(): Promise<SshHost[]>
   /** Claude Code's own usage limits, for the status bar monitor. */
-  claudeUsage(): Promise<UsageReport>
+  /**
+   * The usage limits, or why they are not available.
+   *
+   * `retry` is for the one recoverable failure: on macOS the login lives in the
+   * keychain, and a dismissed permission dialog is remembered so the poll does
+   * not raise another every five minutes. Passing true forgets that refusal, so
+   * the next read asks again. Nothing else about the call changes.
+   */
+  claudeUsage(retry?: boolean): Promise<UsageReport>
   /**
    * Machine load, memory, disks, network and GPU, for the monitor pane and the
    * sidebar strip. One sample per call — the rates inside it are measured

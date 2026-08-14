@@ -413,7 +413,13 @@ export interface UsageReport {
    * `ok` alone carries numbers. The rest are all "we do not know", kept
    * distinct so the panel can say *why* rather than showing a plausible zero.
    */
-  status: 'ok' | 'signed-out' | 'expired' | 'unmetered' | 'error'
+  /**
+   * `locked` is macOS only: the login was found, in the keychain, and the
+   * keychain would not hand it over. A distinct answer from `signed-out`
+   * because the two want opposite things from the reader — one means log in,
+   * the other means you already are and a permission dialog was dismissed.
+   */
+  status: 'ok' | 'signed-out' | 'expired' | 'unmetered' | 'error' | 'locked'
   buckets: UsageBucket[]
 }
 
@@ -461,6 +467,8 @@ export interface SystemStats {
   /** Empty when nothing could answer — not a zeroed entry. */
   gpus: GpuStats[]
   battery: BatteryStats | null
+  /** macOS's own verdict on how hot it is, where degrees are unobtainable. */
+  thermalPressure: ThermalPressure | null
   /** Which optional probes answered, so the panes can say why a row is missing. */
   sources: {
     /** The tool that answered for GPUs, or null if none is installed. */
@@ -496,14 +504,6 @@ export interface CpuStats {
   load: number | null
   /** Per-core percentages, same rule. Empty until the second sample. */
   perCore: number[]
-  /**
-   * The 1/5/15-minute averages, or null on Windows.
-   *
-   * Node returns `[0, 0, 0]` there rather than failing, which is indistinguish-
-   * able from a genuinely idle machine — so it is turned into "we do not know"
-   * here, where the platform is known, rather than in three separate views.
-   */
-  loadAverage: [number, number, number] | null
 }
 
 /**
@@ -706,7 +706,27 @@ export interface BatteryStats {
   remainingWh: number | null
   fullWh: number | null
   designWh: number | null
+  /**
+   * Full charge cycles the pack has been through.
+   *
+   * The other half of `wearPercent`, and on a Mac the number Apple itself puts
+   * in System Information. A pack can read as unworn and still be old; a cycle
+   * count says which of the two you are looking at.
+   */
+  cycleCount: number | null
 }
+
+/**
+ * How close the machine is to throttling itself, in the OS's own words.
+ *
+ * Not a temperature and deliberately not presented as one. macOS will not give
+ * a program a number in degrees without a native helper, but it will say
+ * whether it is *comfortable*, which is the question a temperature is usually
+ * standing in for. `nominal` is fine, `serious` and `critical` mean the machine
+ * is already slowing itself down. Null on every other platform, which has no
+ * equivalent.
+ */
+export type ThermalPressure = 'nominal' | 'fair' | 'serious' | 'critical'
 
 /**
  * Where the weather and air readings come from.

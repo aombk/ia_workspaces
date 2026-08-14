@@ -171,7 +171,7 @@ const api = {
     ipcRenderer.invoke(IPC.setAgentHooks, id, enabled),
   wslDistros: (): Promise<string[]> => ipcRenderer.invoke(IPC.wslDistros),
   sshHosts: (): Promise<SshHost[]> => ipcRenderer.invoke(IPC.sshHosts),
-  claudeUsage: (): Promise<UsageReport> => ipcRenderer.invoke(IPC.claudeUsage),
+  claudeUsage: (retry?: boolean): Promise<UsageReport> => ipcRenderer.invoke(IPC.claudeUsage, retry),
   systemStats: (opts?: { drives?: boolean }): Promise<SystemStats> =>
     ipcRenderer.invoke(IPC.systemStats, opts),
   weather: (req: WeatherRequest): Promise<WeatherReading> => ipcRenderer.invoke(IPC.weather, req),
