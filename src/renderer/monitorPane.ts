@@ -508,6 +508,16 @@ export class MonitorPane implements AuxPane {
       name.textContent = net.name
       name.title = `${bytes(net.rxTotal)} in and ${bytes(net.txTotal)} out since this machine booted.`
       row.appendChild(name)
+      // The address this one answers on. The first is the one worth the width —
+      // IPv4 where there is one — and an interface holding several says so on
+      // hover rather than pushing the rates off the row.
+      const addr = document.createElement('span')
+      addr.className = 'monitor-list__addr'
+      addr.textContent = net.addresses[0] ?? ''
+      if (net.addresses.length > 1) {
+        addr.title = `${net.name} also answers on ${net.addresses.slice(1).join(', ')}.`
+      }
+      row.appendChild(addr)
       const value = document.createElement('span')
       value.className = 'monitor-list__value'
       value.textContent = `↓ ${rate(net.rxPerSec)}   ↑ ${rate(net.txPerSec)}`

@@ -6274,6 +6274,19 @@ html.translucent .titlebar {
   color: var(--text-faint);
 }
 
+/*
+  The address an interface answers on, between its name and its rates. Holds
+  its slot whether or not there is an address to put in it, so the rates stay
+  in one column down the block instead of stepping left on the rows that have
+  nothing to show.
+*/
+.monitor-list__addr {
+  flex: none;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
 .monitor-list__value {
   flex: none;
   color: var(--text-dim);

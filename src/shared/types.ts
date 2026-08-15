@@ -665,6 +665,15 @@ export interface TemperatureStats {
 
 export interface NetworkStats {
   name: string
+  /**
+   * The addresses this interface is answering on, IPv4 first because that is
+   * the one you can read off the screen and type somewhere else. Empty for an
+   * interface that carries traffic without holding an address of its own.
+   *
+   * Loopback and IPv6 link-local are left out. Both are always present and
+   * neither is ever the answer to "what is this machine's address".
+   */
+  addresses: string[]
   /** Bytes per second since the previous sample; null on the first. */
   rxPerSec: number | null
   txPerSec: number | null

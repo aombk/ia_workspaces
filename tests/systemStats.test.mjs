@@ -141,6 +141,27 @@ test('network interfaces carry cumulative counters', () => {
   }
 })
 
+test('interfaces report their addresses, and never loopback or link-local', () => {
+  for (const net of first.networks) {
+    assert.ok(Array.isArray(net.addresses), `${net.name} has no addresses array`)
+    for (const address of net.addresses) {
+      assert.ok(address.length > 0, `${net.name} reported an empty address`)
+      assert.ok(!address.startsWith('127.'), `${net.name} reported loopback ${address}`)
+      assert.notEqual(address, '::1', `${net.name} reported loopback`)
+      assert.ok(
+        !address.toLowerCase().startsWith('fe80:'),
+        `${net.name} reported link-local ${address}`
+      )
+    }
+    // IPv4 first, so the one the block shows is the readable one.
+    const four = net.addresses.findIndex((a) => a.includes('.') && !a.includes(':'))
+    const six = net.addresses.findIndex((a) => a.includes(':'))
+    if (four !== -1 && six !== -1) {
+      assert.ok(four < six, `${net.name} put IPv6 ahead of IPv4`)
+    }
+  }
+})
+
 test('the first sample has no rates, for the same reason as the CPU', () => {
   for (const net of first.networks) {
     assert.equal(net.rxPerSec, null)

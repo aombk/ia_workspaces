@@ -1591,6 +1591,32 @@ function scale(value: number | null, factor: number): number | null {
 
 let previousNet: { at: number; byName: Map<string, { rx: number; tx: number }> } | null = null
 
+/**
+ * Interface name -> the addresses it holds.
+ *
+ * From `os.networkInterfaces()` rather than the platform probe, because every
+ * platform already keys its byte counters by the same name the OS uses here —
+ * `en0`, `eth0`, `Wi-Fi` — so the two join without a second command to run.
+ *
+ * Dropped: anything internal, which is loopback, and IPv6 link-local, which
+ * every interface has and none of it means anything to a person reading the
+ * block. IPv4 link-local (169.254.x) stays — an adapter that failed to get a
+ * lease is worth seeing, and seeing it is how you find that out.
+ */
+function interfaceAddresses(): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const [name, entries] of Object.entries(os.networkInterfaces())) {
+    const usable = (entries ?? []).filter(
+      (entry) => !entry.internal && !entry.address.toLowerCase().startsWith('fe80:')
+    )
+    if (!usable.length) continue
+    const four = usable.filter((e) => e.family === 'IPv4').map((e) => e.address)
+    const six = usable.filter((e) => e.family !== 'IPv4').map((e) => e.address)
+    out.set(name, [...four, ...six])
+  }
+  return out
+}
+
 function rates(
   counters: Array<{ name: string; rx: number; tx: number }>,
   at: number
@@ -1598,6 +1624,7 @@ function rates(
   const previous = previousNet
   const byName = new Map(counters.map((c) => [c.name, { rx: c.rx, tx: c.tx }]))
   const seconds = previous ? (at - previous.at) / 1000 : 0
+  const addresses = interfaceAddresses()
 
   const out = counters.map((counter) => {
     const before = previous?.byName.get(counter.name)
@@ -1606,6 +1633,7 @@ function rates(
     const usable = before && seconds > 0 && counter.rx >= before.rx && counter.tx >= before.tx
     return {
       name: counter.name,
+      addresses: addresses.get(counter.name) ?? [],
       rxPerSec: usable ? Math.max(0, (counter.rx - before!.rx) / seconds) : null,
       txPerSec: usable ? Math.max(0, (counter.tx - before!.tx) / seconds) : null,
       rxTotal: counter.rx,
