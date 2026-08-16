@@ -6256,17 +6256,34 @@ html.translucent .titlebar {
   margin: 0;
 }
 
+/*
+  Three columns: what the interface is called, where it answers, what it is
+  carrying. The first two are measured — see `alignNetwork` — and the last takes
+  the rest of the line with its contents pushed to the far end.
+
+  That arrangement is the whole of keeping the address still. The rates change
+  every two seconds and every character they gain or lose used to come out of
+  the row's own layout, walking the IP sideways with it; here it comes out of
+  the flexible gap between the address and them, which is the one part of the
+  line with nothing written on it. No slot is reserved for the widest number
+  that could ever arrive, so nothing is paid for by the rows showing small ones.
+
+  The address column does not shrink where the name column does: a name clipped
+  to `Ethern…` is still the row you know, and half an IP is nothing at all.
+*/
 .monitor-list__row {
-  display: flex;
+  display: grid;
+  grid-template-columns:
+    minmax(0, var(--net-name, max-content))
+    var(--net-addr, max-content)
+    minmax(max-content, 1fr);
   align-items: baseline;
-  justify-content: space-between;
   gap: 8px;
   font-size: 11px;
   min-width: 0;
 }
 
 .monitor-list__name {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -6274,23 +6291,28 @@ html.translucent .titlebar {
   color: var(--text-faint);
 }
 
-/*
-  The address an interface answers on, between its name and its rates. Holds
-  its slot whether or not there is an address to put in it, so the rates stay
-  in one column down the block instead of stepping left on the rows that have
-  nothing to show.
-*/
 .monitor-list__addr {
-  flex: none;
+  white-space: nowrap;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   opacity: 0.8;
 }
 
+/*
+  Hard against the right edge, with up last. Down growing a character moves its
+  own number and nothing else — up is measured from the end of the row, so it
+  stays exactly where it is however busy the line gets.
+*/
 .monitor-list__value {
-  flex: none;
+  justify-self: end;
+  display: flex;
+  gap: 10px;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
+}
+
+.monitor-list__rate {
+  white-space: nowrap;
 }
 
 /* -------------------------------------------------------------- the dock */
@@ -6959,6 +6981,14 @@ body.monitor-dragging .monitor-dock__body {
   margin-left: 3px;
   padding-left: 5px;
   border-left: 1px solid var(--border);
+}
+
+/* Volumes on their own, with the drives block switched off: no drive name above
+   them, so nothing for the indent and the rule to hang off. */
+.monitor-card--volumes .monitor-volume {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: none;
 }
 
 .monitor-volume__name {

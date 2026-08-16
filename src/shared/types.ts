@@ -390,6 +390,29 @@ export interface AgentSession {
    * at their word and age out on the TTL.
    */
   transcript?: string
+  /**
+   * An id this pane reported that is not yet evidence of anything.
+   *
+   * `SessionStart` hands out an id before the conversation exists, so one that
+   * has written nothing may not displace a real conversation — a pane where
+   * Claude Code was opened and never spoken to must not forget the session it
+   * was having. But a claim that is refused and *thrown away* is how a pane
+   * ends up resuming the conversation before last: start a new one, or `/clear`
+   * into one, and the pane keeps pointing at the old id for as long as nothing
+   * else displaces it.
+   *
+   * So it is kept beside the record instead. The moment its transcript is on
+   * disk the claim has become a conversation and takes the record's place —
+   * checked whenever the record is read, because a file appearing is not an
+   * event anything fires a hook for. See `acceptSession`.
+   */
+  pending?: {
+    id: string
+    /** Where the conversation will be written. Required — it is the proof. */
+    transcript: string
+    /** When it was claimed. Becomes the record's `at` on promotion. */
+    at: number
+  }
 }
 
 /**
@@ -1220,12 +1243,22 @@ export type MonitorDock = 'off' | 'left' | 'right' | 'top' | 'bottom'
  * about it. `drives` is the one that costs something to collect — see
  * `readSystemStats` — so turning it off buys back a process every five seconds
  * rather than only shortening the panel.
+ *
+ * `drives` and `volumes` are two entries here and one block on screen. They are
+ * two questions about one piece of hardware — how the disk is doing, and how
+ * full the letters on it are — and people want different halves of that, so
+ * each is switchable. But a volume drawn away from the drive it sits on loses
+ * the thing that makes it worth grouping, so when both are on they are drawn as
+ * a single block, with the letters under the drive they are on. With `drives`
+ * off, `volumes` is a block of its own; with `volumes` off, the drives are
+ * hardware only. See `render` in `monitorPane`.
  */
 export const MONITOR_BLOCKS = [
   { id: 'cpu', label: 'processor, memory and temperature' },
   { id: 'gpu', label: 'graphics' },
   { id: 'network', label: 'network' },
-  { id: 'drives', label: 'drives, volumes and health' },
+  { id: 'drives', label: 'drives and health' },
+  { id: 'volumes', label: 'volumes — size, used and free' },
   { id: 'temperatures', label: 'temperatures' },
   { id: 'claude', label: 'claude usage limits' },
   { id: 'system', label: 'battery and uptime' },

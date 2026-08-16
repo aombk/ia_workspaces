@@ -15,6 +15,15 @@
  * had recorded before it, the real conversation it had been having was lost
  * along with it.
  *
+ * Refusing those ids outright then produced the opposite failure, and it is the
+ * one that lasted: a pane that moved on to a second conversation — a fresh
+ * `claude`, or a `/clear` — reported an id whose transcript did not exist yet,
+ * was refused, and went on resuming the *previous* conversation every time the
+ * app opened. `UserPromptSubmit` was the answer to that, and it is a hook the
+ * user has to have installed; anyone whose integration predates it never got
+ * one. So a refused id is now held beside the record and settled against the
+ * disk later, which needs no hook at all. See `settle`.
+ *
  * Kept here rather than in `ptyManager` because both are decisions rather than
  * plumbing, and a decision that can be read on its own can be tested on its own.
  */
@@ -65,16 +74,34 @@ export function acceptSession(
 ): AgentSession | null {
   if (!report.id) return null
 
-  if (known && known.id !== report.id) {
+  // Any claim held from an earlier `SessionStart` that has since written its
+  // transcript is settled first: it is a conversation now, and the one this
+  // pane is having.
+  const current = settle(known, exists)
+
+  if (current && current.id !== report.id) {
     const written = Boolean(report.transcript && exists(report.transcript))
     const speaking = report.hookEvent === 'UserPromptSubmit'
-    if (!written && !speaking) return null
+    if (!written && !speaking) {
+      // Refused, but not discarded. An id with a transcript path is a claim
+      // that can be checked later, and checking it later is what keeps a pane
+      // that started a second conversation from resuming the first one for
+      // ever. Without a path there is nothing to check, so the old rule stands.
+      if (report.transcript && current.pending?.id !== report.id) {
+        return { ...current, pending: { id: report.id, transcript: report.transcript, at: now } }
+      }
+      return changed(known, current)
+    }
   }
 
   // The same conversation saying so again is worth writing through only to
   // keep its TTL fresh, and not on every prompt.
-  if (known && known.id === report.id && now - known.at < RECORD_REFRESH_MS) return null
+  if (current && current.id === report.id && now - current.at < RECORD_REFRESH_MS) {
+    return changed(known, current)
+  }
 
+  // Whatever was being held is dropped here: this id is evidence and that one
+  // was not, so there is no longer a question for it to answer.
   return {
     tool: 'claude',
     id: report.id,
@@ -84,6 +111,30 @@ export function acceptSession(
     // moment we would resume it rather than for now.
     ...(report.transcript ? { transcript: report.transcript } : {}),
   }
+}
+
+/**
+ * The record with a held claim promoted, if its transcript has appeared.
+ *
+ * A transcript arriving is not something anything tells us about — Claude Code
+ * writes the file when the first turn completes and fires no hook to say so —
+ * so the question is asked wherever the record is read instead. That makes this
+ * work on the hooks a user already has installed: `SessionStart` alone is
+ * enough, where before a pane that never saw a `UserPromptSubmit` could hold a
+ * stale id until it aged out a fortnight later.
+ *
+ * The claim's own timestamp comes with it, so the TTL runs from when the
+ * conversation started rather than from whenever we happened to notice.
+ */
+function settle(known: AgentSession | undefined, exists: Exists): AgentSession | undefined {
+  const claim = known?.pending
+  if (!known || !claim || !exists(claim.transcript)) return known
+  return { tool: 'claude', id: claim.id, at: claim.at, transcript: claim.transcript }
+}
+
+/** The settled record when settling changed it, and nothing to write when not. */
+function changed(known: AgentSession | undefined, current: AgentSession): AgentSession | null {
+  return current === known ? null : current
 }
 
 /**
@@ -102,12 +153,18 @@ export function acceptSession(
  * it is killed mid-turn. A pane that opens at a clean prompt is a better answer
  * than one that opens at an error. Records written before the transcript was
  * carried have nothing to check and are taken at their word; they age out.
+ *
+ * A held claim is settled here too, and this is the moment it matters most: the
+ * app is starting, the conversation that claim named has been written for
+ * hours, and resuming the record it was refused by would reopen the one before
+ * it. See `settle`.
  */
 export function resumeCommand(
-  session: AgentSession | undefined,
+  known: AgentSession | undefined,
   now: number,
   exists: Exists = existsSync
 ): string | null {
+  const session = settle(known, exists)
   if (!session || session.tool !== 'claude') return null
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/.test(session.id)) return null
   if (now - session.at > AGENT_SESSION_TTL_MS) return null

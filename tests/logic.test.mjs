@@ -1267,7 +1267,40 @@ console.log('Session vault')
       NOW,
       onDisk
     )
+    // Refused, and held: the record still names the conversation the pane was
+    // having, with the unproven id beside it.
+    assert.equal(rec.id, 'old-session-id')
+    assert.equal(rec.pending.id, 'fresh-id-1')
+  })
+
+  check('an id with nowhere to write is refused outright — there is nothing to check later', () => {
+    assert.equal(
+      acceptSession(known(), { id: 'fresh-id-1', hookEvent: 'SessionStart' }, NOW, onDisk),
+      null
+    )
+  })
+
+  check('the same claim reported twice is not written through again', () => {
+    const held = known({ pending: { id: 'fresh-id-1', transcript: '/nope', at: NOW } })
+    const rec = acceptSession(
+      held,
+      { id: 'fresh-id-1', transcript: '/nope', hookEvent: 'SessionStart' },
+      NOW,
+      onDisk
+    )
     assert.equal(rec, null)
+  })
+
+  check('a held claim becomes the record once its transcript is written', () => {
+    // This is the pane that started a second conversation: the id was refused
+    // at SessionStart because nothing was on disk yet, and the transcript
+    // arrived when the first turn finished. No hook says so, so the file is
+    // what says so — here, on the next report of any kind.
+    const held = known({ pending: { id: 'second-conv', transcript: TRANSCRIPT, at: NOW - 30_000 } })
+    const rec = acceptSession(held, { id: 'third-id-1', transcript: '/nope' }, NOW, onDisk)
+    assert.equal(rec.id, 'second-conv')
+    assert.equal(rec.at, NOW - 30_000)
+    assert.equal(rec.pending.id, 'third-id-1')
   })
 
   check('a conversation with a transcript on disk does displace it', () => {
@@ -1335,6 +1368,34 @@ console.log('Session vault')
 
   check('a pane with no recorded conversation opens at a plain prompt', () => {
     assert.equal(resumeCommand(undefined, NOW, onDisk), null)
+  })
+
+  check('a held claim that has since been written is the one resumed', () => {
+    // The bug this exists for: without it the line below reopens `aaaaaaaa-old`
+    // — the conversation before the one the pane was actually having.
+    const line = resumeCommand(
+      known({
+        id: 'aaaaaaaa-old',
+        transcript: '/gone',
+        pending: { id: 'aaaaaaaa-new', transcript: TRANSCRIPT, at: NOW - 60_000 },
+      }),
+      NOW,
+      onDisk
+    )
+    assert.equal(line, 'claude --resume aaaaaaaa-new')
+  })
+
+  check('a claim that never wrote anything leaves the record standing', () => {
+    const line = resumeCommand(
+      known({
+        id: 'aaaaaaaa-bbbb',
+        transcript: TRANSCRIPT,
+        pending: { id: 'aaaaaaaa-idle', transcript: '/nope', at: NOW },
+      }),
+      NOW,
+      onDisk
+    )
+    assert.equal(line, 'claude --resume aaaaaaaa-bbbb')
   })
 }
 

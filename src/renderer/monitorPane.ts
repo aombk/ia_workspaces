@@ -29,7 +29,14 @@
  * admitted gap, and 0 °C is very plausible and very wrong.
  */
 import type { AuxPane } from './auxPane'
-import type { AirQuality, DiskStats, SystemStats, TemperatureStats, WeatherReading } from '../shared/types'
+import type {
+  AirQuality,
+  DiskStats,
+  NetworkStats,
+  SystemStats,
+  TemperatureStats,
+  WeatherReading,
+} from '../shared/types'
 import { backend } from '../backend'
 import { showWeatherSettings } from './ui/weatherSettings'
 import { store } from './state'
@@ -155,11 +162,18 @@ export class MonitorPane implements AuxPane {
     // earns its space is personal, so the list is the user's — see the
     // right-click menu, and `readSystemStats`, which skips its one expensive
     // probe outright when the drives block is off.
+    //
+    // `drives` and `volumes` are the exception to one entry, one card: a volume
+    // is drawn under the drive it sits on, so with both on they are one block
+    // and the volumes entry builds nothing of its own. It becomes a card only
+    // when the drives block is off and there is no drive left to sit under.
+    const volumes = store.monitorShows('volumes')
     const build: Record<string, () => HTMLElement> = {
       cpu: () => this.cpuCard(stats, history),
       gpu: () => this.gpuCard(stats, history),
       network: () => this.networkCard(stats, history),
-      drives: () => this.drivesCard(stats, history),
+      drives: () => this.drivesCard(stats, history, volumes),
+      volumes: () => this.volumesCard(stats),
       temperatures: () => this.sensorsCard(stats),
       claude: () => this.claudeCard(),
       system: () => this.systemCard(stats),
@@ -167,12 +181,28 @@ export class MonitorPane implements AuxPane {
       air: () => this.airCard(),
     }
 
-    const cards = store.monitorBlocks
-      .filter((block) => store.monitorShows(block.id))
-      .map((block) => this.draggable(build[block.id](), block.id))
+    const cards = this.drawn().map((id) => this.draggable(build[id](), id))
     this.bodyEl.replaceChildren(
       ...(cards.length ? cards : [this.note('Every block is switched off. Right-click here to bring one back.')])
     )
+  }
+
+  /**
+   * The blocks that end up on screen, in the order they are drawn.
+   *
+   * Not the same list as the ones switched on: `volumes` is on and absent for
+   * as long as the drives block is the thing drawing it. Said in one place
+   * because the drop maths has to work among the boxes that are *there* — a
+   * block that is on but not drawn puts every card after it one slot out, which
+   * is the same bug the hidden blocks caused before `drop` started translating
+   * through the block it lands in front of.
+   */
+  private drawn(): string[] {
+    const drives = store.monitorShows('drives')
+    return store.monitorBlocks
+      .map((block) => block.id)
+      .filter((id) => store.monitorShows(id))
+      .filter((id) => id !== 'volumes' || !drives)
   }
 
   /**
@@ -270,7 +300,7 @@ export class MonitorPane implements AuxPane {
       // by counting, because that is the one fact both lists agree on. Null
       // means the end.
       const all = store.monitorBlocks.map((b) => b.id)
-      const shown = all.filter((blockId) => store.monitorShows(blockId))
+      const shown = this.drawn()
       let slot = shown.indexOf(id) + (after ? 1 : 0)
       // Removing the dragged block first shifts everything after it up by one,
       // so a drop below its old position has to account for that.
@@ -500,6 +530,11 @@ export class MonitorPane implements AuxPane {
 
     const list = document.createElement('div')
     list.className = 'monitor-list'
+    // The name and the address get a column apiece, measured the same way the
+    // volume rows are measured and for the same reason: both are strings that do
+    // not change between polls, and a column sized to them is a column the rates
+    // cannot walk. See `alignNetwork`.
+    this.alignNetwork(list, stats.networks)
     for (const net of [...stats.networks].sort((a, b) => (b.rxPerSec ?? 0) + (b.txPerSec ?? 0) - ((a.rxPerSec ?? 0) + (a.txPerSec ?? 0)))) {
       const row = document.createElement('div')
       row.className = 'monitor-list__row'
@@ -520,12 +555,75 @@ export class MonitorPane implements AuxPane {
       row.appendChild(addr)
       const value = document.createElement('span')
       value.className = 'monitor-list__value'
-      value.textContent = `↓ ${rate(net.rxPerSec)}   ↑ ${rate(net.txPerSec)}`
+      value.appendChild(this.rateCell('↓', net.rxPerSec))
+      value.appendChild(this.rateCell('↑', net.txPerSec))
       row.appendChild(value)
       list.appendChild(row)
     }
     card.appendChild(list)
     return card
+  }
+
+  /**
+   * One direction's rate, in a cell of its own.
+   *
+   * Two cells rather than one string, and the pair hard against the right edge:
+   * that is what keeps the numbers still without reserving room for numbers
+   * nobody has. Up is last, so it never moves at all; down growing a character
+   * takes the character from the gap in the middle of the row, which is the one
+   * place on the line where nothing is written.
+   */
+  private rateCell(arrow: string, value: number | null | undefined): HTMLElement {
+    const cell = document.createElement('span')
+    cell.className = 'monitor-list__rate'
+    cell.textContent = `${arrow} ${rate(value)}`
+    return cell
+  }
+
+  /**
+   * The width of the two columns the network rows share.
+   *
+   * Measured, for the reason `alignVolumes` explains at length — the columns
+   * have to agree across rows that no `auto` track can see at once. What is
+   * measured here is the part of the row that *does not* move: an interface is
+   * called what it is called and answers where it answers, so a column sized to
+   * the widest of each is a column with no slack in it and no drift either. All
+   * the change on the line is in the rates, and they sit at the far end with the
+   * flexible gap in front of them.
+   *
+   * The address column is fixed rather than shrinkable, unlike the name: a name
+   * clipped to `Ethern…` is still the row you know, and half an IP is nothing at
+   * all. So a row too narrow for everything takes it out of the name.
+   */
+  private alignNetwork(list: HTMLElement, nets: NetworkStats[]): void {
+    if (!nets.length) return
+    const addresses = nets.map((net) => net.addresses[0] ?? '')
+    const name = this.widest(nets.map((net) => net.name))
+    const addr = addresses.some(Boolean) ? this.widest(addresses) : 0
+    if (name === null || addr === null) return
+    list.style.setProperty('--net-name', `${name}px`)
+    list.style.setProperty('--net-addr', `${addr}px`)
+  }
+
+  /**
+   * How wide the widest of these strings is drawn, in pixels, or null if the
+   * measuring canvas could not be had.
+   *
+   * On a canvas rather than by asking the laid-out rows: reading geometry and
+   * then writing it back, twice a second, is the shape of every layout thrash
+   * there has ever been. Nothing is in the document yet when this runs.
+   *
+   * Two pixels of slack, because the figures are drawn in tabular numerals and
+   * measured in whatever the face's default is — the same width in most
+   * interface fonts, and a hair wider in the rest. The size and the family have
+   * to be asked for rather than assumed: the family is a setting, and the themes
+   * change it.
+   */
+  private widest(texts: string[]): number | null {
+    const gauge = (MonitorPane.gauge ??= document.createElement('canvas').getContext('2d'))
+    if (!gauge) return null
+    gauge.font = `11px ${getComputedStyle(this.element).fontFamily || 'sans-serif'}`
+    return Math.ceil(Math.max(...texts.map((text) => gauge.measureText(text).width))) + 2
   }
 
   /**
@@ -544,15 +642,25 @@ export class MonitorPane implements AuxPane {
    * Which volumes belong to which drive is free: the Windows counter names its
    * instances `0 C:` — the device number, then the letters on it — so the
    * grouping falls out of a string that had to be parsed anyway.
+   *
+   * `volumes` is that half of the block switched on or off from the same menu
+   * as everything else. Off, this is the hardware alone; on, the letters sit
+   * under the drive they are on and the two are one block. See `MONITOR_BLOCKS`.
    */
-  private drivesCard(stats: SystemStats, history: SystemHistory): HTMLElement {
+  private drivesCard(stats: SystemStats, history: SystemHistory, withVolumes: boolean): HTMLElement {
     const count = Math.max(stats.diskIo.length, stats.health.length)
-    const card = this.card('drives', count ? `${count} drive${count === 1 ? '' : 's'}` : 'no drives answered')
+    const drives = count ? `${count} drive${count === 1 ? '' : 's'}` : 'no drives answered'
+    const card = this.card(
+      'drives',
+      withVolumes && stats.disks.length
+        ? `${drives}, ${stats.disks.length} volume${stats.disks.length === 1 ? '' : 's'}`
+        : drives
+    )
     // Every volume in the block draws its bar between the same two edges, and
     // this is what tells them where those edges are. Done once for the card, on
     // the whole of `stats.disks`, because every volume ends up in it by one path
     // or the other — under the drive it sits on, or in the unclaimed list below.
-    this.alignVolumes(card, stats.disks)
+    if (withVolumes) this.alignVolumes(card, stats.disks)
 
     if (!stats.diskIo.length && !stats.health.length) {
       card.appendChild(
@@ -563,7 +671,7 @@ export class MonitorPane implements AuxPane {
       )
       // The volumes are known even when the drives are not, and a full disk is
       // worth saying regardless of what is underneath it.
-      for (const volume of stats.disks) card.appendChild(this.volumeRow(volume))
+      if (withVolumes) for (const volume of stats.disks) card.appendChild(this.volumeRow(volume))
       return card
     }
 
@@ -612,7 +720,7 @@ export class MonitorPane implements AuxPane {
       // *looks* it: with a graph in between, a volume row sits closer to the
       // next drive's name than to its own, and the grouping the counter's
       // instance name hands us for free reads as an accident.
-      for (const volume of volumes) row.appendChild(this.volumeRow(volume))
+      if (withVolumes) for (const volume of volumes) row.appendChild(this.volumeRow(volume))
 
       // Activity and heat over each other: a drive that is warm because it is
       // working looks different from one that is simply warm, and that is only
@@ -628,9 +736,35 @@ export class MonitorPane implements AuxPane {
 
     // Anything the counters did not account for — a drive with no throughput
     // instance, or a volume on hardware that reported nothing.
-    for (const volume of stats.disks) {
-      if (!claimed.has(volume.mount)) card.appendChild(this.volumeRow(volume))
+    if (withVolumes) {
+      for (const volume of stats.disks) {
+        if (!claimed.has(volume.mount)) card.appendChild(this.volumeRow(volume))
+      }
     }
+    return card
+  }
+
+  /**
+   * The volumes with no drives above them.
+   *
+   * Only reached with the drives block switched off, because that is the only
+   * time these have nothing to sit under. Same rows, same measured columns —
+   * what changes is that they carry a heading of their own instead of borrowing
+   * the drive's. Switching the drives back on folds them into it again.
+   */
+  private volumesCard(stats: SystemStats): HTMLElement {
+    const count = stats.disks.length
+    const card = this.card('volumes', count ? `${count} volume${count === 1 ? '' : 's'}` : 'no volumes answered')
+    // The rows are indented under a drive's name in the merged block. Here there
+    // is no name to indent from, so the rule that draws that relationship would
+    // be drawing one that is not there.
+    card.classList.add('monitor-card--volumes')
+    this.alignVolumes(card, stats.disks)
+    if (!count) {
+      card.appendChild(this.note('Nothing on this machine reported a fixed volume.'))
+      return card
+    }
+    for (const volume of stats.disks) card.appendChild(this.volumeRow(volume))
     return card
   }
 
@@ -668,7 +802,7 @@ export class MonitorPane implements AuxPane {
     else if (used >= 75) value.classList.add('warn')
     row.appendChild(value)
 
-    row.title = `${used.toFixed(0)}% of ${disk.mount} is in use.`
+    row.title = `${used.toFixed(0)}% of ${disk.mount} is in use — ${bytes(disk.total - disk.free)} used, ${bytes(disk.free)} free of ${bytes(disk.total)}.`
     return row
   }
 
@@ -691,18 +825,11 @@ export class MonitorPane implements AuxPane {
    */
   private alignVolumes(card: HTMLElement, disks: DiskStats[]): void {
     if (!disks.length) return
-    const gauge = (MonitorPane.gauge ??= document.createElement('canvas').getContext('2d'))
-    if (!gauge) return
-    // The volume row's own size and face. The family has to be asked for rather
-    // than assumed: it is a setting, and the themes change it.
-    gauge.font = `11px ${getComputedStyle(this.element).fontFamily || 'sans-serif'}`
-    // Two pixels of slack, because the figures are drawn in tabular numerals
-    // and measured in whatever the face's default is — the same width in most
-    // interface fonts, and a hair wider in the rest.
-    const widest = (texts: string[]) =>
-      Math.ceil(Math.max(...texts.map((text) => gauge.measureText(text).width))) + 2
-    card.style.setProperty('--vol-name', `${widest(disks.map(volumeName))}px`)
-    card.style.setProperty('--vol-value', `${widest(disks.map(volumeValue))}px`)
+    const name = this.widest(disks.map(volumeName))
+    const value = this.widest(disks.map(volumeValue))
+    if (name === null || value === null) return
+    card.style.setProperty('--vol-name', `${name}px`)
+    card.style.setProperty('--vol-value', `${value}px`)
   }
 
   /**
@@ -1278,7 +1405,15 @@ function volumeName(disk: DiskStats): string {
   return disk.label ? `${disk.mount} (${disk.label})` : disk.mount
 }
 
-/** What is left on it, in the same two places. */
+/**
+ * What is left on it and how big it is, in the same two places.
+ *
+ * Free and total, and not used as well: the bar beside it is already drawing
+ * used, and the third number costs every volume in the panel a third of the
+ * line to say something two of them and a bar have said between them. Free is
+ * the one that answers the question anybody is actually asking of a disk —
+ * whether the thing they are about to build will fit.
+ */
 function volumeValue(disk: DiskStats): string {
   return `${bytes(disk.free)} free of ${bytes(disk.total)}`
 }

@@ -1177,9 +1177,16 @@ class WorkspaceState {
     // resume, and `at` is what the fortnight TTL is measured from. Without the
     // second clause a conversation you have been in daily for two weeks quietly
     // stops being resumable, timed out from the day it began.
+    //
+    // The third is the held claim, which changes neither of the other two and is
+    // the whole of what a new conversation looks like when it first reports —
+    // dropped on the floor here, it would never reach the file that outlives the
+    // app, and the pane would open on the conversation before it.
     if (
       meta.agentSession &&
-      (meta.agentSession.id !== p.agentSession?.id || meta.agentSession.at > p.agentSession.at)
+      (meta.agentSession.id !== p.agentSession?.id ||
+        meta.agentSession.at > p.agentSession.at ||
+        meta.agentSession.pending?.id !== p.agentSession?.pending?.id)
     ) {
       p.agentSession = meta.agentSession
       changed = true
@@ -1903,12 +1910,39 @@ function readAgentSession(raw: unknown): AgentSession | undefined {
   const { tool, id, at, transcript } = raw as Record<string, unknown>
   if (tool !== 'claude' || typeof id !== 'string' || typeof at !== 'number') return undefined
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/.test(id)) return undefined
-  if (Date.now() - at > AGENT_SESSION_TTL_MS) return undefined
+  // A held claim is a conversation this pane may turn out to be having, so the
+  // record is only stale when *both* halves are — dropping it on the accepted
+  // id's age alone would throw away a claim made an hour ago because the id it
+  // was refused by is a fortnight old.
+  const claim = readPendingSession((raw as Record<string, unknown>).pending)
+  if (Date.now() - Math.max(at, claim?.at ?? 0) > AGENT_SESSION_TTL_MS) return undefined
   // The transcript is what makes the id checkable at the moment it would be
   // resumed; a file that has since gone means a conversation that has gone.
   // Absent on records written by an older build, and absence is honest — it
   // means unknown, and an unknown transcript is taken at its word.
-  return { tool, id, at, ...(typeof transcript === 'string' && transcript ? { transcript } : {}) }
+  return {
+    tool,
+    id,
+    at,
+    ...(typeof transcript === 'string' && transcript ? { transcript } : {}),
+    ...(claim ? { pending: claim } : {}),
+  }
+}
+
+/**
+ * The unproven id held beside a record, read back with the same suspicion.
+ *
+ * Held to a stricter rule than the record itself: a claim with no transcript
+ * can never be settled, so it is nothing but a stale id waiting to be typed at
+ * a shell. See `AgentSession.pending`.
+ */
+function readPendingSession(raw: unknown): AgentSession['pending'] {
+  if (!raw || typeof raw !== 'object') return undefined
+  const { id, at, transcript } = raw as Record<string, unknown>
+  if (typeof id !== 'string' || typeof at !== 'number') return undefined
+  if (typeof transcript !== 'string' || !transcript) return undefined
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/.test(id)) return undefined
+  return { id, at, transcript }
 }
 
 /**
