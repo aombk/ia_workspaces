@@ -33,6 +33,7 @@ import type {
   HostTool,
   WeatherReading,
   WeatherRequest,
+  LatestReleaseResult,
 } from '../shared/types'
 
 /**
@@ -64,6 +65,7 @@ const api = {
     ipcRenderer.invoke(IPC.pickOpenFile, opts),
   homeDir: (): Promise<string> => ipcRenderer.invoke(IPC.homeDir),
   appVersion: (): Promise<string> => ipcRenderer.invoke(IPC.appVersion),
+  latestRelease: (): Promise<LatestReleaseResult> => ipcRenderer.invoke(IPC.latestRelease),
   /**
    * The real path of a file dragged in from Explorer.
    *

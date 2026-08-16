@@ -30,6 +30,7 @@ export function createElectronBackend(): Backend {
     pickOpenFile: (opts) => api.pickOpenFile(opts),
     homeDir: () => api.homeDir(),
     appVersion: () => api.appVersion(),
+    latestRelease: () => api.latestRelease(),
     pathForFile: (file) => api.pathForFile(file),
     gitBranch: (cwd) => api.gitBranch(cwd),
     setTranslucent: (translucent, backdrop) => api.setTranslucent(translucent, backdrop),

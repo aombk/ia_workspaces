@@ -30,6 +30,7 @@ await build({
     paneBuffer: 'src/renderer/paneBuffer.ts',
     programWheel: 'src/renderer/programWheel.ts',
     agentSessions: 'src/main/agentSessions.ts',
+    version: 'src/shared/version.ts',
   },
   bundle: true,
   platform: 'node',
@@ -61,6 +62,7 @@ const { wheelTicks } = await import(`file://${out}/programWheel.js`)
 const { acceptSession, resumeCommand, RECORD_REFRESH_MS } = await import(
   `file://${out}/agentSessions.js`
 )
+const { isNewer } = await import(`file://${out}/version.js`)
 
 let passed = 0
 const check = (name, fn) => {
@@ -1396,6 +1398,44 @@ console.log('Session vault')
       onDisk
     )
     assert.equal(line, 'claude --resume aaaaaaaa-bbbb')
+  })
+}
+
+// -------------------------------------------------------------- release versions
+{
+  console.log('\nWhich release is newer')
+
+  check('a later patch, minor or major is newer', () => {
+    assert.ok(isNewer('1.0.1', '1.0.0'))
+    assert.ok(isNewer('1.1.0', '1.0.9'))
+    assert.ok(isNewer('2.0.0', '1.9.9'))
+  })
+
+  check('10 is after 9, which is where string comparison goes wrong', () => {
+    assert.ok(isNewer('1.10.0', '1.9.0'))
+    assert.ok(!isNewer('1.9.0', '1.10.0'))
+    assert.ok(isNewer('1.0.10', '1.0.9'))
+  })
+
+  check('the same version is not an update, however it is spelled', () => {
+    assert.ok(!isNewer('1.0.0', '1.0.0'))
+    assert.ok(!isNewer('1.2', '1.2.0'))
+    assert.ok(!isNewer('1.2.0', '1.2'))
+  })
+
+  check('an older release never offers itself', () => {
+    assert.ok(!isNewer('1.0.0', '1.0.1'))
+    assert.ok(!isNewer('0.9.9', '1.0.0'))
+  })
+
+  check('a version this cannot rank stays quiet rather than nagging', () => {
+    // The one that caught the first spelling of this: `1.2.0-beta.1` split on
+    // dots is four fields, and the fourth made a pre-release outrank the
+    // release it precedes. Now anything but a plain dotted number declines.
+    assert.ok(!isNewer('1.2.0-beta.1', '1.2.0'))
+    assert.ok(!isNewer('1.3.0-rc.1', '1.2.0'))
+    assert.ok(!isNewer('', '1.0.0'))
+    assert.ok(!isNewer('latest', '1.0.0'))
   })
 }
 

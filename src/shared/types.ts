@@ -775,6 +775,24 @@ export const WEATHER_PROVIDERS: readonly { id: WeatherProvider; label: string; n
   { id: 'openweathermap', label: 'OpenWeatherMap', needsKey: true },
 ]
 
+/**
+ * A place worth keeping, so the blocks can be pointed somewhere else and back.
+ *
+ * Home and wherever the people you work with are is the ordinary case, and it
+ * was two rounds of retyping a coordinate pair before this existed.
+ *
+ * The name is the identity: saving a place already on the list under the same
+ * name moves the pin rather than adding a second entry, because two lines
+ * reading `Athens` differing in the fourth decimal is not a list anybody can
+ * use. Coordinates stay strings — they are what was typed, and rounding
+ * somebody's input on the way past is not this list's business.
+ */
+export interface WeatherPlace {
+  place: string
+  lat: string
+  lon: string
+}
+
 export interface Weather {
   /** The name you gave the place, or the provider's if it offers one. */
   place: string
@@ -1126,6 +1144,21 @@ export interface Settings {
   weatherLat: string
   weatherLon: string
   weatherKey: string
+  /**
+   * Places kept to switch between, in the order they were saved.
+   *
+   * Separate from the three fields above, which are the one in *use*: a saved
+   * place is a bookmark, and the block reads from the location, not from the
+   * list. That split is what lets somebody try a coordinate without disturbing
+   * the places they keep, and it is why nothing here needed migrating — a
+   * document written before this has no list and one location, which is exactly
+   * what it had before.
+   *
+   * The provider and the key are not part of a place. A key belongs to an
+   * account and a provider is a preference about who to ask; neither changes
+   * because you looked at a different city.
+   */
+  weatherPlaces: WeatherPlace[]
   /** "Open in ia_workspaces" on folder right-click. Writes to HKCU. */
   explorerContextMenu: boolean
   /** Which glyph marks a nested workspace. See `NestingMarker`. */
@@ -1162,6 +1195,27 @@ export type UpdateCheck =
   | { state: 'available'; current: string; latest: string; url?: string }
   | { state: 'unconfigured'; current: string }
   | { state: 'error'; current: string; error: string }
+
+/** The newest release GitHub knows about. See `main/updates.ts`. */
+export interface LatestRelease {
+  /** The version, with the tag's `v` removed. */
+  version: string
+  /** The release page, for the notice that offers to open it. */
+  url: string
+}
+
+/**
+ * What the host found, or why it could not look.
+ *
+ * A result rather than a thrown error: this crosses an IPC boundary, where an
+ * exception arrives wrapped in "Error invoking remote method" with the real
+ * message buried inside it — and the settings panel prints what it is given.
+ * `release: null` is a repository with nothing published yet, which is an
+ * answer and not a failure.
+ */
+export type LatestReleaseResult =
+  | { ok: true; release: LatestRelease | null }
+  | { ok: false; error: string }
 
 /**
  * The glyph marking a nested workspace in the sidebar.
@@ -1771,6 +1825,7 @@ export const DEFAULT_SETTINGS: Settings = {
   weatherLat: '',
   weatherLon: '',
   weatherKey: '',
+  weatherPlaces: [],
   explorerContextMenu: false,
   nestingMarker: 'hook',
   agentIntegration: 'unset',

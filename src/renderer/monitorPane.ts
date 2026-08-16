@@ -367,7 +367,12 @@ export class MonitorPane implements AuxPane {
         series: 'temp',
         title: 'Processor temperature',
       },
-      { value: `${ram.toFixed(0)}%`, tone: band(ram), label: 'ram', series: 'memory', title: `${bytes(stats.memory.used)} of ${bytes(stats.memory.total)} in use` },
+      // Never banded, unlike the two beside it. Memory filling up is what the
+      // green line is drawing, and a figure that turns amber at 75% and red at
+      // 90% is a figure that has stopped being the line's label at exactly the
+      // moment somebody looks up to find out which line is which. The number
+      // says 87% on its own; it does not need a second colour to say it again.
+      { value: `${ram.toFixed(0)}%`, tone: 'idle', label: 'ram', series: 'memory', title: `${bytes(stats.memory.used)} of ${bytes(stats.memory.total)} in use` },
     ])
 
     // Load, temperature and memory over each other. Temperature keeps its own
@@ -419,10 +424,20 @@ export class MonitorPane implements AuxPane {
     if (stats.cpu.perCore.length) {
       const cores = document.createElement('div')
       cores.className = 'monitor-cores'
-      for (const value of stats.cpu.perCore) {
+      for (const [index, value] of stats.cpu.perCore.entries()) {
         const cell = document.createElement('span')
-        cell.className = `monitor-core monitor-core--${band(value)}`
-        cell.title = `${value.toFixed(0)}%`
+        // Not banded, and not the theme's accent either. These bars are load —
+        // the same fact as the `%` at the top of the block and the same line on
+        // the graph — so they are drawn in load's colour and stay in it. A bar
+        // that turns red at 90% is a bar you can no longer match to anything
+        // else on the card, and its own height had already said as much.
+        cell.className = 'monitor-core'
+        // Which core, as well as how busy. The bars are two pixels wide and
+        // counting along a row of twenty-four to work out which one you are
+        // pointing at is not something to ask of somebody who just wanted to
+        // know whether it is one thread pinned or all of them. Numbered from 0,
+        // which is what every other tool on the machine calls the first one.
+        cell.title = `core ${index}: ${value.toFixed(0)}%`
         const fill = document.createElement('span')
         fill.className = 'monitor-core__fill'
         fill.style.height = `${Math.max(2, value)}%`
@@ -938,7 +953,7 @@ export class MonitorPane implements AuxPane {
       row.appendChild(head)
 
       const track = document.createElement('span')
-      track.className = `monitor-bar monitor-bar--${band(bucket.percent)}`
+      track.className = 'monitor-bar'
       const fill = document.createElement('span')
       fill.className = 'monitor-bar__fill'
       fill.style.width = `${Math.min(100, Math.max(0, bucket.percent))}%`
@@ -1174,20 +1189,58 @@ export class MonitorPane implements AuxPane {
    * the block has to hold that corner clear whether the gear is showing or not.
    * Reserved rather than shuffled aside on hover — a number that moves when the
    * pointer nears it is worse than one that sits a few pixels in.
+   *
+   * With places saved it lists them first and opens the panel from the bottom
+   * of that list. Switching between two cities you keep is then one click and
+   * one more, where going through the panel meant reading four fields and
+   * pressing Save to change one of them.
    */
   private locationGear(card: HTMLElement): HTMLElement {
     card.classList.add('monitor-card--sited')
     const gear = document.createElement('button')
     gear.className = 'monitor-gear'
     gear.textContent = '⚙'
-    gear.title = 'Where to look, and who to ask'
+    // Says what pressing it does, in the words the thing is called. It read
+    // "Where to look, and who to ask", which is the sentence that explains the
+    // panel to somebody already inside it and a riddle to anybody hovering a
+    // gear wondering what it is about to open.
+    gear.title = store.settings.weatherPlaces.length
+      ? 'Change location, or add one'
+      : 'Set the location, and the weather service'
     gear.addEventListener('click', (e) => {
       e.stopPropagation()
-      void showWeatherSettings().then((saved) => {
-        if (saved) void this.refreshWeather(true)
-      })
+      const places = store.settings.weatherPlaces
+      if (!places.length) return this.openLocationPanel()
+      const s = store.settings
+      showContextMenu(e.clientX, e.clientY, [
+        ...places.map((entry) => ({
+          label: entry.place,
+          checked: entry.lat === s.weatherLat && entry.lon === s.weatherLon,
+          onClick: () => {
+            store.updateSettings({
+              weatherPlace: entry.place,
+              weatherLat: entry.lat,
+              weatherLon: entry.lon,
+            })
+            // Straight away rather than on the next tick of the weather clock,
+            // which is a minute off: a place you just chose that takes a minute
+            // to appear reads as a click that did not land. The collector keys
+            // its cache on the coordinates, so this is a real request and the
+            // old answer is not reused for the new place.
+            void this.refreshWeather(true)
+          },
+        })),
+        'separator' as const,
+        { label: 'Locations and weather service…', onClick: () => this.openLocationPanel() },
+      ])
     })
     return gear
+  }
+
+  private openLocationPanel(): void {
+    void showWeatherSettings().then((saved) => {
+      if (saved) void this.refreshWeather(true)
+    })
   }
 
   /**

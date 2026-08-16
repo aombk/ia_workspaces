@@ -7,6 +7,7 @@ import { listProcesses } from './processes'
 import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readSystemStats } from './systemStats'
 import { readWeather } from './weather'
+import { latestRelease } from './updates'
 import { PtyManager } from './ptyManager'
 import { Store } from './store'
 import { prepareIntegrationScript, listShells, listWslDistros, listSshHosts } from './shells'
@@ -593,6 +594,7 @@ function bootApp(): void {
     ipcMain.handle(IPC.listShells, () => listShells(store.settings))
     ipcMain.handle(IPC.homeDir, () => app.getPath('home'))
     ipcMain.handle(IPC.appVersion, () => app.getVersion())
+    ipcMain.handle(IPC.latestRelease, () => latestRelease())
     ipcMain.handle(IPC.gitBranch, (_e, cwd: string) => currentBranch(cwd))
     ipcMain.handle(IPC.readDir, (_e, dir: string, showHidden: boolean) =>
       readDirectory(dir, showHidden)

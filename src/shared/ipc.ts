@@ -13,6 +13,7 @@ export const IPC = {
   pickOpenFile: 'dialog:pickOpenFile',
   homeDir: 'app:homeDir',
   appVersion: 'app:version',
+  latestRelease: 'app:latestRelease',
   gitBranch: 'git:branch',
   readDir: 'files:readDir',
   listImages: 'files:listImages',

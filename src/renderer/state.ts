@@ -24,6 +24,7 @@ import {
   type ShellKind,
   type ShellTarget,
   type TerminalTabState,
+  type WeatherPlace,
   type Workspace,
 } from '../shared/types'
 
@@ -1681,6 +1682,33 @@ function readPaneShell(raw: unknown, docVersion: number): ShellKind | undefined 
     : undefined
 }
 
+/**
+ * The saved weather places, with anything that is not one dropped.
+ *
+ * Read rather than trusted for the same reason the rest of this file reads
+ * rather than trusts: the document is a file somebody can edit, and a place
+ * missing half a coordinate would leave a chip in the menu that switches the
+ * blocks to nowhere. A name is required because the name is how a place is
+ * chosen and how the list is kept unique.
+ */
+function readWeatherPlaces(raw: unknown): WeatherPlace[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const places: WeatherPlace[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const { place, lat, lon } = entry as Record<string, unknown>
+    if (typeof place !== 'string' || typeof lat !== 'string' || typeof lon !== 'string') continue
+    const name = place.trim()
+    if (!name || !lat.trim() || !lon.trim()) continue
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    places.push({ place: name, lat: lat.trim(), lon: lon.trim() })
+  }
+  return places
+}
+
 function normalize(raw: unknown): PersistedState {
   const doc = (raw ?? {}) as Record<string, unknown>
   const docVersion = typeof doc.version === 'number' ? doc.version : 0
@@ -1694,6 +1722,7 @@ function normalize(raw: unknown): PersistedState {
     },
     customThemes: (((doc.settings as Partial<Settings>) ?? {}).customThemes ?? []) as InterfaceTheme[],
     customTerminalThemes: adoptTerminalThemes((doc.settings as Partial<Settings>) ?? {}),
+    weatherPlaces: readWeatherPlaces(((doc.settings as Partial<Settings>) ?? {}).weatherPlaces),
   }
 
   // 1.2 was the old default and it splits box-drawing borders into dashes.

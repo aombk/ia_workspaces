@@ -121,6 +121,31 @@ has been tested with.
 
   ![The images tab](docs/screenshots/images.png)
 
+- **A system monitor** that docks to any edge of the window (`Ctrl+Shift+M`).
+  Processor load, temperature and memory over one set of axes; a bar per core;
+  graphics load, heat and video memory; network throughput with the address each
+  interface answers on; per-drive activity, temperature and wear with the volumes
+  that sit on them; Claude Code's usage limits; battery and uptime; weather and
+  air quality. Right-click it to switch blocks off, and drag any block's heading
+  to reorder them.
+
+  ![The system monitor](docs/screenshots/systemMonitor.png)
+
+  Everything on it is read from counters the system already keeps for every
+  program: nothing is installed, no driver is loaded, and nothing is asked of an
+  administrator. That stance is what decides the contents. Reading a processor or
+  drive temperature on Windows is a ring-0 operation — it takes a signed kernel
+  driver, which is what LibreHardwareMonitor and HWiNFO ship and this app will
+  not. Where a temperature is unobtainable the block says so rather than showing
+  a plausible zero.
+
+  Two exceptions, both free. NVIDIA cards answer `nvidia-smi`, which arrives with
+  the driver, so load, heat and video memory are read there — AMD and Intel
+  publish nothing a program can read without a sensor driver. And if you happen
+  to be running **LibreHardwareMonitor** with its web server switched on (Options
+  → Remote Web Server, port 8085), the panel reads the sensors it publishes and
+  fills in the processor and drive temperatures. It is never started, never
+  installed and never asked for elevation; if it is not there, nothing happens.
 - **Remembers everything.** Workspaces, their names, folders and colours; every
   tab, its pane layout, and the folder each pane was last in; which tab was
   selected; window size; all settings and custom themes.
@@ -304,6 +329,60 @@ wanted.
 The window also carries the icon at runtime (`build.extraResources` ships the
 `.ico` beside the asar), so the taskbar and Alt+Tab are right whatever state the
 executable is in.
+
+### Publishing a release
+
+A GitHub release is a git tag with files attached to it. `npm run release` does
+both, taking the version from `package.json` — never from an argument, because a
+version typed on a command line is one that can disagree with the binaries
+sitting in `build/`.
+
+Four steps, and only the first is typed by hand:
+
+```bash
+# 1. bump "version" in package.json — the only place a version is written
+npm run changelog        # folds changelog.d/ into CHANGELOG.md under that version
+git commit -am "1.1.0" && git push
+
+# 2. build, on each machine that can sign for its platform
+build_windows.bat        # or ./build_macos.sh on the Mac
+
+# 3. publish
+npm run release          # tag v1.1.0, push it, create the release with build/* on it
+```
+
+`build_windows.bat` builds and nothing else — it typechecks, tests, packages and
+gathers into `build/`. It does not tag, push or publish, and `npm run release`
+does not build. Keeping them apart is what lets the Mac's artifacts join a
+release the Windows machine already made.
+
+It refuses before it writes anything: the GitHub CLI has to be installed
+(`winget install GitHub.cli`, then `gh auth login` once) and signed in, the tree
+has to be clean, `HEAD` has to be on `origin`, `build/` has to have something in
+it, and `CHANGELOG.md` has to have a section for the version — which is what
+becomes the release notes. An artifact older than the commit being tagged is
+called out, since that one is silent otherwise: it uploads, it installs, and it
+is not the code in the release.
+
+The **second platform** needs no different command. macOS builds on the Mac that
+can sign and notarize it, and running `npm run release` there finds the release
+already exists and uploads into it rather than creating a second one.
+
+```bash
+npm run release -- --dry-run   # say what it would do, touch nothing
+npm run release -- --draft     # create it unpublished, to look at first
+npm run release -- --assets    # upload build/ into an existing release only
+```
+
+**The in-app check reads the same releases.** `main/updates.ts` asks
+`/repos/aombk/ia_workspaces/releases/latest` for its `tag_name`, strips the `v`,
+and `shared/version.ts` compares it with the running version — field by field as
+numbers, so 1.10.0 is after 1.9.0. Unauthenticated, so sixty checks an hour per
+address, which is sixty launches. Nothing is downloaded and nothing installs
+itself: a newer version is a toast that offers to open the release page, and
+Settings → About has the same check on a button. A repository with nothing
+published yet reads as "no update source configured" rather than as an error,
+because that is what it is.
 
 ## File tree
 

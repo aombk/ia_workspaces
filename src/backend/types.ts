@@ -31,6 +31,7 @@ import type {
   HostTool,
   WeatherReading,
   WeatherRequest,
+  LatestReleaseResult,
 } from '../shared/types'
 
 /**
@@ -123,6 +124,14 @@ export interface Backend {
    * stale.
    */
   appVersion(): Promise<string>
+  /**
+   * The newest published release on GitHub, or null before there is one.
+   *
+   * Asked of the host because the renderer's CSP allows no outbound request.
+   * What to *do* about the answer — whether it is newer, whether it is worth a
+   * toast — stays in `renderer/updates.ts`.
+   */
+  latestRelease(): Promise<LatestReleaseResult>
   /**
    * The path of a file dropped in from outside the app, or '' if this runtime
    * cannot say.

@@ -1,6 +1,7 @@
 import { backend } from '../backend'
 import { store } from './state'
 import { showToast } from './ui/toast'
+import { isNewer } from '../shared/version'
 import type { UpdateCheck } from '../shared/types'
 
 /**
@@ -21,23 +22,32 @@ export async function appVersion(): Promise<string> {
 }
 
 /**
- * Where a newer release would be looked up. Deliberately not implemented.
+ * Where a newer release is looked up: the GitHub releases of this repository.
  *
- * The mechanism has not been chosen — a GitHub releases feed, a JSON manifest
- * on a server, an updater plugin — and inventing one would mean
- * shipping a network call to an address that does not exist, which fails in a
- * way that looks like a bug rather than like a decision still to be made.
+ * The releases are published by `tools/release.mjs`, which tags `v` and the
+ * version in package.json — so the tag with its `v` removed is a version that
+ * can be compared with the running one, and `main/updates.ts` does the removing.
  *
- * To wire it up, return `available` or `current` from whichever source wins.
- * The fetch itself belongs in the host, not here: the renderer runs under a CSP
- * whose `connect-src` allows only `self` and the IPC origins, so an outbound
- * request from this file is blocked before it leaves. Add a method to the
- * Backend contract, implement it in `main/`, and call it
- * from this function.
+ * The fetch is the host's, not this file's: the renderer runs under a CSP whose
+ * `connect-src` allows only `self` and the IPC origins, so an outbound request
+ * from here is blocked before it leaves. What stays here is the decision, which
+ * is the part worth reading in one place.
+ *
+ * A repository with nothing published yet reads as `unconfigured` rather than
+ * as an error, because that is what it is: this build is newer than any release,
+ * and there is nothing for somebody to act on.
  */
 async function fetchLatest(current: string): Promise<UpdateCheck> {
-  return { state: 'unconfigured', current }
+  const result = await backend().latestRelease()
+  if (!result.ok) return { state: 'error', current, error: result.error }
+  if (!result.release) return { state: 'unconfigured', current }
+
+  const { version: latest, url } = result.release
+  return isNewer(latest, current)
+    ? { state: 'available', current, latest, url }
+    : { state: 'current', current }
 }
+
 
 /** Never throws: a failed check is an outcome the UI knows how to show. */
 export async function checkForUpdates(): Promise<UpdateCheck> {

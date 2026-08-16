@@ -5824,6 +5824,23 @@ html.translucent .titlebar {
   color: var(--text);
 }
 
+/* Drops a saved weather place off the list, from the chip itself. Three
+   bookmarks do not need an edit mode, and the × is far enough into the corner
+   not to be hit on the way to picking one. */
+.publish-host__drop {
+  margin: 0 -4px 0 2px;
+  padding: 0 4px;
+  border-radius: 999px;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.publish-host__drop:hover {
+  background: var(--danger);
+  color: var(--bg);
+}
+
 /* Marks a host whose own tool is signed in here — the route with no browser. */
 .publish-host__ready {
   padding: 0 6px;
@@ -6168,18 +6185,13 @@ html.translucent .titlebar {
   overflow: hidden;
 }
 
+/* Load's colour, the same one the busy figure and its graph line carry — these
+   bars are that reading, split per core. The accent was the theme's colour and
+   belonged to nothing on the card. */
 .monitor-core__fill {
   width: 100%;
-  background: var(--accent);
+  background: var(--mon-load);
   transition: height 240ms ease-out;
-}
-
-.monitor-core--warn .monitor-core__fill {
-  background: var(--warn);
-}
-
-.monitor-core--high .monitor-core__fill {
-  background: var(--danger);
 }
 
 /* ------------------------------------------------------------ disks and lists */
@@ -6233,20 +6245,17 @@ html.translucent .titlebar {
   overflow: hidden;
 }
 
+/* The usage bars, in one of the panel's own three colours rather than in grey
+   that turns amber and then red. Same reasoning as the ram figure and the core
+   bars: the block already says `84% used` in words, and a bar that changes
+   colour as it fills is saying it a second time in a vocabulary that means
+   something else everywhere else on the panel. */
 .monitor-bar__fill {
   display: block;
   height: 100%;
   border-radius: var(--radius-sm);
-  background: var(--text-dim);
+  background: var(--mon-temp);
   transition: width 240ms ease-out;
-}
-
-.monitor-bar--warn .monitor-bar__fill {
-  background: var(--warn);
-}
-
-.monitor-bar--high .monitor-bar__fill {
-  background: var(--danger);
 }
 
 .monitor-list {

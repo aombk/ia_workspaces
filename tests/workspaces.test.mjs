@@ -1183,6 +1183,37 @@ await check('a file from a newer build is refused by version', async () => {
   assert.match(result.error, /newer build/)
 })
 
+await check('saved weather places survive a load, and only the ones that are places', async () => {
+  await load({
+    version: 3,
+    workspaces: [],
+    settings: {
+      weatherPlaces: [
+        { place: 'Athens', lat: '37.9957', lon: '23.7378' },
+        // Half a coordinate is a chip that would switch the blocks to nowhere.
+        { place: 'Nowhere', lat: '', lon: '23' },
+        { place: '  ', lat: '1', lon: '2' },
+        { lat: '1', lon: '2' },
+        'not a place',
+        // The name is the identity, so the second Athens is not a second place.
+        { place: 'athens', lat: '1', lon: '2' },
+        { place: 'Berlin', lat: '52.52', lon: '13.405' },
+      ],
+    },
+  })
+  assert.deepEqual(
+    store.settings.weatherPlaces.map((p) => p.place),
+    ['Athens', 'Berlin']
+  )
+  assert.equal(store.settings.weatherPlaces[0].lat, '37.9957')
+})
+
+await check('a document written before saved places has none, and still loads', async () => {
+  await load({ version: 3, workspaces: [], settings: { weatherPlace: 'Athens' } })
+  assert.deepEqual(store.settings.weatherPlaces, [])
+  assert.equal(store.settings.weatherPlace, 'Athens')
+})
+
 await check('a hand-edited file is repaired rather than trusted', async () => {
   await load(nestedDoc())
   const before = store.workspaces.length

@@ -19,6 +19,8 @@
     "package:mac": "node build.mjs && electron-builder --mac && node tools/collect.mjs",
     "package:linux": "node build.mjs && electron-builder --linux && node tools/collect.mjs",
     "collect": "node tools/collect.mjs",
+    "changelog": "node tools/collect-changelog.mjs",
+    "release": "node tools/release.mjs",
     "clean": "node tools/clean.mjs",
     "icon": "node tools/make-icon.mjs --ico",
     "installer:images": "powershell -ExecutionPolicy Bypass -File tools/make-installer-images.ps1"
