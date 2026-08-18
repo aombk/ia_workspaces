@@ -59,6 +59,48 @@ export function initUsageMonitor(): void {
   })
 }
 
+/** Anthropic's own service health page, in the words it publishes itself. */
+export const ANTHROPIC_STATUS_URL = 'https://status.anthropic.com/'
+
+/**
+ * The "service status" link that travels with these numbers.
+ *
+ * A percentage answers "have I used my limit up". It does not answer the other
+ * reason Claude goes slow or stops answering, which is that Anthropic is having
+ * an incident — and that question has one published answer, one click away.
+ * Kept beside the limits because those are what you are looking at when you
+ * start wondering, and offered even when the limits cannot be read: a failure
+ * to read them is itself a moment to check whether anything is up.
+ */
+export function statusPageLink(label = 'service status'): HTMLButtonElement {
+  const link = document.createElement('button')
+  link.type = 'button'
+  link.className = 'usage-status'
+  link.textContent = label
+  link.title = `Anthropic’s status page — whether the API and Claude are up, degraded or in an incident (${ANTHROPIC_STATUS_URL})`
+  // The monitor block's heading is its drag handle. A press meant for this
+  // button must not start dragging the block out from under it.
+  link.draggable = false
+  link.addEventListener('mousedown', (e) => e.stopPropagation())
+  link.addEventListener('dragstart', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+  })
+  link.addEventListener('click', (e) => {
+    e.stopPropagation()
+    void backend().openExternal(ANTHROPIC_STATUS_URL)
+  })
+  return link
+}
+
+/** The same link, on its own line at the foot of the sidebar block. */
+function statusRow(): HTMLElement {
+  const row = document.createElement('div')
+  row.className = 'usage-status-row'
+  row.appendChild(statusPageLink())
+  return row
+}
+
 export function renderUsage(): void {
   const host = el()
   if (!store.settings.showUsageMonitor) {
@@ -71,6 +113,7 @@ export function renderUsage(): void {
   if (!latest) {
     host.textContent = 'Claude usage …'
     host.className = 'sidebar-usage muted'
+    host.appendChild(statusRow())
     return
   }
 
@@ -78,6 +121,7 @@ export function renderUsage(): void {
     host.className = 'sidebar-usage muted'
     host.textContent = EXPLANATION[latest.status]
     host.title = 'Claude Code usage could not be read'
+    host.appendChild(statusRow())
     return
   }
 
@@ -119,6 +163,7 @@ export function renderUsage(): void {
 
     host.appendChild(row)
   }
+  host.appendChild(statusRow())
 }
 
 const SHORT: Record<string, string> = {

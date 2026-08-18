@@ -1,6 +1,7 @@
 import type { BackdropMaterial } from '../shared/themes'
 import type { PlatformKind } from '../shared/platform'
 import type { SshHost } from '../shared/ssh'
+import type { WslAction } from '../shared/wsl'
 import type {
   FileEntry,
   GitStatusMap,
@@ -341,6 +342,20 @@ export interface Backend {
   }
   /** Installed WSL distributions, for the workspace shell picker. */
   wslDistros(): Promise<string[]>
+  /**
+   * The distributions that are running right now.
+   *
+   * Asked before opening a WSL workspace, so the app only warns about starting
+   * WSL when it would actually be started. Empty off Windows.
+   */
+  wslRunning(): Promise<string[]>
+  /**
+   * Start a distribution, stop one, or stop all of them.
+   *
+   * The memory a running distribution holds is not given back until it is
+   * stopped, which is why stopping is offered at all — see `WslAction`.
+   */
+  wslControl(action: WslAction, distro?: string): Promise<{ ok: boolean; error?: string }>
   /** Hosts from `~/.ssh/config`, for the shell menus. Empty if there is none. */
   sshHosts(): Promise<SshHost[]>
   /** Claude Code's own usage limits, for the status bar monitor. */

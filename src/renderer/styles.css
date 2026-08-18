@@ -3813,6 +3813,31 @@ thead .csv-cell {
   flex: none;
 }
 
+/* Anthropic's status page, at the foot of the limits and in the corner of the
+   monitor block. Quiet — it is a way out to a web page, not a reading. */
+.usage-status-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.usage-status {
+  margin-left: auto;
+  flex: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.usage-status:hover {
+  color: var(--accent);
+}
+
 .usage-row__reset {
   overflow: hidden;
   text-overflow: ellipsis;

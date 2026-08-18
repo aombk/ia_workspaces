@@ -3,6 +3,8 @@ import { store, type SidebarRow } from '../state'
 import { NESTING_GLYPHS, WORKSPACE_COLORS } from '../../shared/types'
 import { showContextMenu } from './contextMenu'
 import { promptDialog } from './confirm'
+import { showToast } from './toast'
+import { wslDistroOf, type WslAction } from '../../shared/wsl'
 import { availableShells, shellLabel, sshHosts, sshMenuLabel } from '../shells'
 import { attachInlineEditor } from './editing'
 import { beginDrag, draggingTab, draggingWorkspace, endDrag } from './dragState'
@@ -353,6 +355,59 @@ async function openShellMenu(x: number, y: number, workspaceId: string): Promise
   ])
 }
 
+/**
+ * Starting and stopping the WSL a workspace lives in.
+ *
+ * Its own menu rather than three more lines on the workspace one, and only for
+ * workspaces that are in WSL at all: this is machine housekeeping, not part of
+ * what a workspace is. What it exists for is the memory — a distribution holds
+ * its RAM from the moment it starts until something stops it, and until now the
+ * only way to give that back was a terminal and `wsl --shutdown`.
+ *
+ * Built after asking what is running, so the entries that cannot do anything
+ * are visibly greyed rather than silently doing nothing.
+ */
+async function openWslMenu(x: number, y: number, workspaceId: string): Promise<void> {
+  const workspace = store.workspaces.find((w) => w.id === workspaceId)
+  if (!workspace) return
+  const distro = wslDistroOf(workspace)
+  if (!distro) return
+
+  const running = await backend()
+    .wslRunning()
+    .catch(() => [] as string[])
+  const up = running.some((d) => d.toLowerCase() === distro.toLowerCase())
+
+  const run = async (action: WslAction, done: string) => {
+    const result = await backend()
+      .wslControl(action, distro)
+      .catch((err: unknown) => ({ ok: false, error: String(err) }))
+    if (result.ok) showToast(done, action === 'shutdown' ? 'Every distribution is stopped.' : distro)
+    else showToast('WSL', result.error ?? 'That did not work.', { kind: 'error' })
+  }
+
+  showContextMenu(x, y, [
+    { label: up ? `${distro} · running` : `${distro} · stopped`, disabled: true },
+    'separator',
+    {
+      label: `Start ${distro}`,
+      disabled: up,
+      onClick: () => void run('start', 'WSL started'),
+    },
+    {
+      label: `Stop ${distro} (frees its memory)`,
+      disabled: !up,
+      onClick: () => void run('terminate', 'WSL stopped'),
+    },
+    'separator',
+    {
+      label: 'Stop all of WSL',
+      disabled: !running.length,
+      onClick: () => void run('shutdown', 'WSL shut down'),
+    },
+  ])
+}
+
 /** Asks for a host not in `~/.ssh/config`, then points the workspace at it. */
 async function chooseSshHost(workspaceId: string): Promise<void> {
   const host = await promptDialog({
@@ -465,6 +520,17 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
         : 'Shell…',
       onClick: () => void openShellMenu(x, y, workspaceId),
     },
+    // Only where there is a distribution to start or stop. On a workspace that
+    // has nothing to do with WSL the entry would be permanently greyed, which
+    // is a line spent saying "not this one".
+    ...(wslDistroOf(workspace)
+      ? [
+          {
+            label: `WSL · ${wslDistroOf(workspace)}…`,
+            onClick: () => void openWslMenu(x, y, workspaceId),
+          },
+        ]
+      : []),
     'separator',
     { label: 'Rename…', shortcut: 'F2', onClick: () => startRename(workspaceId) },
     { label: 'Change folder…', onClick: () => actions.changeWorkspaceFolder(workspaceId) },

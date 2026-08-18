@@ -32,7 +32,7 @@ import { showToast } from './ui/toast'
 import type { WorkspaceFile } from '../shared/workspaceFile'
 import type { UiActions } from './ui/actions'
 import { DEFAULT_SETTINGS, isTerminalPane } from '../shared/types'
-import type { NotificationRecord, PaneState, TerminalAlert } from '../shared/types'
+import type { NotificationRecord, PaneState, TerminalAlert, Workspace } from '../shared/types'
 import {
   initPalette,
   hidePalette,
@@ -42,8 +42,8 @@ import {
   togglePalette,
 } from './ui/palette'
 import { isNavigation, isPrimary } from './ui/keys'
-import { fallbackCwd, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
-import { isWslPath } from '../shared/wsl'
+import { fallbackCwd, isWindows, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
+import { isWslPath, wslDistroOf } from '../shared/wsl'
 import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
 import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
@@ -408,6 +408,70 @@ function openGit(workspaceId: string, kind: 'diff' | 'history'): void {
   void syncMountedTab()
 }
 
+/**
+ * Going to a workspace, having asked first when that means starting WSL.
+ *
+ * Opening a WSL workspace is not the small act it looks like: the first pane
+ * spawns `wsl.exe`, which boots the whole utility VM and keeps its memory until
+ * `wsl --shutdown`. On a machine where WSL is deliberately left down, a click
+ * meant to glance at a workspace should not be what brings it up — so the
+ * question is asked before anything is mounted, and only when the distribution
+ * is not already running.
+ *
+ * Only for a workspace you are moving *to*. Clicking the one you are already in
+ * has nothing to start.
+ */
+async function goToWorkspace(workspaceId: string): Promise<void> {
+  const workspace = store.workspaces.find((w) => w.id === workspaceId)
+  if (!workspace) return
+  if (store.activeWorkspace?.id !== workspaceId && !(await confirmWslStart(workspace))) return
+
+  store.setActiveWorkspace(workspaceId)
+  // Clicking a workspace should never land on an empty pane.
+  if (!workspace.tabs.length) store.addTab(workspaceId)
+  else if (!workspace.activeTabId) store.setActiveTab(workspaceId, workspace.tabs[0].id)
+  void syncMountedTab()
+}
+
+/** Guards against a second dialog behind the first when clicks come quickly. */
+let askingWslStart = false
+
+/**
+ * True when this workspace can be opened: not a WSL one, its distribution is
+ * already up, or you have just said to start it.
+ *
+ * Anything unknown answers true. A `wsl --list --running` that fails to answer
+ * is not a reason to stand between someone and their workspace; the worst case
+ * is the old behaviour, which was to start WSL without asking.
+ */
+async function confirmWslStart(workspace: Workspace): Promise<boolean> {
+  // Nowhere else has a WSL to start, and a share path left in a workspace file
+  // carried to a Mac must not turn into a dialog about starting it there.
+  if (!isWindows(backend().capabilities.platform)) return true
+  const distro = wslDistroOf(workspace)
+  if (!distro) return true
+
+  const running = await backend()
+    .wslRunning()
+    .catch(() => null)
+  if (!running || running.some((d) => d.toLowerCase() === distro.toLowerCase())) return true
+
+  if (askingWslStart) return false
+  askingWslStart = true
+  try {
+    return await confirmDialog({
+      title: 'Start WSL?',
+      body:
+        `This workspace runs in ${distro}, the WSL distribution, and it is not ` +
+        'running. Opening the workspace starts it — that takes a few seconds, ' +
+        'and it holds memory until WSL is shut down again.',
+      confirmLabel: `Start ${distro}`,
+    })
+  } finally {
+    askingWslStart = false
+  }
+}
+
 function updateBadge(): void {
   const count = store.settings.notifications.flashTaskbar ? store.attention.size : 0
   void backend().setBadge(count)
@@ -417,13 +481,7 @@ function updateBadge(): void {
 
 const actions: UiActions = {
   selectWorkspace(workspaceId) {
-    store.setActiveWorkspace(workspaceId)
-    const workspace = store.workspaces.find((w) => w.id === workspaceId)
-    if (!workspace) return
-    // Clicking a workspace should never land on an empty pane.
-    if (!workspace.tabs.length) store.addTab(workspaceId)
-    else if (!workspace.activeTabId) store.setActiveTab(workspaceId, workspace.tabs[0].id)
-    void syncMountedTab()
+    void goToWorkspace(workspaceId)
   },
 
   addWorkspace(parentId) {

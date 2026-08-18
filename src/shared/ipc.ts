@@ -64,6 +64,8 @@ export const IPC = {
   gitCreateOnline: 'git:createOnline',
   setAgentHooks: 'agent:setHooks',
   wslDistros: 'app:wslDistros',
+  wslRunning: 'app:wslRunning',
+  wslControl: 'app:wslControl',
   sshHosts: 'app:sshHosts',
   claudeUsage: 'app:claudeUsage',
   systemStats: 'app:systemStats',

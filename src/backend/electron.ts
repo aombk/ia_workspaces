@@ -89,6 +89,8 @@ export function createElectronBackend(): Backend {
       set: (id, enabled) => api.setAgentHooks(id, enabled),
     },
     wslDistros: () => api.wslDistros(),
+    wslRunning: () => api.wslRunning(),
+    wslControl: (action, distro) => api.wslControl(action, distro),
     sshHosts: () => api.sshHosts(),
     claudeUsage: (retry) => api.claudeUsage(retry),
     systemStats: (opts) => api.systemStats(opts),

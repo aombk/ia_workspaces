@@ -53,7 +53,7 @@ import {
   systemHistory,
   type SystemHistory,
 } from './ui/systemMonitor'
-import { latestUsage, refreshUsageNow, usageResetLine } from './ui/usageMonitor'
+import { latestUsage, refreshUsageNow, statusPageLink, usageResetLine } from './ui/usageMonitor'
 
 /**
  * How often the pane samples.
@@ -909,6 +909,10 @@ export class MonitorPane implements AuxPane {
   private claudeCard(): HTMLElement {
     const usage = latestUsage()
     const card = this.card('claude', usage?.status === 'ok' ? 'usage limits' : 'usage limits, if they can be read')
+    // Top right of the block, on the heading's line: the other half of "why is
+    // Claude not answering" is whether Anthropic is having an incident, and
+    // this is where you are standing when you ask.
+    card.querySelector('.monitor-card__head')?.appendChild(statusPageLink('status'))
 
     if (!usage) {
       card.appendChild(this.note('Reading your usage limits…'))

@@ -3,6 +3,7 @@ import { IPC } from '../shared/ipc'
 import { platformKind } from '../shared/platform'
 import { encodeImagePath } from '../shared/images'
 import type { SshHost } from '../shared/ssh'
+import type { WslAction } from '../shared/wsl'
 import type {
   FileEntry,
   GitStatusMap,
@@ -172,6 +173,9 @@ const api = {
   setAgentHooks: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string; path: string }> =>
     ipcRenderer.invoke(IPC.setAgentHooks, id, enabled),
   wslDistros: (): Promise<string[]> => ipcRenderer.invoke(IPC.wslDistros),
+  wslRunning: (): Promise<string[]> => ipcRenderer.invoke(IPC.wslRunning),
+  wslControl: (action: WslAction, distro?: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC.wslControl, action, distro),
   sshHosts: (): Promise<SshHost[]> => ipcRenderer.invoke(IPC.sshHosts),
   claudeUsage: (retry?: boolean): Promise<UsageReport> => ipcRenderer.invoke(IPC.claudeUsage, retry),
   systemStats: (opts?: { drives?: boolean }): Promise<SystemStats> =>

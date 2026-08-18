@@ -13,6 +13,16 @@
 
 const PREFIXES = ['\\\\wsl.localhost\\', '\\\\wsl$\\']
 
+/**
+ * What the WSL menu can do to a distribution.
+ *
+ * Three verbs and no more: bring one up, put one down, put all of them down.
+ * Everything else about a distribution — installing, exporting, setting the
+ * default — belongs to `wsl.exe` and to the people who already know they want
+ * it, not to a terminal app's workspace menu.
+ */
+export type WslAction = 'start' | 'terminate' | 'shutdown'
+
 /** The distro and Linux path behind a share path, or null if it is not one. */
 export function parseWslPath(windowsPath: string): { distro: string; path: string } | null {
   for (const prefix of PREFIXES) {
@@ -31,6 +41,25 @@ export function parseWslPath(windowsPath: string): { distro: string; path: strin
 export function toWslSharePath(distro: string, linuxPath: string): string {
   const tail = linuxPath.replace(/\//g, '\\')
   return `\\\\wsl.localhost\\${distro}${tail.startsWith('\\') ? tail : `\\${tail}`}`
+}
+
+/**
+ * The distribution a workspace is in, or null when it is not in one.
+ *
+ * Two places to look, and the folder wins: a share path is where the panes will
+ * actually land, while the shell setting only says which distribution to use
+ * once one is opened. A workspace switched to WSL before its folder followed is
+ * the case the second half is for.
+ */
+export function wslDistroOf(target: {
+  cwd: string
+  shell?: string
+  wslDistro?: string
+}): string | null {
+  const inside = parseWslPath(target.cwd)
+  if (inside) return inside.distro
+  if (target.shell === 'wsl' && target.wslDistro) return target.wslDistro
+  return null
 }
 
 /** True when this folder lives inside some distribution's share. */

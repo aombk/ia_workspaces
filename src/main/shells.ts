@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
-import { parseWslPath } from '../shared/wsl'
+import { parseWslPath, type WslAction } from '../shared/wsl'
 import { parseSshConfig, sshArgs, type SshHost } from '../shared/ssh'
 import {
   integrationScriptName,
@@ -207,19 +207,75 @@ function parseArgs(raw: string): string[] {
   return out
 }
 
+/** Installed WSL distributions, in `wsl --list` order. */
+export async function listWslDistros(): Promise<string[]> {
+  return wslList(['--list', '--quiet'])
+}
+
 /**
- * Installed WSL distributions, in `wsl --list` order.
+ * Start a distribution, stop one, or stop all of them.
+ *
+ * `start` runs the shortest possible command in the distribution and lets it
+ * exit: the VM it had to boot to run `true` stays up, which is the whole point,
+ * and there is no pane left over from the starting. `terminate` and `shutdown`
+ * are `wsl.exe`'s own words for the two sizes of stopping.
+ *
+ * The error text is `wsl.exe`'s, not ours. "There is no distribution with the
+ * supplied name" says more than anything this layer could invent.
+ */
+export async function controlWsl(
+  action: WslAction,
+  distro?: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!isWindows(PLATFORM)) return { ok: false, error: 'WSL runs only on Windows.' }
+  if (action !== 'shutdown' && !distro) return { ok: false, error: 'No distribution given.' }
+
+  const args =
+    action === 'shutdown'
+      ? ['--shutdown']
+      : action === 'terminate'
+        ? ['--terminate', distro!]
+        : ['-d', distro!, '--', 'true']
+
+  return new Promise((resolve) => {
+    execFile(
+      'wsl.exe',
+      args,
+      { env: { ...process.env, WSL_UTF8: '1' }, windowsHide: true },
+      (err, _out, stderr) => {
+        if (!err) return resolve({ ok: true })
+        resolve({ ok: false, error: (stderr || err.message).trim() || 'WSL refused.' })
+      }
+    )
+  })
+}
+
+/**
+ * The distributions with their VM already up, in `wsl --list` order.
+ *
+ * The distinction the "start WSL?" question needs: starting a distribution
+ * costs seconds and a chunk of memory that stays taken until `wsl --shutdown`,
+ * while opening one that is already running costs nothing worth asking about.
+ */
+export async function listRunningWslDistros(): Promise<string[]> {
+  return wslList(['--list', '--running', '--quiet'])
+}
+
+/**
+ * A `wsl.exe --list` variant, as trimmed names.
  *
  * `WSL_UTF8=1` because `wsl.exe` otherwise writes UTF-16LE, which every one of
  * the runtimes would then have to decode by hand. Answers empty off Windows,
- * where the settings panel simply has no WSL section to fill.
+ * where the settings panel simply has no WSL section to fill — and empty on
+ * failure, which reads as "nothing installed" rather than an error the menus
+ * would have no way to show.
  */
-export async function listWslDistros(): Promise<string[]> {
+async function wslList(args: string[]): Promise<string[]> {
   if (!isWindows(PLATFORM)) return []
   const stdout = await new Promise<string>((resolve) => {
     execFile(
       'wsl.exe',
-      ['--list', '--quiet'],
+      args,
       { env: { ...process.env, WSL_UTF8: '1' }, windowsHide: true },
       (_err, out) => resolve(out ?? '')
     )

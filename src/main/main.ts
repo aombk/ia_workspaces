@@ -10,7 +10,15 @@ import { readWeather } from './weather'
 import { latestRelease } from './updates'
 import { PtyManager } from './ptyManager'
 import { Store } from './store'
-import { prepareIntegrationScript, listShells, listWslDistros, listSshHosts } from './shells'
+import {
+  prepareIntegrationScript,
+  listShells,
+  listWslDistros,
+  listRunningWslDistros,
+  controlWsl,
+  listSshHosts,
+} from './shells'
+import type { WslAction } from '../shared/wsl'
 import { readClaudeSettings, setClaudeIntegration } from './claudeConfig'
 import { currentBranch } from './gitBranch'
 import * as git from './git'
@@ -704,6 +712,10 @@ function bootApp(): void {
       return setAgentHooks(spec, enabled, cliShimPath(SHARED_DATA_DIR, 'electron'))
     })
     ipcMain.handle(IPC.wslDistros, () => listWslDistros())
+    ipcMain.handle(IPC.wslRunning, () => listRunningWslDistros())
+    ipcMain.handle(IPC.wslControl, (_e, action: WslAction, distro?: string) =>
+      controlWsl(action, distro)
+    )
     ipcMain.handle(IPC.sshHosts, () => listSshHosts())
     ipcMain.handle(IPC.claudeUsage, (_e, retry?: boolean) => {
       if (retry) forgetKeychainRefusal()
