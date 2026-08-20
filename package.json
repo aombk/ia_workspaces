@@ -1,7 +1,7 @@
 {
   "name": "ia_workspaces",
   "productName": "ia_workspaces",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Workspace-oriented terminal for Windows, macOS and Linux: vertical workspace tabs, terminal tabs with split panes, themes, and agent notifications.",
   "main": "out/electron/main/main.js",
   "author": "aombk",
