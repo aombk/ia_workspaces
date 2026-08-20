@@ -637,7 +637,7 @@ async function inProgress(cwd: string): Promise<RepoStatus['inProgress']> {
  * A linked worktree keeps `.git` as a file pointing elsewhere, so there is no
  * config to stat beside it; that case pays the spawn rather than guessing.
  */
-async function originUrl(root: string): Promise<string> {
+export async function originUrl(root: string): Promise<string> {
   const read = async () => {
     const res = await run(root, ['remote', 'get-url', 'origin'])
     return res.ok ? res.out.trim() : ''

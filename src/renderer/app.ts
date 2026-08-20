@@ -46,6 +46,7 @@ import { fallbackCwd, isWindows, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
 import { isWslPath, wslDistroOf } from '../shared/wsl'
 import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
+import { initTokenMonitor } from './ui/tokenMonitor'
 import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
 import { initMonitorDock, toggleMonitorDock } from './ui/monitorDock'
@@ -198,6 +199,7 @@ export async function start(): Promise<void> {
 
   initPalette(actions)
   initUsageMonitor()
+  initTokenMonitor()
   initMonitorDock()
   // The link at the bottom of the strip opens the panel. No workspace is
   // involved any more, which is the whole point of it being a dock.
@@ -680,6 +682,19 @@ const actions: UiActions = {
     // use a browser.
     if (!backend().capabilities.browser) return
     store.addTab(workspaceId, undefined, 'browser')
+    void syncMountedTab()
+  },
+
+  openTokens(workspaceId) {
+    // One per workspace, because that is what it is about — unlike the process
+    // list, which is one for the whole app. Reopening jumps to the existing tab
+    // rather than stacking a second copy of the same table.
+    const existing = findPane((p) => p.kind === 'tokens', workspaceId)
+    if (existing) {
+      actions.jumpToPane(existing.workspaceId, existing.paneId)
+      return
+    }
+    store.addTab(workspaceId, undefined, 'tokens')
     void syncMountedTab()
   },
 
@@ -1379,6 +1394,14 @@ function wireKeyboard(): void {
         return
       }
       if (ctrl && !e.shiftKey && key === 'f') {
+        // A pane that brings its own find keeps the key. This listener is on
+        // the window in the capture phase, so it fires *before* the pane's own
+        // handler — which meant Ctrl+F in an editor opened both bars at once,
+        // and the terminal's one searched a terminal that was not on screen.
+        //
+        // Deliberately no `preventDefault` on this path: the event has to carry
+        // on down to the pane, which is the whole point of standing aside.
+        if ((document.activeElement as HTMLElement | null)?.closest('[data-own-find]')) return
         e.preventDefault()
         openFindbar()
         return

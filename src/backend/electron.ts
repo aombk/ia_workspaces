@@ -93,6 +93,8 @@ export function createElectronBackend(): Backend {
     wslControl: (action, distro) => api.wslControl(action, distro),
     sshHosts: () => api.sshHosts(),
     claudeUsage: (retry) => api.claudeUsage(retry),
+    claudeTokens: () => api.claudeTokens(),
+    shareTokens: (dir, entries) => api.shareTokens(dir, entries),
     systemStats: (opts) => api.systemStats(opts),
     weather: (req) => api.weather(req),
     gitStatus: (cwd) => api.gitStatus(cwd),

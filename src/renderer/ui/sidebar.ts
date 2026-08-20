@@ -1,7 +1,7 @@
 import { backend } from '../../backend'
 import { store, type SidebarRow } from '../state'
 import { NESTING_GLYPHS, WORKSPACE_COLORS } from '../../shared/types'
-import { showContextMenu } from './contextMenu'
+import { showContextMenu, type MenuEntry } from './contextMenu'
 import { promptDialog } from './confirm'
 import { showToast } from './toast'
 import { wslDistroOf, type WslAction } from '../../shared/wsl'
@@ -21,6 +21,7 @@ export function initSidebar(a: UiActions): void {
   document.getElementById('open-inbox')!.addEventListener('click', () => actions.openInbox(''))
   document.getElementById('collapse-sidebar')!.addEventListener('click', toggleCollapsed)
 
+
   // The empty space under the list is the obvious place to reach for "new
   // workspace", and without a menu of its own WebView2 offers the browser's —
   // Back, Refresh, Print — in the middle of a terminal app.
@@ -29,11 +30,46 @@ export function initSidebar(a: UiActions): void {
     e.preventDefault()
     showContextMenu(e.clientX, e.clientY, [
       { label: 'New workspace…', shortcut: 'Ctrl+Shift+N', onClick: () => actions.addWorkspace() },
+      'separator',
+      showsMenu(),
     ])
   })
 
   initResizer()
   applySidebarLayout()
+}
+
+/**
+ * What each row shows, on the sidebar's own right-click.
+ *
+ * Here rather than in settings, and that is a move rather than an addition: both
+ * of these used to be settings toggles and are not any more. They are decisions
+ * about *this list*, taken while looking at it and reversed the same way —
+ * walking to a settings panel to decide whether a list shows one more word was
+ * always the wrong distance.
+ *
+ * Two entries, and there were briefly four. Token counts had a switch here when
+ * they lived on the row's tooltip, and another for whether to say them in tokens
+ * or in money. Both went when the numbers moved into a tab of their own: a tab
+ * is opened or it is not, which is a switch the tab strip already provides.
+ */
+function showsMenu(): MenuEntry {
+  const s = store.settings
+  return {
+    label: 'Sidebar shows',
+    submenu: [
+      {
+        label: 'git branch',
+        checked: s.showGitBranch,
+        onClick: () => store.updateSettings({ showGitBranch: !s.showGitBranch }),
+      },
+      {
+        label: 'tab counts',
+        checked: s.showTabCount,
+        onClick: () => store.updateSettings({ showTabCount: !s.showTabCount }),
+      },
+    ],
+  }
 }
 
 export function toggleCollapsed(): void {
@@ -115,6 +151,10 @@ function workspaceRow(row: SidebarRow, active: string | null): HTMLElement {
   el.dataset.workspaceId = workspace.id
   el.setAttribute('role', 'tab')
   el.setAttribute('aria-selected', String(workspace.id === active))
+  // Name and folder, and nothing else. Token counts were briefly here, as a
+  // badge and then as tooltip text, and are a tab of their own now — see
+  // `tokensPane.ts`. A row in a list of places to go is not a place to read a
+  // table, and hover text is not a place to read one either.
   el.title = `${workspace.name}
 ${workspace.cwd}`
   el.draggable = renaming !== workspace.id
@@ -197,6 +237,12 @@ ${workspace.cwd}`
       label.appendChild(branch)
     }
     el.appendChild(label)
+
+    // No token badge here. The counts are on the row's tooltip instead — a
+    // sidebar is a list of places to go, and a number beside every name is a
+    // statistic competing with the thing you are actually reading. Hovering is
+    // the deliberate act that means "tell me about this one", and it has room
+    // for the whole picture rather than one rounded figure. See `tokenTooltip`.
 
     const count = workspace.tabs.length
     if (count && store.settings.showTabCount) {
@@ -461,6 +507,10 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
       shortcut: 'Ctrl+Shift+R',
       onClick: () => actions.openPorts(workspaceId),
     },
+    {
+      label: 'token stats',
+      onClick: () => actions.openTokens(workspaceId),
+    },
     // No system monitor: this is the same list of tab kinds the tab strip
     // offers, and the monitor is a docked panel rather than a tab. It stays in
     // the command palette, which is a list of things to *do* rather than a list
@@ -536,6 +586,11 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
     { label: 'Change folder…', onClick: () => actions.changeWorkspaceFolder(workspaceId) },
     { label: 'New worktree…', onClick: () => actions.newWorktree(workspaceId) },
     { label: 'Reveal in Explorer', onClick: () => actions.openInExplorer(workspace.cwd) },
+    // The same submenu the empty space below the list offers. It is about every
+    // row rather than this one, and it is here because this is the menu people
+    // actually open — right-clicking a workspace is the gesture, and hunting for
+    // a patch of empty sidebar to right-click instead is not.
+    showsMenu(),
     {
       kind: 'swatches',
       colors: WORKSPACE_COLORS,

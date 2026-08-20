@@ -35,6 +35,8 @@ export interface UiActions {
   openSearch(workspaceId: string, cwd?: string): void
   /** Focus the running-processes pane, opening it if none is open. */
   openPorts(workspaceId: string): void
+  /** What this workspace has spent on Claude, as a tab. */
+  openTokens(workspaceId: string): void
   /** Focus the machine monitor, opening it if none is open. */
   /**
    * Shows or hides the system panel.

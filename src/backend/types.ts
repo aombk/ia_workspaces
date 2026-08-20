@@ -17,6 +17,9 @@ import type {
   ProcessInfo,
   SystemStats,
   UsageReport,
+  TokenReport,
+  SharedTokens,
+  TokenPublishEntry,
   SessionHostInfo,
   AgentConfigInfo,
   Worktree,
@@ -368,6 +371,22 @@ export interface Backend {
    * the next read asks again. Nothing else about the call changes.
    */
   claudeUsage(retry?: boolean): Promise<UsageReport>
+  /**
+   * What each project has spent, read from Claude Code's transcripts on disk.
+   *
+   * The counterpart to `claudeUsage`, and the opposite kind of call: no network,
+   * no account, nothing sent anywhere. Scanning is incremental, so this is cheap
+   * to poll after the first one.
+   */
+  claudeTokens(): Promise<TokenReport>
+  /**
+   * Publishes this machine's per-project totals to a folder shared between your
+   * machines, and returns every machine's.
+   *
+   * A blank `dir` is the feature switched off, and answers with an empty share
+   * rather than an error. Only totals are written — never a transcript.
+   */
+  shareTokens(dir: string, entries: TokenPublishEntry[]): Promise<SharedTokens>
   /**
    * Machine load, memory, disks, network and GPU, for the monitor pane and the
    * sidebar strip. One sample per call — the rates inside it are measured

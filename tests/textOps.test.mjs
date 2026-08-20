@@ -236,4 +236,82 @@ check('the marked-selection helper agrees with the operations', () => {
   assert.equal(ops.deleteLines(text, { from, to }).text, 'alpha\ngamma')
 })
 
+// --- the find bar's two questions ------------------------------------------
+//
+// A find bar sends "the query changed" and "go to the next one" down one
+// channel, and they must start from different places. These pin that down,
+// because getting it wrong is invisible until you are three letters into a
+// search and looking at the wrong match.
+
+const stepTo = (text, query, anchor, opts = {}) =>
+  ops.findFrom(text, query, opts, {
+    anchor,
+    caret: { from: 0, to: 0 },
+    restart: false,
+    backwards: false,
+  })
+const retype = (text, query, anchor, opts = {}) =>
+  ops.findFrom(text, query, opts, {
+    anchor,
+    caret: { from: 0, to: 0 },
+    restart: true,
+    backwards: false,
+  })
+
+check('typing another letter keeps the match under the cursor', () => {
+  const text = 'xx abc yy abc'
+  // 'ab' is found at 3..5; typing the 'c' must land on 3..6 rather than skip to
+  // the second 'abc'. This is the bug that makes a search impossible to aim.
+  const first = retype(text, 'ab', null)
+  assert.deepEqual(first, { from: 3, to: 5 })
+  assert.deepEqual(retype(text, 'abc', first), { from: 3, to: 6 })
+})
+
+check('Enter steps past the match rather than finding it again', () => {
+  const text = 'xx abc yy abc'
+  const first = retype(text, 'abc', null)
+  assert.deepEqual(first, { from: 3, to: 6 })
+  const second = stepTo(text, 'abc', first)
+  assert.deepEqual(second, { from: 10, to: 13 })
+  // And wraps rather than stopping at the last one.
+  assert.deepEqual(stepTo(text, 'abc', second), { from: 3, to: 6 })
+})
+
+check('the first search of all starts from the caret, and wraps past it', () => {
+  const text = 'abc abc'
+  const from = (caret) =>
+    ops.findFrom(text, 'abc', {}, {
+      anchor: null,
+      caret: { from: caret, to: caret },
+      restart: true,
+      backwards: false,
+    })
+  // The caret is where you were reading, so the search begins there rather than
+  // at the top of the file: with it at 4 the match starting at 4 is the answer.
+  assert.deepEqual(from(4), { from: 4, to: 7 })
+  // One character further in and that match no longer *starts* at or after the
+  // caret, so there is nothing ahead and the search wraps — which is what makes
+  // a find bar reach every match rather than stopping at the end.
+  assert.deepEqual(from(5), { from: 0, to: 3 })
+})
+
+check('backwards reaches the previous match from either request', () => {
+  const text = 'abc abc abc'
+  const middle = { from: 4, to: 7 }
+  const back = (restart) =>
+    ops.findFrom(text, 'abc', {}, {
+      anchor: middle,
+      caret: { from: 0, to: 0 },
+      restart,
+      backwards: true,
+    })
+  assert.deepEqual(back(false), { from: 0, to: 3 })
+  assert.deepEqual(back(true), { from: 0, to: 3 })
+})
+
+check('a query that matches nothing reports nothing rather than throwing', () => {
+  assert.equal(retype('abc', 'zzz', null), null)
+  assert.equal(retype('abc', '', null), null)
+})
+
 console.log(`\n${passed} checks passed`)

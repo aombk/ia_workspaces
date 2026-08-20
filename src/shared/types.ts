@@ -145,6 +145,7 @@ export const PANE_KINDS = [
   'diff',
   'history',
   'ports',
+  'tokens',
   'browser',
   'compare',
   'images',
@@ -444,6 +445,227 @@ export interface UsageReport {
    */
   status: 'ok' | 'signed-out' | 'expired' | 'unmetered' | 'error' | 'locked'
   buckets: UsageBucket[]
+}
+
+/**
+ * Every class of token a turn can spend, kept apart because they are priced
+ * apart. Adding them up is what "tokens" means on screen; see `totalOf`.
+ */
+export interface TokenTotals {
+  input: number
+  output: number
+  /** Written to the five-minute cache — 1.25x the input price. */
+  cacheWrite5m: number
+  /** Written to the one-hour cache — 2x. */
+  cacheWrite1h: number
+  /** Served from cache — a tenth of the input price. */
+  cacheRead: number
+  /** Assistant turns counted, which is how many API calls this represents. */
+  messages: number
+}
+
+/** What one folder has spent, across every conversation ever held in it. */
+export interface ProjectTokenUsage {
+  /** The folder itself, as Claude Code recorded it — a real path, not a slug. */
+  cwd: string
+  totals: TokenTotals
+  /** Split by model, which is what makes a cost estimate possible at all. */
+  byModel: Record<string, TokenTotals>
+  /** Total tokens per local day, `YYYY-MM-DD`, for the last month only. */
+  days: Record<string, number>
+  /** What this would have cost on the API. See `MODEL_PRICES`. */
+  cost: number
+  /**
+   * That cost split by token class, so the figure can be checked rather than
+   * taken on trust — each line maps to one column of the published price table.
+   */
+  costs: CostBreakdown
+  /** Models with no published price. Their tokens count; their cost cannot. */
+  unpricedModels: string[]
+  lastAt: number | null
+}
+
+/** What one conversation has spent, addressed by the id a pane records. */
+export interface SessionTokenUsage {
+  id: string
+  cwd: string
+  totals: TokenTotals
+  cost: number
+  lastAt: number | null
+}
+
+/**
+ * One machine's totals for one project, as written into the shared folder.
+ *
+ * Totals only — no prompts, no replies, no filenames. See `tokenShare.ts` for
+ * why this is what travels and the transcripts are not.
+ */
+export interface MachineTotals {
+  /** Stable per machine, and the key that stops one counting itself twice. */
+  machine: string
+  /** That machine's hostname, for reading. Never matched on. */
+  label: string
+  /** The project key both machines agree on — a git remote, or a folder name. */
+  project: string
+  /** Where the project lives *on that machine*, which is rarely where it lives here. */
+  path: string
+  /** What that machine calls the workspace. */
+  name: string
+  totals: TokenTotals
+  cost: number
+  /**
+   * The cost split by class, published alongside the total.
+   *
+   * Not redundant with `cost`, and the reason is what the stats table does with
+   * it: the five rows have to add up to the figure at the bottom. Publishing
+   * only the total meant a pooled table whose token counts came from every
+   * machine and whose dollars came from this one, which is a table that visibly
+   * does not add up. Absent on records written before this existed — treated as
+   * zero, so an old machine contributes its tokens and waits to be updated.
+   */
+  costs?: CostBreakdown
+  /** When that machine last wrote this, so a stale one can say so. */
+  at: number
+}
+
+/** One workspace's totals, on their way out to the shared folder. */
+export interface TokenPublishEntry {
+  cwd: string
+  name: string
+  totals: TokenTotals
+  cost: number
+  /** Split by class, so a pooled stats table still adds up. See `MachineTotals`. */
+  costs: CostBreakdown
+}
+
+/** Everything the share folder knows, plus which key each local folder maps to. */
+export interface SharedTokens {
+  /** This machine's own id, so its row can be marked as this one. Blank = sharing off. */
+  machine: string
+  /** Local workspace folder to project key, for the machines below. */
+  keys: Record<string, string>
+  /** Every machine's totals, by project key — this machine's included. */
+  byProject: Record<string, MachineTotals[]>
+}
+
+export interface TokenReport {
+  /**
+   * `none` is not an error: it means Claude Code has never written a transcript
+   * on this machine. Kept distinct from `ok` with an empty list so the panel can
+   * say "nothing to count yet" rather than drawing an empty chart.
+   */
+  status: 'ok' | 'none'
+  projects: ProjectTokenUsage[]
+  sessions: SessionTokenUsage[]
+  scannedAt: number
+}
+
+/**
+ * The four classes of token, and what each is called where it is published.
+ *
+ * Worth naming precisely, because "I spent a million tokens" is a sentence with
+ * no single meaning and this is why. Anthropic's pricing table has five columns,
+ * not two, and every one of them is billed at its own rate. These are the names
+ * it uses, so a figure here can be checked against the page it came from.
+ */
+export const TOKEN_CLASS_LABELS = {
+  input: 'base input',
+  cacheWrite5m: '5m cache writes',
+  cacheWrite1h: '1h cache writes',
+  cacheRead: 'cache hits & refreshes',
+  output: 'output',
+} as const
+
+/**
+ * Dollars, one field per column of the published price table.
+ *
+ * Five, not four: a five-minute cache write and an hour's are different columns
+ * at different prices, and merging them into one "cache writes" line — which an
+ * earlier version of this did — hides the fact that one costs 1.6x the other.
+ */
+export interface CostBreakdown {
+  input: number
+  cacheWrite5m: number
+  cacheWrite1h: number
+  cacheRead: number
+  output: number
+}
+
+/** A blank set of dollar figures. */
+export function zeroCosts(): CostBreakdown {
+  return { input: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, output: 0 }
+}
+
+/**
+ * The cache price multipliers, relative to a model's base input price.
+ *
+ * Not per-model: every model on the list charges 1.25x base input to write a
+ * five-minute cache entry, 2x for an hour, and 0.1x to read one back. Verified
+ * against platform.claude.com/docs/en/about-claude/pricing — "Prompt caching
+ * uses the following pricing multipliers relative to base input token rates".
+ */
+export const CACHE_MULTIPLIERS = { write5m: 1.25, write1h: 2, read: 0.1 } as const
+
+/**
+ * What a million tokens costs, per model, in US dollars.
+ *
+ * Two warnings travel with every number this produces, and the UI says both out
+ * loud rather than leaving them here.
+ *
+ * The first is that **a subscription does not bill per token.** Claude Code is
+ * signed in to an account with limits, not a meter — see `usage.ts`. So this is
+ * what the same work would have cost on the API: the right number for "which
+ * project is expensive", and not a bill anyone will ever receive.
+ *
+ * The second is that **prices change and this table does not.** It is a
+ * hard-coded copy of what Anthropic published, so a model released after this
+ * build has no entry — and an absent entry is reported as absent rather than
+ * guessed at, which is why `unpricedModels` exists.
+ *
+ * Verified against platform.claude.com/docs/en/about-claude/pricing on
+ * 18 August 2026. Two things that table says and this one cannot: US-pinned
+ * inference costs 1.1x across every class, and the Batch API halves input and
+ * output. Neither applies to Claude Code, which is why neither is modelled.
+ */
+export const MODEL_PRICES: Record<string, { input: number; output: number }> = {
+  'claude-opus-5': { input: 5, output: 25 },
+  'claude-opus-4-8': { input: 5, output: 25 },
+  'claude-opus-4-7': { input: 5, output: 25 },
+  'claude-opus-4-6': { input: 5, output: 25 },
+  'claude-opus-4-5': { input: 5, output: 25 },
+  'claude-opus-4-1': { input: 15, output: 75 },
+  'claude-opus-4': { input: 15, output: 75 },
+  'claude-fable-5': { input: 10, output: 50 },
+  'claude-mythos-5': { input: 10, output: 50 },
+  // $2/$10. This began as introductory pricing due to end on 31 August 2026;
+  // the scheduled rise to $3/$15 was cancelled and this is now the standard
+  // price. The old figure was in here until the pricing page was re-read.
+  'claude-sonnet-5': { input: 2, output: 10 },
+  'claude-sonnet-4-6': { input: 3, output: 15 },
+  'claude-sonnet-4-5': { input: 3, output: 15 },
+  'claude-sonnet-4': { input: 3, output: 15 },
+  'claude-haiku-4-5': { input: 1, output: 5 },
+  'claude-3-5-haiku': { input: 0.8, output: 4 },
+}
+
+/**
+ * The price for a model id as a transcript recorded it.
+ *
+ * Exact match first, then the longest key that the id starts with. The second
+ * pass is what handles dated snapshots — a transcript can say
+ * `claude-sonnet-4-5-20250929`, and the price of that is the price of
+ * `claude-sonnet-4-5`. Longest wins so `claude-opus-4-1` is never served by a
+ * shorter `claude-opus-4`.
+ */
+export function priceFor(model: string): { input: number; output: number } | null {
+  const exact = MODEL_PRICES[model]
+  if (exact) return exact
+  let best: { key: string; price: { input: number; output: number } } | null = null
+  for (const [key, price] of Object.entries(MODEL_PRICES)) {
+    if (!model.startsWith(key)) continue
+    if (!best || key.length > best.key.length) best = { key, price }
+  }
+  return best?.price ?? null
 }
 
 /**
@@ -1026,6 +1248,15 @@ export interface Settings {
    */
   showTabCount: boolean
   /**
+   * A folder shared between your machines, where each writes its own totals.
+   *
+   * Blank, which is off, and off is the honest default: this reads and writes
+   * files somewhere the user chose, and nothing should start doing that on its
+   * own. When it is blank the counts say "this machine" rather than pretending
+   * to be the project's whole story. See `tokenShare.ts`.
+   */
+  tokenShareDir: string
+  /**
    * Extra columns beside each name in the file tree: how big a file is, and
    * when it last changed.
    *
@@ -1315,6 +1546,10 @@ export const MONITOR_BLOCKS = [
   { id: 'volumes', label: 'volumes — size, used and free' },
   { id: 'temperatures', label: 'temperatures' },
   { id: 'claude', label: 'claude usage limits' },
+  // No per-project token block here, deliberately. This panel answers "is the
+  // machine coping"; how much a project has cost is a question about the
+  // project, and it is answered where the project is — on the workspace itself,
+  // on hover. See `tokenTooltip`.
   { id: 'system', label: 'battery and uptime' },
   { id: 'weather', label: 'weather' },
   { id: 'air', label: 'air quality' },
@@ -1803,6 +2038,7 @@ export const DEFAULT_SETTINGS: Settings = {
   confirmCloseRunning: true,
   showGitBranch: true,
   showTabCount: false,
+  tokenShareDir: '',
   treeShowSize: false,
   treeShowModified: false,
   treeSort: 'name',

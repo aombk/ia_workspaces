@@ -16,6 +16,7 @@ import { gitRoot } from './git/common'
 import { ComparePane } from './comparePane'
 import { SearchPane, type SearchPaneHooks } from './searchPane'
 import { PortsPane, type PortsPaneHooks } from './portsPane'
+import { TokensPane } from './tokensPane'
 import { ImagesPane, type ImagesPaneHooks } from './imagesPane'
 import { BrowserPane, DEFAULT_URL } from './browserPane'
 import { attachInlineEditor } from './ui/editing'
@@ -654,6 +655,11 @@ export class TerminalManager {
         break
       case 'ports':
         pane = new PortsPane(state.id, this.portsHooks!)
+        break
+      // No hooks: it draws from the token monitor's own poll, which every other
+      // consumer of those numbers already shares.
+      case 'tokens':
+        pane = new TokensPane(state.id, workspaceIdOf(state.id))
         break
       // The system readings are a dock now, not a tab — see `monitorDock.ts`.
       // The kind stays so a document written before that still round-trips

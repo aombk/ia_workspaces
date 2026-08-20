@@ -5,6 +5,7 @@ import { renderThemeSection } from './themeEditor'
 import { showToast } from './toast'
 import { DEFAULT_URL } from '../browserPane'
 import { refreshUsageNow } from './usageMonitor'
+import { refreshTokensNow } from './tokenMonitor'
 import { syncSystemStrip } from './systemStrip'
 import { appVersion, checkForUpdates, describeUpdate } from '../updates'
 import type { AgentConfigInfo } from '../../shared/types'
@@ -151,6 +152,52 @@ function text(value: string, placeholder: string, onInput: (v: string) => void):
   input.spellcheck = false
   input.addEventListener('change', () => onInput(input.value))
   return input
+}
+
+/**
+ * A path, with the native folder picker beside it.
+ *
+ * The field stays typeable — a network share is quicker pasted than browsed to,
+ * and a picker is no help at all on a path that is not mounted right now — but
+ * the button is what people reach for, and a settings row that makes you type
+ * `\\nas\backup\claude` by hand is a settings row nobody completes.
+ */
+function folder(value: string, placeholder: string, onPick: (v: string) => void): HTMLElement {
+  const row = document.createElement('div')
+  row.className = 'settings-folder'
+
+  const input = text(value, placeholder, onPick) as HTMLInputElement
+  row.appendChild(input)
+
+  const browse = document.createElement('button')
+  browse.type = 'button'
+  browse.className = 'btn'
+  browse.textContent = 'Choose…'
+  browse.addEventListener('click', () => {
+    void backend()
+      .pickFolder(input.value || undefined)
+      .then((chosen) => {
+        if (!chosen) return
+        input.value = chosen
+        onPick(chosen)
+      })
+  })
+  row.appendChild(browse)
+
+  // Clearing is switching the feature off, and it needs to be as easy as
+  // switching it on — a path you can only replace is a path you cannot remove.
+  const clear = document.createElement('button')
+  clear.type = 'button'
+  clear.className = 'btn'
+  clear.textContent = 'Clear'
+  clear.disabled = !value
+  clear.addEventListener('click', () => {
+    input.value = ''
+    onPick('')
+  })
+  row.appendChild(clear)
+
+  return row
 }
 
 function select<T extends string>(
@@ -446,10 +493,21 @@ async function render(): Promise<void> {
           (v) => patch({ nestingMarker: v as Settings['nestingMarker'] })
         )
       ),
+      // "Show git branch" and "Show tab counts" used to live here. They are on
+      // the sidebar's own right-click now, under "Sidebar shows", beside the new
+      // token count — decisions about what that list displays belong where the
+      // list is, not three panels away from it. See `showsMenu` in `sidebar.ts`.
       field(
-        'Show git branch',
-        'Displays the current branch beside each workspace.',
-        toggle(s.showGitBranch, (v) => patch({ showGitBranch: v }))
+        'Share token counts between machines',
+        'A folder your machines can all see — a synced drive, a network share. ' +
+          'Each one writes its own totals there and reads the others’, so a ' +
+          'project you work on from two computers adds up to one number on both. ' +
+          'Only totals are written: a few dozen numbers per project, never a ' +
+          'conversation. Leave blank to count this machine alone.',
+        folder(s.tokenShareDir, 'not shared — this machine only', (v) => {
+          patch({ tokenShareDir: v })
+          refreshTokensNow()
+        })
       ),
       field(
         'Claude Code usage in the status bar',
@@ -472,11 +530,6 @@ async function render(): Promise<void> {
           patch({ showSystemMonitor: v })
           syncSystemStrip()
         })
-      ),
-      field(
-        'Show tab counts in the sidebar',
-        'A small number beside each workspace saying how many tabs it holds.',
-        toggle(s.showTabCount, (v) => patch({ showTabCount: v }))
       ),
       field(
         'Keep shells running after you quit',

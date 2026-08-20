@@ -24,6 +24,9 @@ import type {
   SessionHostInfo,
   SystemStats,
   UsageReport,
+  TokenReport,
+  SharedTokens,
+  TokenPublishEntry,
   RepoStatus,
   Commit,
   Branch,
@@ -178,6 +181,9 @@ const api = {
     ipcRenderer.invoke(IPC.wslControl, action, distro),
   sshHosts: (): Promise<SshHost[]> => ipcRenderer.invoke(IPC.sshHosts),
   claudeUsage: (retry?: boolean): Promise<UsageReport> => ipcRenderer.invoke(IPC.claudeUsage, retry),
+  claudeTokens: (): Promise<TokenReport> => ipcRenderer.invoke(IPC.claudeTokens),
+  shareTokens: (dir: string, entries: TokenPublishEntry[]): Promise<SharedTokens> =>
+    ipcRenderer.invoke(IPC.shareTokens, dir, entries),
   systemStats: (opts?: { drives?: boolean }): Promise<SystemStats> =>
     ipcRenderer.invoke(IPC.systemStats, opts),
   weather: (req: WeatherRequest): Promise<WeatherReading> => ipcRenderer.invoke(IPC.weather, req),

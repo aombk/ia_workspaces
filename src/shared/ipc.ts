@@ -68,6 +68,8 @@ export const IPC = {
   wslControl: 'app:wslControl',
   sshHosts: 'app:sshHosts',
   claudeUsage: 'app:claudeUsage',
+  claudeTokens: 'app:claudeTokens',
+  shareTokens: 'app:shareTokens',
   systemStats: 'app:systemStats',
   weather: 'app:weather',
   gitStatus: 'git:status',

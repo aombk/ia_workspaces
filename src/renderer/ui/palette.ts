@@ -305,6 +305,12 @@ function collect(): Command[] {
       },
       {
         kind: 'Action',
+        label: 'token stats',
+        detail: 'what Claude Code has spent in this project, and what it would have cost',
+        run: () => actions.openTokens(id),
+      },
+      {
+        kind: 'Action',
         label: 'system',
         detail: 'load, memory, disks, network and graphics — how this computer is coping',
         run: () => actions.openMonitor(id),

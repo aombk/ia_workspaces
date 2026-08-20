@@ -5,6 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { listProcesses } from './processes'
 import { forgetKeychainRefusal, readClaudeUsage } from './usage'
+import { readTokenUsage } from './tokenUsage'
+import { shareTokens, type PublishEntry } from './tokenShare'
 import { readSystemStats } from './systemStats'
 import { readWeather } from './weather'
 import { latestRelease } from './updates'
@@ -721,6 +723,14 @@ function bootApp(): void {
       if (retry) forgetKeychainRefusal()
       return readClaudeUsage()
     })
+    // The offsets it remembers live beside the workspace document, so a restart
+    // reads only what has been appended rather than all of the transcripts again.
+    ipcMain.handle(IPC.claudeTokens, () => readTokenUsage(SHARED_DATA_DIR))
+    // Publishes this machine's per-project totals into the user's shared folder
+    // and hands back every machine's. Off — and instant — while no folder is set.
+    ipcMain.handle(IPC.shareTokens, (_e, dir: string, entries: PublishEntry[]) =>
+      shareTokens(SHARED_DATA_DIR, dir, entries)
+    )
     ipcMain.handle(IPC.systemStats, (_e, opts?: { drives?: boolean }) => readSystemStats(opts))
     ipcMain.handle(IPC.weather, (_e, req: WeatherRequest) => readWeather(req))
     ipcMain.handle(IPC.gitStatus, (_e, cwd: string) => gitStatus(cwd))

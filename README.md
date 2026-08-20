@@ -28,11 +28,11 @@ has been tested with.
 
   ![Split panes](docs/screenshots/split-panes.png)
 
-- **A tab is not only a terminal.** `+` opens any of nine kinds — terminal
+- **A tab is not only a terminal.** `+` opens any of ten kinds — terminal
   (`Ctrl+T`), file tree (`Ctrl+Shift+F`), editor (`Ctrl+Shift+O`), Changes
   (`Ctrl+Shift+D`), Compare files, Search (`Ctrl+Shift+S`), Images
-  (`Ctrl+Shift+G`), Running processes, and Browser (`Ctrl+Shift+B`) — and each
-  splits beside a shell like any other pane.
+  (`Ctrl+Shift+G`), Running processes, Token stats, and Browser
+  (`Ctrl+Shift+B`) — and each splits beside a shell like any other pane.
 
   ![Every kind of tab](docs/screenshots/tab-types.png)
 
@@ -146,6 +146,40 @@ has been tested with.
   → Remote Web Server, port 8085), the panel reads the sensors it publishes and
   fills in the processor and drive temperatures. It is never started, never
   installed and never asked for elevation; if it is not there, nothing happens.
+- **Token stats per project**, on a tab of their own. What Claude Code has spent
+  in this workspace, counted from the conversation transcripts it already writes
+  on this machine — nothing is sent anywhere to work it out, and no API key is
+  involved.
+
+  ![Token stats for a workspace](docs/screenshots/tokenStats.png)
+
+  The middle of it is Anthropic's own price table read back: base input, 5m cache
+  writes, 1h cache writes, cache hits & refreshes, and output, each with its token
+  count, its published rate per million, and what it came to. Token counts are
+  measured — they are what the API's own response reported, copied out of the
+  transcript unchanged — so only the money is marked `(est.)`.
+
+  There is deliberately no total-tokens figure. Base input and cache hits are
+  priced ten times apart, so adding them together makes a number that is true and
+  meaningless: it is why a project can look like it has spent two billion of
+  something. The column that adds up is the money. Cache hits are the
+  conversation being sent up again on every reply, which is most of the count and
+  a tenth of the price — the reason the biggest number on the page is nowhere
+  near the biggest cost.
+
+  Also on the tab: today, this week, the busiest day and when the project was
+  last active; which models did the work; every conversation, newest first, so an
+  expensive one can be found while you can still do something about it; and each
+  folder that counted towards the total, because a session started in a subfolder
+  belongs to the workspace above it.
+
+  If you work on the same project from more than one machine, point each of them
+  at a shared folder (Settings → *Share token counts between machines*) and the
+  tab adds them up, with a row per machine and how long since each reported.
+  Projects are matched by their git remote, so the same repository lines up even
+  when it lives at a different path on each machine. Only totals are written — a
+  few dozen numbers per project, never a conversation.
+
 - **Remembers everything.** Workspaces, their names, folders and colours; every
   tab, its pane layout, and the folder each pane was last in; which tab was
   selected; window size; all settings and custom themes.

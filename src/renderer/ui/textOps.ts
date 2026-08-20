@@ -318,6 +318,40 @@ export function findNext(
   return all.find((span) => span.from >= from) ?? all[0]
 }
 
+/**
+ * The next match for an interactive find bar, given the last one it landed on.
+ *
+ * `findNext` answers "what comes after this offset", which is one question. A
+ * find bar asks two, down the same channel, and they want different offsets:
+ *
+ * - **The query changed** — another letter typed, a toggle flipped. That is the
+ *   same search getting more specific, so it starts at the *beginning* of the
+ *   current match. Type `a`, then `ab`, and the `ab` under the cursor is what
+ *   you get. Starting past the match instead makes every keystroke walk forward
+ *   through the file, which is the behaviour of a search you cannot aim.
+ * - **A step** — Enter, or the arrows. That starts *past* the current match, or
+ *   it hands back the one already found and Enter appears not to work.
+ *
+ * `anchor` is the match last landed on, or null to start from the caret, which
+ * is what the first search after the bar opens should do. It is passed in
+ * rather than read from the document because the document has no selection to
+ * read while a text input holds the keyboard — see `EditorPane.runFind`.
+ */
+export function findFrom(
+  text: string,
+  query: string,
+  opts: FindOptions,
+  where: { anchor: Span | null; caret: Span; restart: boolean; backwards: boolean }
+): Span | null {
+  const span = where.anchor ?? where.caret
+  const lo = Math.min(span.from, span.to)
+  const hi = Math.max(span.from, span.to)
+  // Backwards always starts at the near edge: `findNext` looks for matches that
+  // *end* before it, so the current match is excluded either way.
+  const from = where.backwards || where.restart ? lo : hi
+  return findNext(text, query, from, opts, where.backwards)
+}
+
 /** Replaces one span, and reports where the replacement ends. */
 export function replaceSpan(text: string, span: Span, replacement: string): Edit {
   const { from, to } = ordered(span)

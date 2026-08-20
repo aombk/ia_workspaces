@@ -43,7 +43,7 @@ import {
   deleteLines,
   duplicateLines,
   findAll,
-  findNext,
+  findFrom,
   joinLines,
   moveLines,
   removeDuplicateLines,
@@ -166,6 +166,11 @@ export class EditorPane implements AuxPane {
   ) {
     this.element = document.createElement('div')
     this.element.className = 'reader-pane notes-pane'
+    // Claims Ctrl+F for this pane's own find bar. The app's global handler is
+    // on the window in the capture phase, so without this it opened the
+    // terminal's find bar on top of ours — two bars, and the one with focus
+    // searching a terminal that was not even on screen. See `wireKeyboard`.
+    this.element.dataset.ownFind = 'true'
 
     const head = document.createElement('div')
     head.className = 'reader-head'
@@ -211,6 +216,8 @@ export class EditorPane implements AuxPane {
       replaceAll: (query, replacement, opts) => this.runReplaceAll(query, replacement, opts),
       close: () => {
         this.find.hide()
+        this.findAnchor = null
+        this.findSignature = ''
         this.live.focus()
       },
     })
@@ -568,24 +575,99 @@ export class EditorPane implements AuxPane {
     return grammarFor(this.path)?.line[0] ?? ''
   }
 
+  /**
+   * Where the next match is searched from, while the find bar has the keyboard.
+   *
+   * The caret would say, and while you are typing in the find box there is no
+   * caret to ask: focusing an input clears the document's selection, so
+   * `live.selection()` falls back to the end of the file and every "next" would
+   * wrap from there. So the last hit is remembered instead.
+   *
+   * Null means "ask the text", which is right on the first search after the bar
+   * opens — that one starts from wherever you were reading — and after it
+   * closes, when the caret is real again.
+   */
+  private findAnchor: Span | null = null
+
+  /** The last search run, so a changed query is told from a repeat of one. */
+  private findSignature = ''
+
   private openFind(withReplace: boolean): void {
     if (!this.isText) return
     const span = this.live.selection()
     const { from, to } = span.from <= span.to ? span : { from: span.to, to: span.from }
+    // A fresh open searches from the caret, not from wherever the last search
+    // in this pane happened to end.
+    this.findAnchor = null
+    this.findSignature = ''
     this.find.show(this.live.value.slice(from, to), withReplace)
   }
 
+  /**
+   * Moves to a match, without taking the keyboard away from whoever asked.
+   *
+   * `live.select` puts a DOM range inside the text, and putting a range inside a
+   * `contenteditable` focuses it. That is right when the caret is what you are
+   * moving and wrong on every keystroke of a search: typing one letter into the
+   * find box selected the first match, focus followed the selection into the
+   * document, and the second letter went into the file instead of the box.
+   *
+   * So whatever had focus is put back afterwards, caret position included —
+   * inputs keep their own selection, but `focus()` on some platforms does not
+   * restore it, and a search box that quietly moves your cursor to the end is
+   * the same bug wearing a smaller hat.
+   *
+   * This holds for Enter as much as for typing, which is what every other
+   * editor does: Enter walks to the next match and the find box keeps the
+   * keyboard, so you can press it again. Escape is what hands the text back —
+   * see `onKey`, which focuses the editor deliberately.
+   */
   private runFind(query: string, opts: FindOptions, backwards: boolean): void {
     const text = this.live.value
     const all = findAll(text, query, opts)
-    const span = this.live.selection()
-    const from = backwards ? Math.min(span.from, span.to) : Math.max(span.from, span.to)
-    const hit = findNext(text, query, from, opts, backwards)
+
+    // Which of the two requests this is — a narrowed query, or a step to the
+    // next match. `findFrom` explains why they start in different places. The
+    // options are part of the signature because flipping Aa is a changed
+    // search as much as typing another letter is.
+    const signature = `${query} ${opts.caseSensitive ? 'c' : ''}${opts.wholeWord ? 'w' : ''}${opts.regex ? 'r' : ''}`
+    const restart = signature !== this.findSignature
+    this.findSignature = signature
+
+    const hit = findFrom(text, query, opts, {
+      anchor: this.findAnchor,
+      caret: this.live.selection(),
+      restart,
+      backwards,
+    })
     if (!hit) {
       this.find.report(0, 0)
       return
     }
+    this.findAnchor = hit
+
+    const focused = document.activeElement
+    const caret =
+      focused instanceof HTMLInputElement
+        ? { start: focused.selectionStart, end: focused.selectionEnd }
+        : null
+
     this.live.select(hit)
+
+    // Only when the selection actually took the focus, and only back into this
+    // pane — restoring focus to something that never had it, or to a pane the
+    // user has since clicked away from, would be its own surprise.
+    if (
+      focused instanceof HTMLElement &&
+      document.activeElement !== focused &&
+      this.element.contains(focused)
+    ) {
+      focused.focus()
+      if (caret && focused instanceof HTMLInputElement) {
+        focused.setSelectionRange(caret.start, caret.end)
+      }
+    }
+
     this.find.report(
       all.findIndex((match) => match.from === hit.from),
       all.length
