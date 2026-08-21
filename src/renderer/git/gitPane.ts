@@ -40,8 +40,7 @@ import {
   setButtonLabel,
   showGlossary,
 } from '../ui/gitWord'
-import { relayLineFor } from '../relayPane'
-import { refreshRelayNow } from '../ui/relayMonitor'
+import { refreshRelayNow, relayLineFor } from '../ui/relayMonitor'
 import { showToast } from '../ui/toast'
 import { ChangesView } from './changesView'
 import { gitRoot, text } from './common'

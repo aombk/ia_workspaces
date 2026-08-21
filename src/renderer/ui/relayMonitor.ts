@@ -163,3 +163,86 @@ export function othersFor(cwd: string): RelayPresence[] {
   if (!key) return []
   return (latest.byProject[key] ?? []).filter((record) => record.machine !== latest.machine)
 }
+
+/**
+ * Whether another machine has work you have not seen, and what to say about it.
+ *
+ * The whole of what Relay reports now. Everything that is committed and pushed
+ * is not news and gets no mark: a badge that appears on every workspace is a
+ * badge nobody reads, and the pane this replaced reported the calm case at
+ * equal length, which is what made it hard to read at a glance.
+ *
+ * Null means nothing to say, which is the ordinary answer and must stay cheap —
+ * this runs for every workspace on every sidebar render.
+ */
+export function relayWarning(cwd: string): { title: string } | null {
+  const others = othersFor(cwd).filter((record) => record.unsent || record.changed.length)
+  if (!others.length) return null
+
+  const lines: string[] = []
+  for (const record of others) {
+    lines.push(`${record.label} — ${stale(record.at)}`)
+    if (record.branch) lines.push(`  on branch ${record.branch} (line of saves)`)
+    if (record.unsent) {
+      const shown = record.unsentSubjects.slice(0, SUBJECTS_SHOWN)
+      const rest = record.unsent - shown.length
+      const named = shown.map((subject) => `“${subject}”`).join(', ')
+      lines.push(
+        `  ${plural(record.unsent, 'unpushed commit')} (saves not sent)${named ? `: ${named}` : ''}${
+          rest > 0 ? `, and ${rest} more` : ''
+        }`
+      )
+    }
+    if (record.behind) lines.push(`  ${plural(record.behind, 'commit')} behind (saves not brought in)`)
+    if (record.changed.length) {
+      lines.push(`  ${plural(record.changed.length, 'uncommitted file')} (changed, not saved):`)
+      for (const file of record.changed.slice(0, FILES_SHOWN)) lines.push(`    ${file}`)
+      const rest = record.changed.length - FILES_SHOWN
+      if (rest > 0) lines.push(`    and ${rest} more`)
+    }
+    if (record.untracked) lines.push(`  ${plural(record.untracked, 'untracked file')} (new to git)`)
+  }
+
+  // Said once at the end rather than per line. Everything above is what some
+  // other machine last managed to report, and the reason it is worth a mark at
+  // all is that this machine cannot see over there now.
+  lines.push('')
+  lines.push('Reported by that machine into your shared folder. Nothing here can reach it.')
+  return { title: lines.join('\n') }
+}
+
+/** Files listed in the tooltip before the rest become a count. */
+const FILES_SHOWN = 6
+
+/** Unsent save messages listed before the rest become a count. */
+const SUBJECTS_SHOWN = 3
+
+/**
+ * The one line the Git pane shows about the other machines.
+ *
+ * Lives here rather than in `git/` because it is Relay's sentence and Relay's
+ * rules — past tense, timestamped, never a claim about right now. The Git pane
+ * asks for it and places it; what it is allowed to say is decided in one file.
+ *
+ * Null when there is nothing worth a line, which is the ordinary case.
+ */
+export function relayLineFor(cwd: string): string | null {
+  const others = othersFor(cwd).filter((record) => record.unsent || record.changed.length)
+  if (!others.length) return null
+
+  const worst = others[0]
+  const parts: string[] = []
+  if (worst.unsent) parts.push(`${plural(worst.unsent, 'unpushed commit')} (saves not sent)`)
+  if (worst.changed.length)
+    parts.push(`${plural(worst.changed.length, 'uncommitted file')} (changed, not saved)`)
+  if (!parts.length) return null
+
+  const where = worst.branch ? ` on ${worst.branch}` : ''
+  const rest = others.length > 1 ? `, and ${others.length - 1} other machine${others.length > 2 ? 's' : ''}` : ''
+  return `${worst.label} had ${parts.join(' and ')}${where}, ${stale(worst.at)}${rest}.`
+}
+
+/** "1 save", "2 saves" — the plural nobody should have to think about. */
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
+}

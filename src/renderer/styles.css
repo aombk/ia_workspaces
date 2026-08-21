@@ -1082,6 +1082,17 @@ kbd {
    the same: glance at the headline, and read a table only if the headline
    surprised you. */
 
+/* The one mark Relay makes: another machine has work you have not seen. Only
+   ever drawn when that is true, so it is allowed to be loud. */
+.workspace-relay-warn {
+  margin-left: 6px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--warn);
+  cursor: help;
+  flex: none;
+}
+
 /* ---------------------------------------------------------------- relay
    What every machine was last part-way through. Built from the tokens pane's
    shapes, because it is the same kind of thing — a dense list read at a glance

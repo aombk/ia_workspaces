@@ -150,7 +150,6 @@ export const PANE_KINDS = [
   'compare',
   'images',
   'monitor',
-  'relay',
 ] as const
 
 export type PaneKind = (typeof PANE_KINDS)[number]
@@ -1368,6 +1367,17 @@ export interface Settings {
    */
   showTabCount: boolean
   /**
+   * Mark a workspace when another machine has work in it you have not seen.
+   *
+   * On by default, unlike the other two, because it is not a preference about
+   * what a list looks like — it is the whole of what Relay reports, and it only
+   * ever appears when there is something to report. Off is for somebody who
+   * works on one machine and does not want to be told about it.
+   *
+   * Needs a shared folder set to show anything at all. See `relay.ts`.
+   */
+  showRelayWarning: boolean
+  /**
    * A folder every machine you work from can see — a synced drive, a share.
    *
    * One folder for the two features that need one: token totals pooled across
@@ -2185,6 +2195,7 @@ export const DEFAULT_SETTINGS: Settings = {
   confirmCloseRunning: true,
   showGitBranch: true,
   showTabCount: false,
+  showRelayWarning: true,
   sharedDir: '',
   fileDrag: 'auto',
   treeShowSize: false,

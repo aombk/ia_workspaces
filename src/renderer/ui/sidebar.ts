@@ -8,6 +8,7 @@ import { wslDistroOf, type WslAction } from '../../shared/wsl'
 import { availableShells, shellLabel, sshHosts, sshMenuLabel } from '../shells'
 import { attachInlineEditor } from './editing'
 import { beginDrag, draggingTab, draggingWorkspace, endDrag } from './dragState'
+import { relayWarning } from './relayMonitor'
 import type { UiActions } from './actions'
 
 let actions: UiActions
@@ -67,6 +68,11 @@ function showsMenu(): MenuEntry {
         label: 'tab counts',
         checked: s.showTabCount,
         onClick: () => store.updateSettings({ showTabCount: !s.showTabCount }),
+      },
+      {
+        label: 'uncommitted work elsewhere (on your other machines)',
+        checked: s.showRelayWarning,
+        onClick: () => store.updateSettings({ showRelayWarning: !s.showRelayWarning }),
       },
     ],
   }
@@ -228,6 +234,31 @@ ${workspace.cwd}`
     name.className = 'workspace-name'
     name.textContent = workspace.name
     label.appendChild(name)
+
+    // A mark only when another machine has something you have not seen. There
+    // is deliberately no calm state and no slot kept for one: a workspace whose
+    // work is committed and sent everywhere is not news, and a badge on every
+    // row is a badge that stops being looked at before the day it matters.
+    // Hovering is the deliberate "tell me about this one", and the tooltip has
+    // room for the machine, the saves and the files where a glyph does not.
+    const warning = store.settings.showRelayWarning ? relayWarning(workspace.cwd) : null
+    if (warning) {
+      const mark = document.createElement('span')
+      mark.className = 'workspace-relay-warn'
+      mark.textContent = '⚠'
+      mark.title = warning.title
+      // Its own hover text, and the row's must not win: the row's tooltip is
+      // the name and the folder, which is not what somebody hovering a warning
+      // triangle is asking about.
+      mark.addEventListener('mouseenter', () => {
+        el.dataset.rowTitle = el.title
+        el.title = ''
+      })
+      mark.addEventListener('mouseleave', () => {
+        el.title = el.dataset.rowTitle ?? el.title
+      })
+      label.appendChild(mark)
+    }
 
     if (store.settings.showGitBranch && workspace.branch) {
       const branch = document.createElement('span')
@@ -510,10 +541,6 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
     {
       label: 'token stats',
       onClick: () => actions.openTokens(workspaceId),
-    },
-    {
-      label: 'relay',
-      onClick: () => actions.openRelay(workspaceId),
     },
     // No system monitor: this is the same list of tab kinds the tab strip
     // offers, and the monitor is a docked panel rather than a tab. It stays in

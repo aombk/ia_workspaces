@@ -2230,7 +2230,6 @@ export function paneLabel(pane: PaneState): string {
   if (pane.kind === 'search') return 'search'
   if (pane.kind === 'ports') return 'running'
   if (pane.kind === 'tokens') return 'token stats'
-  if (pane.kind === 'relay') return 'relay'
   if (pane.kind === 'monitor') return 'system'
   if (pane.kind === 'images') return 'images'
   if (pane.kind === 'browser') return browserLabel(pane.url)

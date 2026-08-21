@@ -17,7 +17,6 @@ import { gitRoot } from './git/common'
 import { ComparePane } from './comparePane'
 import { SearchPane, type SearchPaneHooks } from './searchPane'
 import { PortsPane, type PortsPaneHooks } from './portsPane'
-import { RelayPane } from './relayPane'
 import { TokensPane } from './tokensPane'
 import { ImagesPane, type ImagesPaneHooks } from './imagesPane'
 import { BrowserPane, DEFAULT_URL } from './browserPane'
@@ -666,12 +665,6 @@ export class TerminalManager {
       // consumer of those numbers already shares.
       case 'tokens':
         pane = new TokensPane(state.id, workspaceIdOf(state.id))
-        break
-      // Also no hooks, and no workspace: it draws from the relay monitor's own
-      // sweep, and what it shows is every project on every machine rather than
-      // anything belonging to the tab it happens to sit in.
-      case 'relay':
-        pane = new RelayPane(state.id)
         break
       // The system readings are a dock now, not a tab — see `monitorDock.ts`.
       // The kind stays so a document written before that still round-trips

@@ -46,7 +46,7 @@ import { fallbackCwd, isWindows, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
 import { isWslPath, wslDistroOf } from '../shared/wsl'
 import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
-import { initRelayMonitor } from './ui/relayMonitor'
+import { initRelayMonitor, watchRelay } from './ui/relayMonitor'
 import { initTokenMonitor } from './ui/tokenMonitor'
 import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
@@ -202,6 +202,9 @@ export async function start(): Promise<void> {
   initUsageMonitor()
   initTokenMonitor()
   initRelayMonitor()
+  // A sweep lands on its own timer, not through the store, so the sidebar would
+  // otherwise keep yesterday's triangles until something unrelated redrew it.
+  watchRelay(render)
   initMonitorDock()
   // The link at the bottom of the strip opens the panel. No workspace is
   // involved any more, which is the whole point of it being a dock.
@@ -697,19 +700,6 @@ const actions: UiActions = {
       return
     }
     store.addTab(workspaceId, undefined, 'tokens')
-    void syncMountedTab()
-  },
-
-  openRelay(workspaceId) {
-    // One is enough for the whole app. Unlike token stats, nothing in it is
-    // about the workspace it was opened from — it is about every project on
-    // every machine, so a second copy would be the same list twice.
-    const existing = findPane((p) => p.kind === 'relay')
-    if (existing) {
-      actions.jumpToPane(existing.workspaceId, existing.paneId)
-      return
-    }
-    store.addTab(workspaceId, undefined, 'relay')
     void syncMountedTab()
   },
 

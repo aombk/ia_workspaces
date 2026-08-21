@@ -332,10 +332,6 @@ function newTabEntries(workspaceId: string): MenuEntry[] {
       label: 'token stats',
       onClick: () => actions.openTokens(workspaceId),
     },
-    {
-      label: 'relay',
-      onClick: () => actions.openRelay(workspaceId),
-    },
     // No system monitor here. This menu makes tabs, and the monitor stopped
     // being one — it is a panel docked to the window, reached by Ctrl+Shift+M
     // or the pull-tab on the right edge. Listing it among the tab kinds was

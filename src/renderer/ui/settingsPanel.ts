@@ -478,9 +478,9 @@ async function render(): Promise<void> {
           'own panes works as it always did.',
         select(
           [
-            { value: 'auto', label: 'the file itself, unless it is inside WSL' },
-            { value: 'file', label: 'always the file itself' },
-            { value: 'path', label: 'always its location, as text' },
+            { value: 'file', label: 'file drag' },
+            { value: 'path', label: 'path drag' },
+            { value: 'auto', label: 'auto' },
           ],
           s.fileDrag,
           (v) => patch({ fileDrag: v as Settings['fileDrag'] })
@@ -521,10 +521,12 @@ async function render(): Promise<void> {
         'A synced drive or a network share that every computer you work from ' +
           'can see. Two things use it. Token counts are pooled, so a project ' +
           'you work on from two machines adds up to one number on both. And ' +
-          'Relay writes down what each machine is part-way through — the branch ' +
-          'it is on, saves it has not sent, files it has changed and not saved — ' +
-          'so the Relay pane can answer “did I leave something on the laptop?” ' +
-          'without you going and looking. What travels is a description: totals, ' +
+          'Relay writes down what each machine is part-way through, so a workspace ' +
+          'gets a warning triangle when another machine has unpushed commits ' +
+          '(saves not sent) or uncommitted files (changed, not saved) in it — ' +
+          'hover it for the machine, the commits and the files. Nothing is marked ' +
+          'when everything is committed and pushed. What travels is a ' +
+          'description: totals, ' +
           'counts, branch names and the paths of files git already tracks. Never ' +
           'a conversation, never the contents of a file, and never the name of a ' +
           'file git is not tracking. Leave blank for neither — this machine alone.',
