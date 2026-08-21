@@ -95,6 +95,8 @@ export function createElectronBackend(): Backend {
     claudeUsage: (retry) => api.claudeUsage(retry),
     claudeTokens: () => api.claudeTokens(),
     shareTokens: (dir, entries) => api.shareTokens(dir, entries),
+    relay: (dir, entries) => api.relay(dir, entries),
+    startFileDrag: (paths) => api.startFileDrag(paths),
     systemStats: (opts) => api.systemStats(opts),
     weather: (req) => api.weather(req),
     gitStatus: (cwd) => api.gitStatus(cwd),

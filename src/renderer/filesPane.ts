@@ -1,4 +1,5 @@
 import { backend } from '../backend'
+import { quotePath, startDrag } from './ui/fileDrag'
 import {
   parentDir,
   parseUserPath,
@@ -104,11 +105,11 @@ export function refreshAllTrees(): void {
 /**
  * The drag type a tree row carries.
  *
- * Its own MIME rather than `text/plain`, which the drag also sets for dropping
- * into a terminal: a word dragged out of an editor is text too, and only this
- * type means "a path, from the tree".
+ * Re-exported rather than defined here now that a drag can also leave as a real
+ * operating-system file — the type, the mode and the reading of a drop are one
+ * decision and live together in `ui/fileDrag.ts`.
  */
-export const FILE_DRAG = 'application/x-iaw-path'
+export { FILE_DRAG } from './ui/fileDrag'
 
 interface Row {
   entry: FileEntry
@@ -830,12 +831,11 @@ export class FilesPane {
       const dragging = this.selection.has(entry.path)
         ? this.selectedEntries().map((x) => x.path)
         : [entry.path]
-      e.dataTransfer?.setData('text/plain', dragging.map(quotePath).join(' '))
-      // One path in this one, always. Every reader of it — the editor, compare,
-      // the terminal drop target — opens a single file, and a space-joined list
-      // would be read as one absurd path.
-      e.dataTransfer?.setData(FILE_DRAG, entry.path)
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
+      // Decides for itself whether this leaves as a file the rest of the
+      // desktop can take or as a path only this app can read — see the
+      // `fileDrag` setting. Either way the path is on the drag first, so an
+      // internal drop works whichever kind it turned out to be.
+      startDrag(e, dragging)
     })
 
     return row
@@ -1553,10 +1553,6 @@ function parentOf(dir: string): string {
 }
 
 /** Only quote when needed, so pasted paths stay readable. */
-function quotePath(value: string): string {
-  return /[\s&()[\]{}^=;!'+,`~]/.test(value) ? `"${value}"` : value
-}
-
 function statusLabel(mark: string): string {
   if (mark === '?') return 'Untracked'
   if (mark === '·') return 'Contains changes'

@@ -853,6 +853,35 @@ export async function history(cwd: string, limit = 400, filter?: HistoryFilter):
   return parseLog(res.out, remotes)
 }
 
+/**
+ * The messages of the saves on this branch that its upstream has not got.
+ *
+ * Exists for Relay, which has a count of unsent saves and needs the messages
+ * behind it: "2 saves not sent" is a number to worry about, and "2 saves not
+ * sent — 'fixed the parser', 'wip'" is an afternoon somebody remembers having.
+ *
+ * Deliberately `@{upstream}..HEAD` and **not** `RepoStatus.unsent`, which is a
+ * different question with a different right answer. `unsent` is built from
+ * `rev-list --all --not --remotes` because the history pane marks rows across
+ * the whole graph, so it counts every ref — including a tag left on a line of
+ * saves that was abandoned months ago. Measured on this repository: a `main`
+ * fully pushed, and thirteen "unsent" saves held alive by one backup tag.
+ *
+ * Relay says "N saves not sent on main", so for Relay the only honest set is
+ * the one on this branch and not on the branch it is paired with. A feature
+ * whose whole job is to stop somebody worrying must not invent things to worry
+ * about — the first false alarm is the one that teaches people to ignore it.
+ *
+ * Empty for a branch with no upstream, where git has nothing to subtract. That
+ * is not "nothing unsent" and must not be shown as it — see `RepoStatus.upstream`.
+ */
+export async function unsentSubjects(cwd: string, limit: number): Promise<string[]> {
+  const root = (await repoRoot(cwd)) ?? cwd
+  const res = await run(root, ['log', `--max-count=${Math.max(1, limit)}`, '--format=%s', '@{upstream}..HEAD'])
+  if (!res.ok) return []
+  return res.out.split('\n').map((line) => line.trim()).filter(Boolean)
+}
+
 const BRANCH_FORMAT = [
   '%(refname)',
   '%(refname:short)',

@@ -19,7 +19,7 @@
 import { backend } from '../backend'
 import { store } from './state'
 import { classify } from './git/common'
-import { FILE_DRAG } from './filesPane'
+import { hasFilePath as hasFile, pathFromDrop } from './ui/fileDrag'
 import type { AuxPane } from './auxPane'
 
 type View = 'split' | 'unified'
@@ -492,28 +492,6 @@ function toRows(text: string): Row[] {
 }
 
 // --------------------------------------------------------------------- drops
-
-/** Whether a drag carries something we could take a path from. */
-function hasFile(e: DragEvent): boolean {
-  const types = e.dataTransfer?.types
-  if (!types) return false
-  return types.includes(FILE_DRAG) || types.includes('Files')
-}
-
-/**
- * The path behind a drop.
- *
- * A drag from our own file tree carries the path outright and works everywhere.
- * A drag from Explorer carries a `File`, and turning that into a location is
- * host-specific — `pathForFile` returns '' where the runtime cannot say, and
- * the picker button is the way through.
- */
-function pathFromDrop(e: DragEvent): string {
-  const internal = e.dataTransfer?.getData(FILE_DRAG)
-  if (internal) return internal
-  const file = e.dataTransfer?.files?.[0]
-  return file ? backend().pathForFile(file) : ''
-}
 
 function name(full: string): string {
   const cut = Math.max(full.lastIndexOf('\\'), full.lastIndexOf('/'))

@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { backend } from '../backend'
+import { hasFilePath, pathsFromDrop, quotePath } from './ui/fileDrag'
 import { store, paneLabel, shellFor } from './state'
 import { activeTerminalTheme, isTranslucent, terminalBackdrop, xtermTheme } from './themes'
 import { isEditing } from './ui/editing'
@@ -16,6 +17,7 @@ import { gitRoot } from './git/common'
 import { ComparePane } from './comparePane'
 import { SearchPane, type SearchPaneHooks } from './searchPane'
 import { PortsPane, type PortsPaneHooks } from './portsPane'
+import { RelayPane } from './relayPane'
 import { TokensPane } from './tokensPane'
 import { ImagesPane, type ImagesPaneHooks } from './imagesPane'
 import { BrowserPane, DEFAULT_URL } from './browserPane'
@@ -259,9 +261,9 @@ export class TerminalManager {
 
     // Dropping a row from the file tree inserts its path at the cursor.
     element.addEventListener('dragover', (e) => {
-      if (e.dataTransfer?.types.includes('application/x-iaw-path')) {
+      if (hasFilePath(e)) {
         e.preventDefault()
-        e.dataTransfer.dropEffect = 'copy'
+        e.dataTransfer!.dropEffect = 'copy'
       }
     })
     element.addEventListener('drop', (e) => {
@@ -270,11 +272,15 @@ export class TerminalManager {
       // and, before there was anything to drag onto a pane, that text dragged
       // in from any other application went straight into it. The `dragover`
       // above already only accepts this type; the drop now agrees with it.
-      const path = e.dataTransfer?.getData('application/x-iaw-path')
-      if (!path) return
+      // Every path in the drop, quoted, which is what makes dragging five rows
+      // onto a prompt worth doing. Read through the shared helper because the
+      // same gesture now arrives as a real file when `fileDrag` says so, and a
+      // terminal wants the location typed either way.
+      const paths = pathsFromDrop(e)
+      if (!paths.length) return
       e.preventDefault()
       e.stopPropagation()
-      void backend().pty.write(paneId, path)
+      void backend().pty.write(paneId, paths.map(quotePath).join(' '))
     })
 
     // Right-click copies a selection, or pastes when there isn't one — the
@@ -660,6 +666,12 @@ export class TerminalManager {
       // consumer of those numbers already shares.
       case 'tokens':
         pane = new TokensPane(state.id, workspaceIdOf(state.id))
+        break
+      // Also no hooks, and no workspace: it draws from the relay monitor's own
+      // sweep, and what it shows is every project on every machine rather than
+      // anything belonging to the tab it happens to sit in.
+      case 'relay':
+        pane = new RelayPane(state.id)
         break
       // The system readings are a dock now, not a tab — see `monitorDock.ts`.
       // The kind stays so a document written before that still round-trips

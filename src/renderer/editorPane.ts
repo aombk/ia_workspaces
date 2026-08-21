@@ -59,7 +59,7 @@ import {
   type FindOptions,
   type Span,
 } from './ui/textOps'
-import { FILE_DRAG } from './filesPane'
+import { hasFilePath, pathFromDrop } from './ui/fileDrag'
 import { delimiterFor, grammarFor, modeForFile } from '../shared/editorModes'
 import { READ_ONLY_MODES, type EditorMode } from '../shared/types'
 import type { AuxPane } from './auxPane'
@@ -278,9 +278,9 @@ export class EditorPane implements AuxPane {
     // drag — a word from another pane — still lands as text rather than being
     // mistaken for a path.
     this.element.addEventListener('dragover', (e) => {
-      if (!e.dataTransfer?.types.includes(FILE_DRAG)) return
+      if (!hasFilePath(e)) return
       e.preventDefault()
-      e.dataTransfer.dropEffect = 'copy'
+      e.dataTransfer!.dropEffect = 'copy'
       this.element.classList.add('editor-drop')
     })
     this.element.addEventListener('dragleave', (e) => {
@@ -288,7 +288,7 @@ export class EditorPane implements AuxPane {
     })
     this.element.addEventListener('drop', (e) => {
       this.element.classList.remove('editor-drop')
-      const dropped = e.dataTransfer?.getData(FILE_DRAG)
+      const dropped = pathFromDrop(e)
       if (!dropped) return
       e.preventDefault()
       e.stopPropagation()

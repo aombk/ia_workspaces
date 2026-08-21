@@ -6,6 +6,8 @@ import path from 'node:path'
 import { listProcesses } from './processes'
 import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readTokenUsage } from './tokenUsage'
+import { startFileDrag } from './fileDrag'
+import { publishRelay, type RelayEntry } from './relay'
 import { shareTokens, type PublishEntry } from './tokenShare'
 import { readSystemStats } from './systemStats'
 import { readWeather } from './weather'
@@ -731,6 +733,12 @@ function bootApp(): void {
     ipcMain.handle(IPC.shareTokens, (_e, dir: string, entries: PublishEntry[]) =>
       shareTokens(SHARED_DATA_DIR, dir, entries)
     )
+    // The same folder, a different question: what every machine is part-way
+    // through. Reads and writes descriptions only — see `relay.ts`.
+    ipcMain.handle(IPC.relay, (_e, dir: string, entries: RelayEntry[]) =>
+      publishRelay(SHARED_DATA_DIR, dir, entries)
+    )
+    ipcMain.handle(IPC.startFileDrag, (event, paths: string[]) => startFileDrag(event.sender, paths))
     ipcMain.handle(IPC.systemStats, (_e, opts?: { drives?: boolean }) => readSystemStats(opts))
     ipcMain.handle(IPC.weather, (_e, req: WeatherRequest) => readWeather(req))
     ipcMain.handle(IPC.gitStatus, (_e, cwd: string) => gitStatus(cwd))

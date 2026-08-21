@@ -311,6 +311,12 @@ function collect(): Command[] {
       },
       {
         kind: 'Action',
+        label: 'relay',
+        detail: 'what your other machines were last part-way through — unsaved work, unsent saves',
+        run: () => actions.openRelay(id),
+      },
+      {
+        kind: 'Action',
         label: 'system',
         detail: 'load, memory, disks, network and graphics — how this computer is coping',
         run: () => actions.openMonitor(id),

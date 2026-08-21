@@ -7,7 +7,7 @@ import { modeForFile } from '../../shared/editorModes'
 import type { PaneState } from '../../shared/types'
 import { attachInlineEditor } from './editing'
 import { beginDrag, draggingPane, draggingTab, endDrag } from './dragState'
-import { FILE_DRAG } from '../filesPane'
+import { hasFilePath, pathFromDrop } from './fileDrag'
 import type { UiActions } from './actions'
 
 let actions: UiActions
@@ -198,10 +198,10 @@ function wireDragAndDrop(el: HTMLElement, index: number, workspaceId: string): v
 
   el.addEventListener('dragover', (e) => {
     // A file from the tree, dropped on an editor tab, opens there.
-    if (e.dataTransfer?.types.includes(FILE_DRAG)) {
+    if (hasFilePath(e)) {
       if (!editorPaneOf(el.dataset.tabId)) return
       e.preventDefault()
-      e.dataTransfer.dropEffect = 'copy'
+      e.dataTransfer!.dropEffect = 'copy'
       el.classList.add('drop-into')
       return
     }
@@ -230,7 +230,7 @@ function wireDragAndDrop(el: HTMLElement, index: number, workspaceId: string): v
     e.preventDefault()
     clear()
 
-    const file = e.dataTransfer?.getData(FILE_DRAG)
+    const file = pathFromDrop(e)
     if (file) {
       const pane = editorPaneOf(el.dataset.tabId)
       if (!pane) return
@@ -331,6 +331,10 @@ function newTabEntries(workspaceId: string): MenuEntry[] {
     {
       label: 'token stats',
       onClick: () => actions.openTokens(workspaceId),
+    },
+    {
+      label: 'relay',
+      onClick: () => actions.openRelay(workspaceId),
     },
     // No system monitor here. This menu makes tabs, and the monitor stopped
     // being one — it is a panel docked to the window, reached by Ctrl+Shift+M

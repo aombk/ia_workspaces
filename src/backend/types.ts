@@ -36,6 +36,8 @@ import type {
   WeatherReading,
   WeatherRequest,
   LatestReleaseResult,
+  Relay,
+  RelayPublishEntry,
 } from '../shared/types'
 
 /**
@@ -387,6 +389,25 @@ export interface Backend {
    * rather than an error. Only totals are written — never a transcript.
    */
   shareTokens(dir: string, entries: TokenPublishEntry[]): Promise<SharedTokens>
+  /**
+   * Publishes what this machine is part-way through into the shared folder, and
+   * returns every machine's account of every project.
+   *
+   * A blank `dir` is the feature switched off, and answers with `problem: 'off'`
+   * rather than an error — a caller must be able to tell that apart from a
+   * folder nobody has written into yet. Reports only: nothing here moves work
+   * between machines, and nothing here runs a git operation that changes one.
+   */
+  relay(dir: string, entries: RelayPublishEntry[]): Promise<Relay>
+  /**
+   * Hands these files to the operating system as a drag.
+   *
+   * Replaces the drag in progress rather than adding to it — the caller must
+   * have called `preventDefault` on the `dragstart` first. Answers whether it
+   * started, because a refusal means the caller's own drag is still the one
+   * happening and it should behave accordingly.
+   */
+  startFileDrag(paths: string[]): Promise<boolean>
   /**
    * Machine load, memory, disks, network and GPU, for the monitor pane and the
    * sidebar strip. One sample per call — the rates inside it are measured

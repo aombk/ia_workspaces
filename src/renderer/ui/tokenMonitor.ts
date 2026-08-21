@@ -96,7 +96,7 @@ async function refresh(): Promise<void> {
   // and the screen agree. It is skipped entirely when no folder is configured —
   // the call returns an empty share without touching a disk.
   try {
-    shared = await backend().shareTokens(store.settings.tokenShareDir ?? '', localEntries())
+    shared = await backend().shareTokens(store.settings.sharedDir ?? '', localEntries())
   } catch {
     // An unreachable share — an unmounted drive, a network that is down. This
     // machine's own numbers are unaffected, and that is what gets drawn.

@@ -70,6 +70,8 @@ export const IPC = {
   claudeUsage: 'app:claudeUsage',
   claudeTokens: 'app:claudeTokens',
   shareTokens: 'app:shareTokens',
+  relay: 'app:relay',
+  startFileDrag: 'drag:startFile',
   systemStats: 'app:systemStats',
   weather: 'app:weather',
   gitStatus: 'git:status',

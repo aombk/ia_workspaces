@@ -511,6 +511,10 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
       label: 'token stats',
       onClick: () => actions.openTokens(workspaceId),
     },
+    {
+      label: 'relay',
+      onClick: () => actions.openRelay(workspaceId),
+    },
     // No system monitor: this is the same list of tab kinds the tab strip
     // offers, and the monitor is a docked panel rather than a tab. It stays in
     // the command palette, which is a list of things to *do* rather than a list

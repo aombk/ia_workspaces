@@ -37,6 +37,14 @@ export interface UiActions {
   openPorts(workspaceId: string): void
   /** What this workspace has spent on Claude, as a tab. */
   openTokens(workspaceId: string): void
+  /**
+   * What your other machines were last part-way through, as a tab.
+   *
+   * Takes a workspace id it uses only to decide where to put the tab. What the
+   * pane shows is every project every machine has reported, which is the point:
+   * the project you left something in is the one you have not opened here.
+   */
+  openRelay(workspaceId: string): void
   /** Focus the machine monitor, opening it if none is open. */
   /**
    * Shows or hides the system panel.

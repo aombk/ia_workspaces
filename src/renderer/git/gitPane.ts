@@ -40,6 +40,8 @@ import {
   setButtonLabel,
   showGlossary,
 } from '../ui/gitWord'
+import { relayLineFor } from '../relayPane'
+import { refreshRelayNow } from '../ui/relayMonitor'
 import { showToast } from '../ui/toast'
 import { ChangesView } from './changesView'
 import { gitRoot, text } from './common'
@@ -581,6 +583,20 @@ export class GitPane implements AuxPane {
       parts.push(never)
     }
 
+    // Last, and only when there is something to say. Another machine having
+    // unsent saves on this same project is the one fact this pane cannot work
+    // out for itself and the one that turns an ordinary send into a divergence
+    // — so it belongs here, above the buttons, rather than in a tab somebody
+    // would have to think to open. Relay owns the wording, including the
+    // timestamp that stops it reading as a claim about right now.
+    const elsewhere = relayLineFor(this.cwd)
+    if (elsewhere) {
+      const note = document.createElement('div')
+      note.className = 'history-note'
+      note.textContent = elsewhere
+      parts.push(note)
+    }
+
     this.bandEl.replaceChildren(...parts)
     this.bandEl.hidden = parts.length === 0
   }
@@ -625,6 +641,11 @@ export class GitPane implements AuxPane {
       // real change, because the poll only redraws when something moved.
       invalidateRepo(this.cwd)
       await refreshRepo(this.cwd)
+      // A save or a send is the biggest change this machine's record can
+      // undergo, and the moment the other machines most want it. Relay still
+      // holds it back for its settle delay — this only means the clock starts
+      // now rather than up to a minute from now.
+      refreshRelayNow()
       if (!this.disposed) {
         this.renderHead()
         this.renderBand()

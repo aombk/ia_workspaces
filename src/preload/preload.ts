@@ -38,6 +38,8 @@ import type {
   WeatherReading,
   WeatherRequest,
   LatestReleaseResult,
+  Relay,
+  RelayPublishEntry,
 } from '../shared/types'
 
 /**
@@ -184,6 +186,9 @@ const api = {
   claudeTokens: (): Promise<TokenReport> => ipcRenderer.invoke(IPC.claudeTokens),
   shareTokens: (dir: string, entries: TokenPublishEntry[]): Promise<SharedTokens> =>
     ipcRenderer.invoke(IPC.shareTokens, dir, entries),
+  relay: (dir: string, entries: RelayPublishEntry[]): Promise<Relay> =>
+    ipcRenderer.invoke(IPC.relay, dir, entries),
+  startFileDrag: (paths: string[]): Promise<boolean> => ipcRenderer.invoke(IPC.startFileDrag, paths),
   systemStats: (opts?: { drives?: boolean }): Promise<SystemStats> =>
     ipcRenderer.invoke(IPC.systemStats, opts),
   weather: (req: WeatherRequest): Promise<WeatherReading> => ipcRenderer.invoke(IPC.weather, req),

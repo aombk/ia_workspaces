@@ -5,6 +5,7 @@ import { renderThemeSection } from './themeEditor'
 import { showToast } from './toast'
 import { DEFAULT_URL } from '../browserPane'
 import { refreshUsageNow } from './usageMonitor'
+import { refreshRelayNow } from './relayMonitor'
 import { refreshTokensNow } from './tokenMonitor'
 import { syncSystemStrip } from './systemStrip'
 import { appVersion, checkForUpdates, describeUpdate } from '../updates'
@@ -468,6 +469,24 @@ async function render(): Promise<void> {
         text(s.newWorkspaceDir, 'your home folder', (v) => patch({ newWorkspaceDir: v }))
       ),
       field(
+        'Dragging a file out of the app',
+        'What other programs receive when you drag a row out of the file tree. ' +
+          '“The file itself” starts the same kind of drag Explorer does, so it can ' +
+          'be dropped into FileZilla to upload, onto a message to send, or into an ' +
+          'email to attach. “Its location” sends the path as text, which is what a ' +
+          'terminal wants typed at a prompt. Either way, dropping onto this app’s ' +
+          'own panes works as it always did.',
+        select(
+          [
+            { value: 'auto', label: 'the file itself, unless it is inside WSL' },
+            { value: 'file', label: 'always the file itself' },
+            { value: 'path', label: 'always its location, as text' },
+          ],
+          s.fileDrag,
+          (v) => patch({ fileDrag: v as Settings['fileDrag'] })
+        )
+      ),
+      field(
         'Ctrl+C copies when text is selected',
         'With no selection it still sends an interrupt.',
         toggle(s.copyOnSelectionCtrlC, (v) => patch({ copyOnSelectionCtrlC: v }))
@@ -498,15 +517,21 @@ async function render(): Promise<void> {
       // token count — decisions about what that list displays belong where the
       // list is, not three panels away from it. See `showsMenu` in `sidebar.ts`.
       field(
-        'Share token counts between machines',
-        'A folder your machines can all see — a synced drive, a network share. ' +
-          'Each one writes its own totals there and reads the others’, so a ' +
-          'project you work on from two computers adds up to one number on both. ' +
-          'Only totals are written: a few dozen numbers per project, never a ' +
-          'conversation. Leave blank to count this machine alone.',
-        folder(s.tokenShareDir, 'not shared — this machine only', (v) => {
-          patch({ tokenShareDir: v })
+        'A folder your machines share',
+        'A synced drive or a network share that every computer you work from ' +
+          'can see. Two things use it. Token counts are pooled, so a project ' +
+          'you work on from two machines adds up to one number on both. And ' +
+          'Relay writes down what each machine is part-way through — the branch ' +
+          'it is on, saves it has not sent, files it has changed and not saved — ' +
+          'so the Relay pane can answer “did I leave something on the laptop?” ' +
+          'without you going and looking. What travels is a description: totals, ' +
+          'counts, branch names and the paths of files git already tracks. Never ' +
+          'a conversation, never the contents of a file, and never the name of a ' +
+          'file git is not tracking. Leave blank for neither — this machine alone.',
+        folder(s.sharedDir, 'not shared — this machine only', (v) => {
+          patch({ sharedDir: v })
           refreshTokensNow()
+          refreshRelayNow()
         })
       ),
       field(

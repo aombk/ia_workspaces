@@ -1730,6 +1730,13 @@ function normalize(raw: unknown): PersistedState {
   // any other value is a real preference and is left alone.
   if (settings.lineHeight === 1.2) settings.lineHeight = DEFAULT_SETTINGS.lineHeight
 
+  // The shared folder was `tokenShareDir` while token totals were the only
+  // thing written into it. Relay writes there too now, so the key says what it
+  // is. Carried rather than asked for again: someone who already chose a folder
+  // has answered this question once.
+  const legacyShare = (doc.settings as Record<string, unknown> | undefined)?.tokenShareDir
+  if (typeof legacyShare === 'string' && !settings.sharedDir) settings.sharedDir = legacyShare
+
   // A v1 file used `terminalTheme` with different ids than v2's `themeId`.
   const legacyTheme = (doc.settings as Record<string, unknown> | undefined)?.terminalTheme
   if (typeof legacyTheme === 'string' && !(doc.settings as Record<string, unknown>)?.themeId) {
@@ -2223,6 +2230,7 @@ export function paneLabel(pane: PaneState): string {
   if (pane.kind === 'search') return 'search'
   if (pane.kind === 'ports') return 'running'
   if (pane.kind === 'tokens') return 'token stats'
+  if (pane.kind === 'relay') return 'relay'
   if (pane.kind === 'monitor') return 'system'
   if (pane.kind === 'images') return 'images'
   if (pane.kind === 'browser') return browserLabel(pane.url)

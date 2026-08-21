@@ -150,6 +150,7 @@ export const PANE_KINDS = [
   'compare',
   'images',
   'monitor',
+  'relay',
 ] as const
 
 export type PaneKind = (typeof PANE_KINDS)[number]
@@ -546,6 +547,125 @@ export interface SharedTokens {
   keys: Record<string, string>
   /** Every machine's totals, by project key — this machine's included. */
   byProject: Record<string, MachineTotals[]>
+}
+
+/**
+ * One machine's account of one project, as written into the relay folder.
+ *
+ * This is the whole of what Relay moves between machines: a description of a
+ * repository, never the repository. No patch, no bundle, no file contents, and
+ * no button anywhere that commits, pushes or pulls on another machine's behalf.
+ * Relay answers "what is going on over there"; what to do about it is decided in
+ * the git pane, by a person, on the machine it affects.
+ *
+ * Every field is a fact that machine could see at `at` and cannot see now. The
+ * pane must therefore never render one in the present tense — see `stale`.
+ */
+export interface RelayPresence {
+  /** Stable per machine, and the key that stops one appearing twice. */
+  machine: string
+  /** That machine's hostname, for reading. Never matched on. */
+  label: string
+  /** The project key every machine agrees on — a git remote, or a folder name. */
+  project: string
+  /** Where the project lives *on that machine*, which is rarely where it lives here. */
+  path: string
+  /** What that machine calls the workspace. */
+  name: string
+  /** The line of saves (branch) it was on, or absent when off to one side. */
+  branch?: string
+  /** True when it was sitting on one save rather than on a branch. */
+  detached?: boolean
+  /**
+   * The full number of the save it was standing on.
+   *
+   * Full rather than short for the same reason `RepoStatus.headFull` is: this
+   * one is compared, not read, and a seven-character prefix compares correctly
+   * right up until a project grows two saves that share one.
+   */
+  head?: string
+  /** Saves it had made that the copy online had not got. */
+  unsent: number
+  /**
+   * What those saves were called, newest first, and not necessarily all of them.
+   *
+   * A count alone is a number to worry about; the messages are what let someone
+   * recognise their own afternoon and stop worrying. Capped, because a machine
+   * left offline for a fortnight must not write a novel into a synced folder.
+   */
+  unsentSubjects: string[]
+  /** Saves the copy online had that it had not brought in. */
+  behind: number
+  /** Whether that copy of the project had a remote at all. */
+  hasRemote: boolean
+  /**
+   * The branch online this one was paired with, like `origin/main`.
+   *
+   * Absent means the branch had never been sent, which is a third state and not
+   * a tidier way of saying `unsent: 0`. A branch with no upstream has nothing to
+   * be counted against, so every save on it is somewhere else's news — and
+   * reporting that as "nothing unsent" would be the most confident possible way
+   * to be wrong.
+   */
+  upstream?: string
+  /**
+   * Files it had changed and not saved, as paths inside the project.
+   *
+   * Paths, because the whole point of the overlap warning is naming the file.
+   * Tracked files only: a name git already knows is a name already committed to
+   * the repository's history, whereas an untracked one can be a scratch file, a
+   * dump, or a secret nobody meant to write down. Those are counted, never named.
+   */
+  changed: string[]
+  /** How many files it had that git was not tracking. Counted, never named. */
+  untracked: number
+  /** A rebase or merge it had stopped part-way through, if any. */
+  inProgress?: RepoStatus['inProgress']
+  /**
+   * True when that machine had this workspace open in the app as it wrote.
+   *
+   * The difference between "the laptop has four changed files" and "the laptop
+   * is being used right now, on this, by you, ten seconds ago" — which is the
+   * difference between reassurance and a warning.
+   */
+  open: boolean
+  /** When that machine last wrote this record. */
+  at: number
+}
+
+/**
+ * One workspace, on its way out to the relay folder.
+ *
+ * Only what the main process cannot work out for itself. The repository's state
+ * is deliberately *not* here: `relay.ts` asks git directly, because sending a
+ * whole `RepoStatus` — every changed file, every unsent hash — across the bridge
+ * once a minute per workspace to have most of it thrown away is a lot of copying
+ * to save a call that is already cached.
+ */
+export interface RelayPublishEntry {
+  cwd: string
+  name: string
+  /** Whether this is the workspace on screen right now, in a window with focus. */
+  open: boolean
+}
+
+/** Everything the relay folder knows, plus which key each local folder maps to. */
+export interface Relay {
+  /** This machine's own id, so its rows can be told apart. Blank = relay off. */
+  machine: string
+  /** Local workspace folder to project key, for the records below. */
+  keys: Record<string, string>
+  /** Every machine's account, by project key — this machine's included. */
+  byProject: Record<string, RelayPresence[]>
+  /**
+   * Why there is nothing to show, when there is nothing to show.
+   *
+   * A blank pane has three quite different causes — the feature is off, the
+   * folder cannot be reached, or no other machine has ever written — and a
+   * person who cannot tell them apart will assume the middle one and go
+   * looking for a fault that is not there.
+   */
+  problem?: 'off' | 'unreachable'
 }
 
 export interface TokenReport {
@@ -1248,14 +1368,41 @@ export interface Settings {
    */
   showTabCount: boolean
   /**
-   * A folder shared between your machines, where each writes its own totals.
+   * A folder every machine you work from can see — a synced drive, a share.
    *
-   * Blank, which is off, and off is the honest default: this reads and writes
-   * files somewhere the user chose, and nothing should start doing that on its
-   * own. When it is blank the counts say "this machine" rather than pretending
-   * to be the project's whole story. See `tokenShare.ts`.
+   * One folder for the two features that need one: token totals pooled across
+   * machines (`tokenShare.ts`) and Relay (`relay.ts`). Each makes its own
+   * subfolder inside it, so what they write stays separable even though what
+   * they are pointed at is not.
+   *
+   * Blank, which is off, and blank is also the entire switch. There is no
+   * companion toggle, which means the two states a toggle makes possible — on
+   * with nowhere to write, off with a path sitting there looking live — simply
+   * do not exist. Off is the honest default: this reads and writes files
+   * somewhere the user chose, and nothing should start doing that on its own.
+   *
+   * Was `tokenShareDir`, when only one feature used it. `normalize` in
+   * `state.ts` carries the old key over.
    */
-  tokenShareDir: string
+  sharedDir: string
+  /**
+   * What leaves the app when a file is dragged out of it.
+   *
+   * `file` starts an operating-system drag, so the file itself arrives in
+   * FileZilla, an upload box or a mail attachment. `path` puts the location on
+   * the drag as text, which is what every part of *this* app reads and what a
+   * terminal wants typed at a prompt.
+   *
+   * `auto`, the default, is `file` for anything that is a real file on this
+   * machine and `path` for anything that is not — a folder inside WSL has a
+   * Windows path that looks like a location and is not one the rest of the
+   * desktop can open, and starting a file drag for it would hand other programs
+   * something they cannot use.
+   *
+   * A setting rather than a decision, because the right answer depends on what
+   * somebody spends the day dragging *into*, and both answers are defensible.
+   */
+  fileDrag: 'auto' | 'file' | 'path'
   /**
    * Extra columns beside each name in the file tree: how big a file is, and
    * when it last changed.
@@ -2038,7 +2185,8 @@ export const DEFAULT_SETTINGS: Settings = {
   confirmCloseRunning: true,
   showGitBranch: true,
   showTabCount: false,
-  tokenShareDir: '',
+  sharedDir: '',
+  fileDrag: 'auto',
   treeShowSize: false,
   treeShowModified: false,
   treeSort: 'name',
