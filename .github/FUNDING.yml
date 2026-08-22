@@ -1,0 +1,12 @@
+# The Sponsor button at the top of the repository page.
+#
+# The same accounts as the other projects, deliberately: anybody who has
+# sponsored one already knows where they are going.
+#
+# `github:` is left out rather than left blank — it needs enrolment first at
+# https://github.com/sponsors, and a button pointing at an account that does not
+# exist yet is worse than one fewer button. Add it here once that is done.
+
+patreon: iraisynnattinom
+ko_fi: iraisynn_attinom
+buy_me_a_coffee: iraisynnattinom
