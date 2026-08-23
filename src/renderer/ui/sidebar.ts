@@ -70,7 +70,7 @@ function showsMenu(): MenuEntry {
         onClick: () => store.updateSettings({ showTabCount: !s.showTabCount }),
       },
       {
-        label: 'uncommitted work elsewhere (on your other machines)',
+        label: 'Relay warnings (uncommitted work on other machines)',
         checked: s.showRelayWarning,
         onClick: () => store.updateSettings({ showRelayWarning: !s.showRelayWarning }),
       },
@@ -235,12 +235,25 @@ ${workspace.cwd}`
     name.textContent = workspace.name
     label.appendChild(name)
 
+    if (store.settings.showGitBranch && workspace.branch) {
+      const branch = document.createElement('span')
+      branch.className = 'workspace-branch'
+      branch.textContent = workspace.branch
+      branch.title = `On branch ${workspace.branch}`
+      label.appendChild(branch)
+    }
+    el.appendChild(label)
+
+    // On the row rather than inside the label: `.workspace-label` is a column,
+    // so anything added there lands *under* the name beside the branch. This
+    // belongs next to the name, where the tab count is.
+    //
     // A mark only when another machine has something you have not seen. There
     // is deliberately no calm state and no slot kept for one: a workspace whose
-    // work is committed and sent everywhere is not news, and a badge on every
-    // row is a badge that stops being looked at before the day it matters.
-    // Hovering is the deliberate "tell me about this one", and the tooltip has
-    // room for the machine, the saves and the files where a glyph does not.
+    // work is committed and pushed is not news, and a badge on every row is a
+    // badge that stops being looked at before the day it matters. Hovering is
+    // the deliberate "tell me about this one", and the tooltip has room for the
+    // machine, the commits and the files where a glyph does not.
     const warning = store.settings.showRelayWarning ? relayWarning(workspace.cwd) : null
     if (warning) {
       const mark = document.createElement('span')
@@ -257,17 +270,8 @@ ${workspace.cwd}`
       mark.addEventListener('mouseleave', () => {
         el.title = el.dataset.rowTitle ?? el.title
       })
-      label.appendChild(mark)
+      el.appendChild(mark)
     }
-
-    if (store.settings.showGitBranch && workspace.branch) {
-      const branch = document.createElement('span')
-      branch.className = 'workspace-branch'
-      branch.textContent = workspace.branch
-      branch.title = `On branch ${workspace.branch}`
-      label.appendChild(branch)
-    }
-    el.appendChild(label)
 
     // No token badge here. The counts are on the row's tooltip instead — a
     // sidebar is a list of places to go, and a number beside every name is a
@@ -541,6 +545,22 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
     {
       label: 'token stats',
       onClick: () => actions.openTokens(workspaceId),
+    },
+    {
+      label: 'runbook',
+      onClick: () => actions.openRunbook(workspaceId),
+    },
+    {
+      label: 'focus',
+      onClick: () => actions.openFocus(workspaceId),
+    },
+    {
+      label: 'today',
+      onClick: () => actions.openDay(workspaceId),
+    },
+    {
+      label: 'canvas',
+      onClick: () => actions.openCanvas(workspaceId),
     },
     // No system monitor: this is the same list of tab kinds the tab strip
     // offers, and the monitor is a docked panel rather than a tab. It stays in

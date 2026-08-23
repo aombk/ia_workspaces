@@ -39,6 +39,7 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { repoStatus, unsentSubjects } from './git'
+import { redact, seal, unseal } from './shareCrypto'
 import { machine, projectKey } from './shareIdentity'
 import type { Relay, RelayPresence, RelayPublishEntry, RepoStatus } from '../shared/types'
 
@@ -113,6 +114,38 @@ const seeded = new Set<string>()
  */
 const pending = new Map<string, number>()
 
+/** What was last published for each project, so an unchanged list writes nothing. */
+const publishedCommands = new Map<string, string>()
+
+/** When each project's command list was first seen to differ. See `COMMAND_SETTLE_MS`. */
+const commandsPending = new Map<string, number>()
+
+/**
+ * Projects whose command list this run has looked at once.
+ *
+ * The first look publishes without waiting, exactly as the state record's does,
+ * and here the reason is sharper: this map is empty at every launch, so with a
+ * fifteen-minute clock and nothing else, a session shorter than fifteen minutes
+ * would publish nothing at all — and a great many sessions are.
+ */
+const commandsSeeded = new Set<string>()
+
+/**
+ * How long a changed command list waits before it is published.
+ *
+ * Much longer than the state record's delay, because the two answer different
+ * questions. "Has the laptop got work I have not seen" is worth knowing within
+ * minutes. "What does somebody run in this project" is a description of how a
+ * project is built, and nobody needs this morning's addition to it this
+ * morning — while the list changes every time a new command is run, which
+ * during a working hour is often.
+ *
+ * Without this the list was republished on the next sweep after any new
+ * command: a few kilobytes of ciphertext per project, every minute or so, all
+ * day, on a drive somebody is paying to sync.
+ */
+const COMMAND_SETTLE_MS = 15 * 60 * 1000
+
 /**
  * Publishes this machine's account of every workspace, and returns everyone's.
  *
@@ -124,9 +157,11 @@ const pending = new Map<string, number>()
 export async function publishRelay(
   dataDir: string,
   sharedDir: string,
-  entries: readonly RelayEntry[]
+  entries: readonly RelayEntry[],
+  passphrase = ''
 ): Promise<Relay> {
-  if (!sharedDir.trim()) return { machine: '', keys: {}, byProject: {}, problem: 'off' }
+  if (!sharedDir.trim())
+    return { machine: '', keys: {}, byProject: {}, commandsByProject: {}, problem: 'off' }
 
   const me = await machine(dataDir)
   const root = path.join(sharedDir, SHARE_FOLDER)
@@ -185,6 +220,14 @@ export async function publishRelay(
       seeded.add(key)
       const mine = await readOwn(root, key, me.id)
       if (mine) published.set(key, shapeOf(mine))
+    }
+
+    // Commands go in their own file, always encrypted, and on their own
+    // schedule: the state record is rewritten rarely by design, and a list of
+    // commands changes every time one is run. Tying them together would mean
+    // publishing state too often or commands too rarely.
+    if (entry.commands?.length && passphrase) {
+      await writeCommands(root, key, me, entry.commands, passphrase)
     }
 
     if (published.get(key) === shape) {
@@ -257,13 +300,122 @@ export async function publishRelay(
   }
 
   const byProject = await readRelay(root)
+  const commandsByProject = passphrase ? await readCommands(root, me.id, passphrase) : {}
   const reachable = wrote || Object.keys(byProject).length > 0
   return {
     machine: me.id,
     keys,
     byProject,
+    commandsByProject,
     problem: failed && !reachable ? 'unreachable' : undefined,
   }
+}
+
+/**
+ * Writes this machine's commands for one project, encrypted.
+ *
+ * Rewritten in full each time rather than appended to: the list is already
+ * capped, and a file that only grows is a file that eventually needs its own
+ * maintenance story. Skipped entirely when nothing has changed, on the same
+ * reasoning as the state record — a synced folder should not be asked to carry
+ * the same sentence twice.
+ */
+async function writeCommands(
+  root: string,
+  key: string,
+  me: { id: string; label: string },
+  commands: readonly string[],
+  passphrase: string
+): Promise<void> {
+  // Redacted here rather than by the caller, and this is the only place that
+  // may write a command anywhere outside this machine. A choke point cannot be
+  // forgotten by a second caller added later, and cannot be bypassed by a bug
+  // in the renderer that assembles the list.
+  const safe = commands.map(redact)
+
+  const shape = JSON.stringify(safe)
+  if (publishedCommands.get(key) === shape) {
+    commandsPending.delete(key)
+    return
+  }
+
+  // Same shape of clock as the state record's, and for the same reason: one
+  // per project, started by the first difference and never reset, so a project
+  // being worked on hard publishes on a fixed cadence rather than never.
+  const first = !commandsSeeded.has(key)
+  commandsSeeded.add(key)
+  if (!first) {
+    const since = commandsPending.get(key)
+    if (since === undefined) {
+      commandsPending.set(key, Date.now())
+      return
+    }
+    if (Date.now() - since < COMMAND_SETTLE_MS) return
+  }
+
+  try {
+    await mkdir(path.join(root, key), { recursive: true })
+    // The label goes inside the sealed body rather than into the filename:
+    // which machine ran what is part of what somebody would rather not publish.
+    const body = seal(JSON.stringify({ machine: me.id, label: me.label, commands: safe }), passphrase)
+    await writeFile(path.join(root, key, `cmd-${me.id}.json`), body, 'utf8')
+    publishedCommands.set(key, shape)
+    commandsPending.delete(key)
+  } catch {
+    // Unreachable share. The state record's own handling already reports that.
+  }
+}
+
+/**
+ * Every other machine's commands, by project, for the passphrases that match.
+ *
+ * A file this passphrase cannot open is skipped in silence. That is the
+ * ordinary case for a machine set up with a different passphrase, and it is not
+ * worth warning about on every sweep: the commands simply do not appear, which
+ * is exactly what "cannot read them" should look like.
+ */
+async function readCommands(
+  root: string,
+  meId: string,
+  passphrase: string
+): Promise<Relay['commandsByProject']> {
+  const out: Relay['commandsByProject'] = {}
+  let projects
+  try {
+    projects = await readdir(root, { withFileTypes: true })
+  } catch {
+    return out
+  }
+
+  for (const project of projects) {
+    if (!project.isDirectory()) continue
+    let files
+    try {
+      files = await readdir(path.join(root, project.name), { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.startsWith('cmd-')) continue
+      // This machine's own are already in its own history, and fresher.
+      if (file.name === `cmd-${meId}.json`) continue
+      try {
+        const raw = await readFile(path.join(root, project.name, file.name), 'utf8')
+        const opened = unseal(raw, passphrase)
+        if (!opened) continue
+        const record = JSON.parse(opened) as { machine: string; label: string; commands: string[] }
+        if (!record?.machine || !Array.isArray(record.commands)) continue
+        ;(out[project.name] ??= []).push({
+          machine: record.machine,
+          label: record.label || record.machine,
+          commands: record.commands.filter((c) => typeof c === 'string' && c),
+        })
+      } catch {
+        // Half-written by a sync client, or not ours at all.
+      }
+    }
+  }
+  return out
 }
 
 /** The part of a record that decides whether it is worth writing again. */

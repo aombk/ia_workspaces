@@ -2230,6 +2230,16 @@ export function paneLabel(pane: PaneState): string {
   if (pane.kind === 'search') return 'search'
   if (pane.kind === 'ports') return 'running'
   if (pane.kind === 'tokens') return 'token stats'
+  if (pane.kind === 'runbook') return 'runbook'
+  if (pane.kind === 'focus') return 'focus'
+  if (pane.kind === 'day') return 'today'
+  // The canvas's own name, since a workspace can hold several now. Stripped of
+  // `.canvas`, which every one of them ends in and none of them is told apart
+  // by. Absent means the project's own — see `DEFAULT_FILE`.
+  if (pane.kind === 'canvas') {
+    const name = fileName(pane.file ?? '').replace(/\.canvas$/i, '')
+    return name || 'canvas'
+  }
   if (pane.kind === 'monitor') return 'system'
   if (pane.kind === 'images') return 'images'
   if (pane.kind === 'browser') return browserLabel(pane.url)

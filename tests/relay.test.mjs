@@ -24,7 +24,7 @@ fs.rmSync(out, { recursive: true, force: true })
 fs.mkdirSync(out, { recursive: true })
 
 await build({
-  entryPoints: { relay: 'src/main/relay.ts' },
+  entryPoints: { relay: 'src/main/relay.ts', crypto: 'src/main/shareCrypto.ts' },
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -32,6 +32,7 @@ await build({
   external: ['electron'],
 })
 const R = await import(`file://${out}/relay.js`)
+const { unseal } = await import(`file://${out}/crypto.js`)
 
 let passed = 0
 const checkAsync = async (name, fn) => {
@@ -90,6 +91,9 @@ function written() {
   const found = {}
   for (const project of fs.existsSync(relayDir) ? fs.readdirSync(relayDir) : []) {
     for (const file of fs.readdirSync(path.join(relayDir, project))) {
+      // State records only. The `cmd-` files beside them are sealed blobs, not
+      // JSON, which is the entire point of them.
+      if (file.startsWith('cmd-')) continue
       const full = path.join(relayDir, project, file)
       found[`${project}/${file}`] = {
         at: fs.statSync(full).mtimeMs,
@@ -289,6 +293,95 @@ await checkAsync('a folder git is not watching is left out entirely', async () =
   fs.mkdirSync(plain, { recursive: true })
   const relay = await R.publishRelay(dataDir, shared, [{ cwd: plain, name: 'notes', open: false }])
   assert.equal(relay.keys[plain], undefined, 'no key, no record, no empty row on anyone else’s screen')
+})
+
+await checkAsync('commands are published only with a passphrase, and only sealed', async () => {
+  const commands = ['npm run release', 'psql postgres://me:hunter2@db/app']
+  const entry = [{ cwd: repo, name: 'alpha', open: true, commands }]
+
+  // No passphrase: nothing is written, however loudly it is asked for. There
+  // must be no path that puts a command line in the folder in the clear.
+  await R.publishRelay(dataDir, shared, entry)
+  const project = Object.keys(written())[0].split('/')[0]
+  const dir = path.join(relayDir, project)
+  assert.equal(
+    fs.readdirSync(dir).filter((f) => f.startsWith('cmd-')).length,
+    0,
+    'no passphrase, no commands — not even redacted ones'
+  )
+
+  const relay = await R.publishRelay(dataDir, shared, entry, 'a shared passphrase')
+  const files = fs.readdirSync(dir).filter((f) => f.startsWith('cmd-'))
+  assert.equal(files.length, 1)
+
+  const raw = fs.readFileSync(path.join(dir, files[0]), 'utf8')
+  assert.ok(raw.startsWith('iaw1.'), 'sealed, and it says so')
+  assert.ok(!raw.includes('npm run release'), 'a command you can read in the folder is the whole problem')
+  assert.ok(!raw.includes('hunter2'))
+
+  // And redacted before it was sealed. Belt and braces: the password must not
+  // be in there even for somebody who has the passphrase.
+  const opened = JSON.parse(unseal(raw, 'a shared passphrase'))
+  assert.ok(
+    !JSON.stringify(opened).includes('hunter2'),
+    'the password is gone before the encryption, not only behind it'
+  )
+  assert.ok(opened.commands.some((c) => c.includes('postgres://me')), 'and the command still says what it was')
+
+  // This machine's own file is not read back: its commands are already in its
+  // own history, fresher than anything it wrote to a synced drive.
+  assert.deepEqual(relay.commandsByProject[project] ?? [], [])
+})
+
+await checkAsync('a changed command list waits, but the first look of a session does not', async () => {
+  const project = Object.keys(written())[0].split('/')[0]
+  const dir = path.join(relayDir, project)
+  const file = path.join(dir, fs.readdirSync(dir).find((f) => f.startsWith('cmd-')))
+  const before = fs.statSync(file).mtimeMs
+
+  // A new command, part-way through a session: held back. Publishing on the
+  // next sweep after every command is a few kilobytes per project all day.
+  const grown = [{ cwd: repo, name: 'alpha', open: true, commands: ['npm run release', 'git push'] }]
+  await R.publishRelay(dataDir, shared, grown, 'a shared passphrase')
+  assert.equal(fs.statSync(file).mtimeMs, before, 'the clock started; nothing was written')
+
+  clock += 16 * 60 * 1000
+  await R.publishRelay(dataDir, shared, grown, 'a shared passphrase')
+  assert.notEqual(fs.statSync(file).mtimeMs, before, 'and once the wait is out, it goes')
+})
+
+await checkAsync('another machine’s commands come back, and only for the right passphrase', async () => {
+  const project = Object.keys(written())[0].split('/')[0]
+  const dir = path.join(relayDir, project)
+  const mine = fs.readdirSync(dir).find((f) => f.startsWith('cmd-'))
+  // Stand in for a second machine by copying this one's sealed file under
+  // another name — same passphrase, different machine id.
+  fs.writeFileSync(
+    path.join(dir, 'cmd-macbook-deadbeef.json'),
+    fs.readFileSync(path.join(dir, mine), 'utf8')
+  )
+
+  const right = await R.publishRelay(
+    dataDir,
+    shared,
+    [{ cwd: repo, name: 'alpha', open: true }],
+    'a shared passphrase'
+  )
+  const found = right.commandsByProject[project] ?? []
+  assert.equal(found.length, 1, 'the other machine is read; this one is skipped')
+  assert.ok(found[0].commands.includes('npm run release'))
+
+  const wrong = await R.publishRelay(
+    dataDir,
+    shared,
+    [{ cwd: repo, name: 'alpha', open: true }],
+    'the wrong passphrase'
+  )
+  assert.deepEqual(
+    wrong.commandsByProject[project] ?? [],
+    [],
+    'a machine that cannot read them sees nothing, and that is not an error'
+  )
 })
 
 Date.now = realNow

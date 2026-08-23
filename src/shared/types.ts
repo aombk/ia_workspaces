@@ -150,6 +150,10 @@ export const PANE_KINDS = [
   'compare',
   'images',
   'monitor',
+  'runbook',
+  'focus',
+  'day',
+  'canvas',
 ] as const
 
 export type PaneKind = (typeof PANE_KINDS)[number]
@@ -646,6 +650,15 @@ export interface RelayPublishEntry {
   name: string
   /** Whether this is the workspace on screen right now, in a window with focus. */
   open: boolean
+  /**
+   * Commands run in this project, for the machines that want to recall them.
+   *
+   * Absent unless sharing commands is switched on *and* a passphrase is set —
+   * both, because this is the one payload that is dangerous in the clear and
+   * there must be no path that publishes it unencrypted. Already redacted by
+   * the time it arrives here; `shareCrypto.ts` does the sealing.
+   */
+  commands?: string[]
 }
 
 /** Everything the relay folder knows, plus which key each local folder maps to. */
@@ -656,6 +669,14 @@ export interface Relay {
   keys: Record<string, string>
   /** Every machine's account, by project key — this machine's included. */
   byProject: Record<string, RelayPresence[]>
+  /**
+   * What every other machine has run in each project, by project key.
+   *
+   * Empty unless commands are being shared and this machine's passphrase can
+   * read what the others wrote. A machine whose passphrase differs contributes
+   * nothing and is not an error — see `unseal`.
+   */
+  commandsByProject: Record<string, { machine: string; label: string; commands: string[] }[]>
   /**
    * Why there is nothing to show, when there is nothing to show.
    *
@@ -917,6 +938,29 @@ export interface AppFootprint {
   /** Percent of one core, summed across the app's processes. */
   cpu: number
   /** Resident bytes, summed. */
+  memory: number
+  /**
+   * The same numbers, split by what each process is for.
+   *
+   * A total on its own cannot be acted on. An Electron app is five or six
+   * processes doing entirely different jobs, and which one is holding the
+   * memory decides what to do about it: the graphics process answers to the
+   * "draw with the processor" setting, a renderer answers to scrollback, and
+   * the main process answers to neither. Measured here, the graphics process
+   * alone held a third of a gigabyte — a fact worth being able to see rather
+   * than having to go and find with a process explorer.
+   */
+  parts: AppProcessGroup[]
+}
+
+/** One kind of process this app runs, and what all of them cost together. */
+export interface AppProcessGroup {
+  /** Electron's own name for the job: `browser`, `renderer`, `gpu`, `utility`. */
+  type: string
+  count: number
+  /** Percent of one core, summed over the group. */
+  cpu: number
+  /** Resident bytes, summed over the group. */
   memory: number
 }
 
@@ -1344,6 +1388,63 @@ export interface Settings {
   cursorBlink: boolean
   cursorStyle: 'block' | 'underline' | 'bar'
   scrollback: number
+  /**
+   * Lines kept for a pane you have not looked at in a while. 0 never trims.
+   *
+   * The largest thing this app holds is terminal buffers, and they only ever
+   * grow: xterm allocates lines as output arrives and never gives them back
+   * until the pane is closed. At two hundred columns a full ten-thousand-line
+   * buffer is roughly twenty-four megabytes, per pane, for as long as the app
+   * is open — and a session that visits twenty panes is holding twenty of them.
+   *
+   * So a pane nobody has looked at for half an hour keeps this many lines
+   * instead. **This discards them**: the lines are gone from that pane, not
+   * paged out, and switching back does not bring them back. That is why it is a
+   * number you choose rather than something clever done behind your back, and
+   * why the default is generous rather than tight.
+   *
+   * The trade is honest in the usual case: the panes holding the most are the
+   * ones you opened once, watched a build in, and never returned to.
+   */
+  hiddenScrollback: number
+  /**
+   * Minutes an off-screen agent pane may idle before its shell is released.
+   *
+   * The largest thing this app *causes* is not its own memory, it is the agents
+   * running in it: `claude.exe` sits at around half a gigabyte per pane and
+   * brings a per-session MCP server and a conhost with it, so three panes
+   * nobody is looking at were 1.5 GB of a 15 GB machine. Idle, resumable, and
+   * expensive is an unusual combination, and it is worth acting on.
+   *
+   * After this many minutes off screen, such a pane's shell is ended. The pane
+   * itself stays exactly where it was, with its screen, and says what happened;
+   * the next key you press starts a shell and types `claude --resume <id>`, the
+   * same line a restored pane types after the app restarts.
+   *
+   * Only ever agent panes — see `mayRelease`, which holds every condition and
+   * the reason for each. 0 never releases anything.
+   */
+  idleAgentRelease: number
+  /**
+   * Draw with the processor instead of the graphics card.
+   *
+   * Off, because the card is faster at what a terminal does and every machine
+   * with one should use it. On, for the machine where the *memory* matters more
+   * than the speed: measured here, the GPU process alone held 267 MB of a
+   * 15 GB machine, and switching it off gives most of that back. Terminals then
+   * draw through xterm's DOM renderer, which is slower — noticeably so on a
+   * full-screen program repainting constantly, and not at all at a prompt.
+   *
+   * Also the thing to try when the graphics driver is unstable. This app has
+   * seen a `VIDEO_MEMORY_MANAGEMENT_INTERNAL` bugcheck on a machine running it,
+   * and while the cause of that was ours — a WebGL context per pane, never
+   * released, past the limit Chromium allows — a driver that keeps falling over
+   * is a driver worth taking out of the picture.
+   *
+   * Read once, before the window exists, because that is the only moment
+   * Electron accepts it. Changing it needs a restart, and the setting says so.
+   */
+  useSoftwareRendering: boolean
   /** Folder a workspace created from the + button starts in. Blank = home. */
   newWorkspaceDir: string
   /**
@@ -1413,6 +1514,20 @@ export interface Settings {
    * somebody spends the day dragging *into*, and both answers are defensible.
    */
   fileDrag: 'auto' | 'file' | 'path'
+  /**
+   * Publish the commands you run to the shared folder, for the other machines.
+   *
+   * Off, and off is not merely the default — this is the one thing Relay can
+   * publish that is dangerous in the clear, so it is opt-in and it does nothing
+   * at all without a passphrase. A command line carries bearer tokens,
+   * connection strings and whatever somebody pasted, and a synced folder keeps
+   * version history that outlives any deletion.
+   *
+   * Commands are redacted for the obvious shapes and then encrypted; neither is
+   * a guarantee and both are described where the setting is. See
+   * `shareCrypto.ts`.
+   */
+  shareCommands: boolean
   /**
    * Extra columns beside each name in the file tree: how big a file is, and
    * when it last changed.
@@ -1707,6 +1822,11 @@ export const MONITOR_BLOCKS = [
   // machine coping"; how much a project has cost is a question about the
   // project, and it is answered where the project is — on the workspace itself,
   // on hover. See `tokenTooltip`.
+  // What this app itself costs, split by the process doing the spending. On a
+  // machine that is short of memory the next question after "what is using it"
+  // is always "how much of that is you", and answering it anywhere else would
+  // be this panel declining to measure the one process it is inside.
+  { id: 'app', label: 'this app’s own processes' },
   { id: 'system', label: 'battery and uptime' },
   { id: 'weather', label: 'weather' },
   { id: 'air', label: 'air quality' },
@@ -1767,6 +1887,52 @@ export interface HistoryEntry {
    * a second store. Absent on entries written before it was recorded.
    */
   paneId?: string
+  /**
+   * How many times this exact line has been submitted in this folder.
+   *
+   * The list has always deduplicated — re-running a command moves it back to
+   * the top rather than adding a second row — which means every entry was
+   * already one-per-unique-command and had nowhere to put a count. Absent on
+   * entries written before this existed, and read as 1.
+   */
+  runs?: number
+  /** How many of those runs ended in a non-zero exit code. */
+  fails?: number
+  /**
+   * What the most recent run exited with, once it has finished.
+   *
+   * Undefined means "not known", which covers three real cases and is why this
+   * is not defaulted to 0: a command still running, a pane with no shell
+   * integration to report the code, and every entry recorded before this field
+   * existed. "Not known" and "succeeded" must not look the same.
+   */
+  lastCode?: number
+  /** How long the most recent run took, in milliseconds. */
+  lastMs?: number
+  /**
+   * The machine this came from, when it is not this one.
+   *
+   * Set only for entries assembled from what Relay read out of the shared
+   * folder — never written to the history file, which is this machine's own
+   * account. Its presence is what lets a recall list say where a command came
+   * from, which matters when the answer is "a Mac" and you are on Windows.
+   */
+  elsewhere?: string
+}
+
+/**
+ * A stretch of time spent on one project.
+ *
+ * Observed rather than entered — see `timeLog.ts` for what opens and closes
+ * one, and why focus is the signal rather than keystrokes.
+ */
+export interface TimeSpan {
+  /** The workspace's folder, which identifies the project across renames. */
+  cwd: string
+  /** What it was called while the time was being spent. */
+  name: string
+  start: number
+  end: number
 }
 
 /** One checkout of a repository. See `src/main/worktrees.ts`. */
@@ -2187,6 +2353,11 @@ export const DEFAULT_SETTINGS: Settings = {
   cursorBlink: true,
   cursorStyle: 'bar',
   scrollback: 10000,
+  hiddenScrollback: 2000,
+  // Off. It ends processes, and a default that ends processes has to be one the
+  // user chose — the setting explains the trade and the memory it gives back.
+  idleAgentRelease: 0,
+  useSoftwareRendering: false,
   // Blank means the home folder, which is the only sensible default on a
   // machine we know nothing about.
   newWorkspaceDir: '',
@@ -2198,6 +2369,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showRelayWarning: true,
   sharedDir: '',
   fileDrag: 'auto',
+  shareCommands: false,
   treeShowSize: false,
   treeShowModified: false,
   treeSort: 'name',

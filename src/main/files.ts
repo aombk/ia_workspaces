@@ -568,6 +568,56 @@ export async function listImages(
   return { files, truncated }
 }
 
+/**
+ * Every file at or beneath a folder whose name ends one of `suffixes`.
+ *
+ * The same walk as `listImages` with the test swapped, and kept separate rather
+ * than folded into it: the gallery's version carries sizes and modification
+ * times because it draws them, and this one is answering "which of these exist"
+ * for a menu, where a `stat` per file is a round trip nobody reads.
+ *
+ * Sorted by path, so a list of them is stable between calls — a menu whose
+ * entries move about between openings is a menu you cannot learn.
+ */
+export async function listByExtension(dir: string, suffixes: string[]): Promise<string[]> {
+  const wanted = suffixes.map((s) => s.toLowerCase())
+  const found: string[] = []
+
+  async function walk(current: string, depth: number): Promise<void> {
+    if (found.length >= MAX_LISTED_FILES) return
+    let dirents
+    try {
+      dirents = await readdir(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+    const subdirs: string[] = []
+    for (const dirent of dirents) {
+      const name = dirent.name
+      if (isHiddenEntry(name)) continue
+      const full = path.join(current, name)
+      if (dirent.isDirectory()) {
+        if (depth < MAX_IMAGE_DEPTH && !SKIP_DIRS.has(name.toLowerCase())) subdirs.push(full)
+        continue
+      }
+      if (!dirent.isFile()) continue
+      if (!wanted.some((suffix) => name.toLowerCase().endsWith(suffix))) continue
+      if (found.length >= MAX_LISTED_FILES) return
+      found.push(full)
+    }
+    for (const sub of subdirs) {
+      if (found.length >= MAX_LISTED_FILES) return
+      await walk(sub, depth + 1)
+    }
+  }
+
+  await walk(dir, 0)
+  return found.sort((a, b) => a.localeCompare(b))
+}
+
+/** A menu is not a file manager: past this many, go and find it yourself. */
+const MAX_LISTED_FILES = 200
+
 const FILE_ATTRIBUTE_HIDDEN = 0x2
 const FILE_ATTRIBUTE_SYSTEM = 0x4
 

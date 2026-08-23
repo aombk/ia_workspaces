@@ -51,6 +51,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { readLhm, type LhmBattery, type LhmDisk } from './lhm'
 import type {
+  AppFootprint,
+  AppProcessGroup,
   BatteryStats,
   CpuStats,
   DiskHealth,
@@ -452,7 +454,7 @@ async function macBattery(): Promise<BatteryStats | null> {
  * and never waits for it. The first sample after the pane opens is therefore
  * empty, which is the same rule the CPU delta already follows.
  */
-const SLOW_TTL_MS = 5000
+const SLOW_TTL_MS = 15_000
 
 interface SlowProbe {
   /** Cumulative counters, turned into rates against the previous sample. */
@@ -1720,7 +1722,11 @@ function sampleMemory(detail: MemoryDetail) {
  * app is a collector nobody checks. Outside Electron this throws and the
  * footprint reads as zero processes, which is the truth: there is no app.
  */
-function appMetrics(): Array<{ cpu?: { percentCPUUsage?: number }; memory?: { workingSetSize?: number } }> {
+function appMetrics(): Array<{
+  type?: string
+  cpu?: { percentCPUUsage?: number }
+  memory?: { workingSetSize?: number }
+}> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     return (require('electron') as typeof import('electron')).app.getAppMetrics()
@@ -1753,16 +1759,34 @@ function thermalPressure(): ThermalPressure | null {
   }
 }
 
-function footprint() {
+function footprint(): AppFootprint {
   const metrics = appMetrics()
   let cpu = 0
   let memory = 0
+  const groups = new Map<string, AppProcessGroup>()
   for (const entry of metrics) {
-    cpu += entry.cpu?.percentCPUUsage ?? 0
+    const entryCpu = entry.cpu?.percentCPUUsage ?? 0
     // `workingSetSize` is in kilobytes, and is the number Task Manager shows.
-    memory += (entry.memory?.workingSetSize ?? 0) * 1024
+    const entryMemory = (entry.memory?.workingSetSize ?? 0) * 1024
+    cpu += entryCpu
+    memory += entryMemory
+    // Electron labels the main process `browser`; nobody outside Chromium
+    // calls it that, and the monitor is read by the person whose machine it is.
+    const type = entry.type === 'browser' ? 'main' : (entry.type ?? 'unknown')
+    const group = groups.get(type) ?? { type, count: 0, cpu: 0, memory: 0 }
+    group.count += 1
+    group.cpu += entryCpu
+    group.memory += entryMemory
+    groups.set(type, group)
   }
-  return { processes: metrics.length, cpu: Math.round(cpu * 10) / 10, memory }
+  return {
+    processes: metrics.length,
+    cpu: Math.round(cpu * 10) / 10,
+    memory,
+    parts: [...groups.values()]
+      .map((g) => ({ ...g, cpu: Math.round(g.cpu * 10) / 10 }))
+      .sort((a, b) => b.memory - a.memory),
+  }
 }
 
 // -------------------------------------------------------------------- entry

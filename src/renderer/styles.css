@@ -1047,6 +1047,30 @@ kbd {
   border-bottom: none;
 }
 
+/* A row whose explanation runs to a paragraph. The control drops below the text
+   and starts at the left edge, so the prose gets the full width and the field
+   is not stranded beside it. See `STACK_HINT_AT` in `settingsPanel.ts`. */
+.field.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.field.stacked .field-control {
+  justify-content: flex-start;
+}
+
+/* Full width once it is on its own row — a path is long and there is now room
+   for it, which is most of the reason for stacking in the first place. */
+.field.stacked .settings-folder {
+  width: 100%;
+}
+
+.field.stacked .settings-folder input[type='text'] {
+  flex: 1;
+  min-width: 0;
+}
+
 .field-label {
   display: flex;
   flex-direction: column;
@@ -1091,6 +1115,923 @@ kbd {
   color: var(--warn);
   cursor: help;
   flex: none;
+}
+
+/* ------------------------------------------------------------ selectable text
+
+   `body` turns selection off — see the rule near the top and the reason with
+   it: a drag across a tab strip or a pane header would otherwise smear
+   highlight over the chrome, and headers here are drag handles.
+
+   That is the right default for *chrome* and the wrong one for *content*. Text
+   you cannot copy is text you retype, and the worst case is the one that
+   matters most: git's own error message, which is the thing you want to paste
+   into a search box at exactly the moment you cannot.
+
+   So this turns it back on for the places that hold prose, figures and
+   messages, and leaves it off for everything that is a control. Anything with
+   its own `user-select: text` elsewhere in this file predates this block and
+   still stands.
+
+   `cursor: text` deliberately comes with it. A cursor that stays an arrow over
+   selectable text is a place nobody tries to select. */
+
+.settings-body .field-label,
+.settings-body .field-value,
+.settings-body .callout,
+.git-pane .history-note,
+.git-pane .diff-message,
+.git-pane .diff-caption,
+.git-pane .diff-file__name,
+.git-pane .diff-group__note,
+.git-pane .diff-foot__note,
+.git-pane .history-detail__subject,
+.git-pane .history-detail__body,
+.git-pane .history-detail__facts,
+.git-pane .history-detail__who,
+.git-pane .history-detail__filelist,
+.git-pane .diff-body,
+.toast-body,
+.toast-title,
+.pane-about,
+.relay-note,
+.runbook-note,
+.runbook-hint,
+.tokens-note,
+.tokens-table,
+.tokens-folders {
+  user-select: text;
+  cursor: text;
+}
+
+/* A row that is also a button keeps the pointer that says so — but its command
+   is still worth copying, so the text inside it selects while the row does not. */
+.runbook-row .runbook-command,
+.history-row .history-detail__subject {
+  user-select: text;
+}
+
+/* -------------------------------------------------------------- canvas pane
+
+   Connected notes on a pan/zoom surface, saved as Obsidian's `.canvas` JSON in
+   the project folder. The transform lives on one element so panning and zooming
+   are a single compositor operation rather than a layout of every note. */
+
+.canvas-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  outline: none;
+}
+
+.canvas-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.canvas-hint {
+  /* The bar is the hint and one button now, so the sentence takes the room and
+     the control sits at the far end of it. */
+  margin-right: auto;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-fit {
+  flex: none;
+}
+
+.canvas-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+  /* A grid, so panning an empty canvas visibly moves rather than looking
+     frozen — the one cue that says this surface is bigger than the window. */
+  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.canvas-viewport:active {
+  cursor: grabbing;
+}
+
+.canvas-scene {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.canvas-wires {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.canvas-wire {
+  stroke: var(--text-faint);
+  stroke-width: 1.6;
+}
+
+/* A plate behind an edge's label, so words over a line stay readable. */
+.canvas-wire__plate {
+  fill: var(--bg);
+}
+
+.canvas-wire__label {
+  fill: var(--text-faint);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 11px;
+}
+
+/* A group is a container for what sits on it, and the spec puts groups first in
+   the array — which is to say underneath. So it is drawn as an outline rather
+   than a filled card, or it would hide its own contents. */
+.canvas-node--group {
+  background: none;
+  border-style: dashed;
+}
+
+.canvas-node--group .canvas-node__body {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Markdown inside a note. The document styles are for a page; a note is a card,
+   so the first heading must not push everything down with a margin. */
+.canvas-node__body.markdown > :first-child {
+  margin-top: 0;
+}
+
+.canvas-node__body.markdown h1,
+.canvas-node__body.markdown h2,
+.canvas-node__body.markdown h3 {
+  font-size: 13px;
+  margin: 6px 0 4px;
+}
+
+.canvas-node__body.markdown p {
+  margin: 0 0 6px;
+}
+
+.canvas-node {
+  position: absolute;
+  display: flex;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised, var(--bg));
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  cursor: move;
+  overflow: hidden;
+}
+
+.canvas-node.selected {
+  border-color: var(--accent);
+}
+
+/* Holding what the find bar is looking for. A wash rather than a border, so a
+   card that is both a match and the selected one still shows both. */
+.canvas-node--match {
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.25),
+    inset 0 0 0 2px var(--warn, #d9a441);
+}
+
+/* A canvas drawn on a canvas: boxes and lines, no words. Dim, because it is a
+   picture of somewhere else and must not compete with the notes around it. */
+.canvas-thumb {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.canvas-thumb__node {
+  fill: var(--bg-hover);
+  stroke: var(--border-strong, var(--border));
+  stroke-width: 3;
+}
+
+/* A group is the container the others sit on, so it is drawn as an outline. */
+.canvas-thumb__node--group {
+  fill: none;
+  stroke-dasharray: 10 8;
+}
+
+.canvas-thumb__wire {
+  stroke: var(--text-faint);
+  stroke-width: 2.5;
+}
+
+/* The picture is the content, so it gets the room the padding would take. */
+.canvas-node--nested .canvas-node__body {
+  padding: 4px 6px 6px;
+}
+
+/* The name of the canvas, at the left of its bar. */
+.canvas-name {
+  flex: none;
+  font-weight: 600;
+}
+
+.canvas-node__body {
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow: hidden;
+}
+
+.canvas-node__edit {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  resize: none;
+  outline: none;
+}
+
+/* The handle a connection is dragged from. On the right edge, where a
+   left-to-right reader expects a line to leave. */
+.canvas-node__link {
+  position: absolute;
+  top: 50%;
+  right: -5px;
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0;
+  cursor: crosshair;
+}
+
+.canvas-node:hover .canvas-node__link,
+.canvas-pane--linking .canvas-node__link {
+  opacity: 1;
+}
+
+/* The size grip. Bottom-right, where every window on this machine puts it, and
+   drawn as two short strokes rather than a filled block so it reads as a grip
+   and not as content of the note. Revealed on hover like the link handle: a
+   canvas of forty notes with a permanent corner mark on each is a canvas with
+   forty pieces of chrome in it. */
+.canvas-node__resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  opacity: 0;
+  cursor: nwse-resize;
+  background:
+    linear-gradient(135deg, transparent 46%, var(--text-faint) 46%, var(--text-faint) 54%, transparent 54%),
+    linear-gradient(135deg, transparent 70%, var(--text-faint) 70%, var(--text-faint) 78%, transparent 78%);
+}
+
+.canvas-node:hover .canvas-node__resize,
+.canvas-node.selected .canvas-node__resize {
+  opacity: 1;
+}
+
+/* Never while a connection is being dragged: every note is a drop target then,
+   and a resize grip under the cursor at the moment of release is a corner you
+   grab by accident instead of the note you were aiming at. */
+.canvas-pane--linking .canvas-node__resize {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* While a connection is being dragged, every note is a target. */
+.canvas-pane--linking .canvas-node {
+  cursor: crosshair;
+}
+
+/* The line that follows the cursor before it lands. Dashed and in the accent
+   colour, so it reads as a connection being *proposed* rather than one that
+   is already there. */
+.canvas-wire--ghost {
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-dasharray: 5 4;
+  pointer-events: none;
+}
+
+/* A markdown file node is the note itself, so its card is laid out like one:
+   the file's name as a header strip, its contents below. */
+.canvas-node--note {
+  flex-direction: column;
+}
+
+.canvas-node__file {
+  flex: none;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A note that is empty, or whose file has gone. Said in words rather than left
+   blank: a blank card reads as an empty note, which is a different and much
+   more alarming thing than a missing one. */
+.canvas-node__missing {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* A picture fills its card and keeps its shape. */
+.canvas-node--image .canvas-node__body {
+  padding: 0;
+  display: flex;
+  min-height: 0;
+}
+
+.canvas-node__image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--bg);
+}
+
+/* The first page of a source file. Small, and it does not wrap: a wrapped line
+   of code stops looking like code, which is the whole of what this conveys. */
+.canvas-node__code {
+  margin: 0;
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-faint);
+  white-space: pre;
+  overflow: hidden;
+}
+
+/* A file or a link is a pointer at something, not a paragraph — one line, and
+   it says so by not wrapping. */
+.canvas-node--file:not(.canvas-node--note) .canvas-node__body,
+.canvas-node--link .canvas-node__body {
+  align-self: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* ----------------------------------------------------------------- day pane
+
+   Where the day went, across projects. Same card shapes as the other stats
+   panes: panes of numbers that look different are panes to learn separately. */
+
+.day-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.day-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.day-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.day-label {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.day-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 0 2px;
+}
+
+.day-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 72px;
+}
+
+.day-figure__value {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.day-figure__label {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.day-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  background: var(--bg-raised, var(--bg));
+}
+
+.day-card h3 {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.day-card__time {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.day-item {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A save is the thing you would put in a standup, so it reads as prose rather
+   than as one more command. */
+.day-item--commit {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.day-item--bad {
+  color: var(--danger, var(--warn));
+}
+
+.day-item--more {
+  font-family: inherit;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.day-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------ wiki links
+
+   `[[note]]` in any markdown file. A button rather than an anchor, for the same
+   reason every other link here is one: the renderer's CSP allows no navigation,
+   so an anchor would either do nothing or replace the app with a page. */
+
+.md-wikilink {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--accent);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.md-wikilink:hover {
+  border-bottom-style: solid;
+  filter: brightness(1.2);
+}
+
+/* What links here, under the document. The half of a wiki worth keeping: a link
+   written in March is only useful in June if the thing linked *to* knows. */
+.reader-backlinks {
+  margin: 24px 0 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.reader-backlinks h3 {
+  width: 100%;
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------- flowchart
+
+   Diagrams written as text in a markdown fence, drawn by `flowchart.ts`. Every
+   colour is a theme token so a diagram reads in a light theme and a dark one
+   without the source knowing which it is in — the thing an exported PNG from a
+   drawing tool can never do. */
+
+.flowchart-figure {
+  margin: 12px 0;
+  /* A wide diagram scrolls rather than squashing: shrinking it to fit is how a
+     flowchart becomes unreadable while still technically being on screen. */
+  overflow-x: auto;
+}
+
+.flowchart {
+  max-width: 100%;
+  height: auto;
+}
+
+.flow-node > rect,
+.flow-node > polygon,
+.flow-node > ellipse {
+  fill: var(--bg-raised, var(--bg));
+  stroke: var(--border-strong, var(--border));
+  stroke-width: 1.2;
+}
+
+.flow-node__label {
+  fill: var(--text);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.flow-edge {
+  stroke: var(--text-faint);
+  stroke-width: 1.4;
+}
+
+.flow-edge--dotted {
+  stroke-dasharray: 4 4;
+}
+
+.flow-edge--thick {
+  stroke-width: 2.6;
+}
+
+/* The plate behind an edge's label, so words over a line stay readable. */
+.flow-edge__plate {
+  fill: var(--bg);
+}
+
+.flow-edge__label {
+  fill: var(--text-faint);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 10.5px;
+}
+
+/* --------------------------------------------------------------- focus pane
+
+   Time, tasks and a timer for one project, in one place. Same card shapes as
+   the runbook and the tokens pane: three panes of stats that look different are
+   three panes to learn. */
+
+.focus-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.focus-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.focus-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  background: var(--bg-raised, var(--bg));
+}
+
+.focus-card h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--text-faint);
+}
+
+.focus-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.focus-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 84px;
+}
+
+.focus-figure__value {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.focus-figure__label {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Three weeks of days, empty ones included — the gaps are half of what a
+   timesheet is for, and a chart that skipped them would hide a fortnight off. */
+.focus-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 56px;
+  margin-top: 12px;
+}
+
+.focus-bar {
+  flex: 1;
+  min-width: 4px;
+  height: var(--h, 0%);
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+  cursor: help;
+}
+
+/* A day with nothing keeps its slot and shows a floor, so the row still reads
+   as a row of days rather than as a ragged edge. */
+.focus-bar.empty {
+  height: 2px;
+  background: var(--border);
+}
+
+.focus-task {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.focus-task:hover {
+  background: var(--bg-hover);
+}
+
+/* Done, and still listed. A task that vanished when ticked would take the only
+   evidence of the afternoon with it. */
+.focus-task.done .focus-task__text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.focus-check {
+  flex: none;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.focus-task__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-clock {
+  font-size: 30px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  line-height: 1.1;
+}
+
+.focus-clock.running {
+  color: var(--text);
+}
+
+/* Both buttons always drawn, one of them dead, so neither moves under the
+   cursor when the timer starts. */
+.focus-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.focus-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------- runbook pane
+
+   What you actually run in this project. Built from the tokens pane's shapes
+   because it is the same kind of thing — a dense list read at a glance — and
+   two panes of stats that look different are two panes to learn. */
+
+.runbook-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.runbook-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.runbook-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  background: var(--bg-raised, var(--bg));
+}
+
+/* The group somebody opened this pane in a hurry for. */
+.runbook-card--bad {
+  border-left-color: var(--danger, var(--warn));
+}
+
+.runbook-card--warn {
+  border-left-color: var(--warn);
+}
+
+.runbook-card h3 {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--text-faint);
+}
+
+.runbook-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-faint);
+}
+
+/* A whole row is the target: picking one is the only thing a row does. */
+.runbook-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.runbook-row:hover {
+  background: var(--bg-hover);
+}
+
+/* The command is the thing. A long one scrolls rather than wrapping, because a
+   two-line command breaks the scan down the left edge that makes this a list. */
+.runbook-command {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runbook-facts {
+  flex: none;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.runbook-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* The history control, floating over the terminal's own top-right corner.
+   A lone pane has no header bar — that is deliberate, see `buildPaneHeader` —
+   so this sits over the content instead, faint until the pane is hovered. It
+   must be legible when wanted and close to invisible when not: a control at
+   full strength in the corner of every terminal is in the way of the thing the
+   terminal is for. */
+.pane-history {
+  position: absolute;
+  top: 2px;
+  right: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.18;
+  transition: opacity 120ms ease;
+}
+
+.pane-shell:hover .pane-history,
+.pane-history:focus-within {
+  opacity: 1;
+}
+
+.pane-history button {
+  min-width: 20px;
+  height: 16px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-raised, var(--bg));
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pane-history button:hover {
+  color: var(--text);
+}
+
+/* Never keeps the focus ring. `mousedown` is prevented so the button never
+   takes focus in the first place, and this is the belt to that braces: a
+   control that stays visibly focused reads as "you are typing into me", which
+   is the opposite of what clicking it just did. */
+.pane-history button:focus {
+  outline: none;
+}
+
+/* "this" is the narrowed state and the one worth noticing at a glance — a pane
+   whose Up arrow is not showing you everything should say so without a hover. */
+.pane-history__scope.on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.pane-history__search {
+  font-size: 11px;
 }
 
 /* ---------------------------------------------------------------- relay
@@ -1249,7 +2190,11 @@ kbd {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 10px 12px;
-  background: var(--surface-1);
+  /* Was `--surface-1`, which nothing has ever defined — so these cards drew
+     with no background at all for as long as the pane has existed. CSS drops an
+     unresolvable `var()` silently, which is why it went unnoticed and why
+     `tests/styles.test.mjs` now checks every one of them. */
+  background: var(--bg-raised, var(--bg));
 }
 
 .tokens-card h3 {
@@ -1831,6 +2776,51 @@ kbd {
   font: inherit;
   font-size: 14px;
   outline: none;
+}
+
+/* Which panes the history box is showing. Only the history mode has one, and
+   both choices are always drawn — the one that is off is a place to go, not a
+   thing that has disappeared. */
+.palette-scope {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.palette-scope__btn {
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 4px);
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.palette-scope__btn:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.palette-scope__btn.on {
+  border-color: var(--border);
+  background: var(--bg-active, rgba(255, 255, 255, 0.06));
+  color: var(--text);
+}
+
+.palette-scope__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The key that swaps them, said once where it is useful. */
+.palette-scope__hint {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-faint);
 }
 
 .palette-list {

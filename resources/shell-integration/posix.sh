@@ -165,3 +165,133 @@ elif [ -n "$BASH_VERSION" ]; then
     PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}__iaw_bash_prompt"
   fi
 fi
+
+# --------------------------------------------------------------------- history
+#
+# The arrows walk the app's own history rather than the shell's, when the app
+# has written a list for this pane. Bound in here rather than driven from
+# outside for one reason: the line editor owns the line, so it can replace it
+# exactly. From outside, the app can only write bytes that look like typing, and
+# has to first send whatever key *that* editor reads as "clear the line" — a
+# guess that differs per shell and per edit mode.
+#
+# Falls back to the shell's own recall whenever there is nothing to walk: no
+# file, an empty file, or a walk that has run off the end. So a pane whose
+# history is empty behaves exactly as it did before any of this existed.
+
+__iaw_hist_file=""
+if [ -n "$IAW_HISTORY_DIR" ] && [ -n "$IAW_PANE_ID" ]; then
+  __iaw_hist_file="$IAW_HISTORY_DIR/$IAW_PANE_ID.txt"
+fi
+
+if [ -n "$__iaw_hist_file" ]; then
+  if [ -n "$ZSH_VERSION" ]; then
+    # --------------------------------------------------------------- zsh
+
+    __iaw_hist_at=-1
+
+    __iaw_hist_load() {
+      # Re-read at the start of each walk rather than caching: the app rewrites
+      # this file when you flip all/this, and a cached list would keep walking
+      # the old scope until the pane closed.
+      __iaw_hist_lines=()
+      [ -r "$__iaw_hist_file" ] || return 1
+      while IFS= read -r __iaw_l; do
+        [ -n "$__iaw_l" ] && __iaw_hist_lines+=("$__iaw_l")
+      done < "$__iaw_hist_file"
+      [ ${#__iaw_hist_lines[@]} -gt 0 ]
+    }
+
+    __iaw_hist_step() {
+      if [ "$__iaw_hist_at" -lt 0 ]; then
+        __iaw_hist_load || return 1
+      fi
+      [ ${#__iaw_hist_lines[@]} -gt 0 ] || return 1
+
+      __iaw_next=$(( __iaw_hist_at + $1 ))
+      if [ "$__iaw_next" -lt 0 ]; then
+        # Back past the newest entry: the walk is over and the line goes empty.
+        __iaw_hist_at=-1
+        BUFFER=""
+        CURSOR=0
+        return 0
+      fi
+      # Off the oldest end: stay put rather than failing, which would hand the
+      # key to zsh and silently continue the walk through *its* history.
+      [ "$__iaw_next" -ge ${#__iaw_hist_lines[@]} ] && __iaw_next=$(( ${#__iaw_hist_lines[@]} - 1 ))
+
+      __iaw_hist_at=$__iaw_next
+      # zsh arrays are 1-based.
+      BUFFER="${__iaw_hist_lines[$(( __iaw_next + 1 ))]}"
+      CURSOR=${#BUFFER}
+      return 0
+    }
+
+    __iaw_up() { __iaw_hist_step 1 || zle up-line-or-history; }
+    __iaw_down() { __iaw_hist_step -1 || zle down-line-or-history; }
+
+    zle -N __iaw_up
+    zle -N __iaw_down
+    # Both the ordinary and the application-mode sequences: a terminal sends
+    # the second while the line editor has the keypad in application mode, and
+    # binding only one leaves the arrows working in half of the sessions.
+    bindkey '^[[A' __iaw_up
+    bindkey '^[OA' __iaw_up
+    bindkey '^[[B' __iaw_down
+    bindkey '^[OB' __iaw_down
+
+    # A submitted line ends the walk, so the next Up starts from the newest.
+    __iaw_zsh_reset() { __iaw_hist_at=-1; }
+    add-zsh-hook preexec __iaw_zsh_reset
+
+  elif [ -n "$BASH_VERSION" ]; then
+    # -------------------------------------------------------------- bash
+
+    __iaw_hist_at=-1
+    __iaw_hist_lines=()
+
+    __iaw_hist_load() {
+      __iaw_hist_lines=()
+      [ -r "$__iaw_hist_file" ] || return 1
+      while IFS= read -r __iaw_l; do
+        [ -n "$__iaw_l" ] && __iaw_hist_lines+=("$__iaw_l")
+      done < "$__iaw_hist_file"
+      [ ${#__iaw_hist_lines[@]} -gt 0 ]
+    }
+
+    # `bind -x` hands the widget READLINE_LINE and READLINE_POINT to rewrite,
+    # which is bash's equivalent of replacing the buffer outright.
+    __iaw_hist_step() {
+      if [ "$__iaw_hist_at" -lt 0 ]; then
+        __iaw_hist_load || return 1
+      fi
+      [ ${#__iaw_hist_lines[@]} -gt 0 ] || return 1
+
+      local next=$(( __iaw_hist_at + $1 ))
+      if [ "$next" -lt 0 ]; then
+        __iaw_hist_at=-1
+        READLINE_LINE=""
+        READLINE_POINT=0
+        return 0
+      fi
+      [ "$next" -ge ${#__iaw_hist_lines[@]} ] && next=$(( ${#__iaw_hist_lines[@]} - 1 ))
+
+      __iaw_hist_at=$next
+      READLINE_LINE="${__iaw_hist_lines[$next]}"
+      READLINE_POINT=${#READLINE_LINE}
+      return 0
+    }
+
+    # No fallback to readline's own recall here, and it is not an oversight:
+    # `bind -x` cannot decline a key and pass it on. So an empty list leaves the
+    # line untouched, which is the same thing readline does at the end of its
+    # own history.
+    __iaw_up() { __iaw_hist_step 1 || true; }
+    __iaw_down() { __iaw_hist_step -1 || true; }
+
+    bind -x '"\e[A": __iaw_up' 2>/dev/null
+    bind -x '"\eOA": __iaw_up' 2>/dev/null
+    bind -x '"\e[B": __iaw_down' 2>/dev/null
+    bind -x '"\eOB": __iaw_down' 2>/dev/null
+  fi
+fi

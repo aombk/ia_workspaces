@@ -38,6 +38,7 @@ import type {
   LatestReleaseResult,
   Relay,
   RelayPublishEntry,
+  TimeSpan,
 } from '../shared/types'
 
 /**
@@ -91,6 +92,13 @@ export interface Capabilities {
  * schema and normalises on load, so a host process never needs to understand
  * (or accidentally truncate) the document.
  */
+/** One entry in a native file dialog's type list. */
+export interface FileFilter {
+  name: string
+  /** Without the dot, as the platform dialogs want them. `*` means anything. */
+  extensions: string[]
+}
+
 export interface Backend {
   readonly name: 'electron'
   readonly capabilities: Capabilities
@@ -110,7 +118,19 @@ export interface Backend {
    * building a name, because only the host can offer the overwrite warning and
    * the file-type filter people expect from one.
    */
-  pickSaveFile(opts: { title: string; defaultName: string }): Promise<string | null>
+  /**
+   * Native Save As.
+   *
+   * `filters` names the file type being saved. Without it the dialog offers
+   * workspace files, which is right for "Save all workspaces" and wrong for
+   * everything else — a canvas offered as `.json` is the dialog telling the
+   * user the wrong thing about their own document.
+   */
+  pickSaveFile(opts: {
+    title: string
+    defaultName: string
+    filters?: FileFilter[]
+  }): Promise<string | null>
   /**
    * Native Open.
    *
@@ -118,7 +138,7 @@ export interface Backend {
    * which is what "Load workspaces…" wants and exactly what the editor does
    * not — an editor that will not show you a `.ts` is not an editor.
    */
-  pickOpenFile(opts: { title: string; anyFile?: boolean }): Promise<string | null>
+  pickOpenFile(opts: { title: string; anyFile?: boolean; filters?: FileFilter[] }): Promise<string | null>
   /** Default folder for a workspace created without picking one. */
   homeDir(): Promise<string>
   /**
@@ -163,6 +183,14 @@ export interface Backend {
    * ceiling was hit, so the pane can say it is showing part of a folder rather
    * than implying it is all of one.
    */
+  /**
+   * Every file under a folder whose name ends one of `suffixes`, sorted.
+   *
+   * For "which of these does this project have" — the canvases, and whatever
+   * asks the same question next. Capped, and the walk skips `.git`,
+   * `node_modules` and their kind.
+   */
+  listByExtension(dir: string, suffixes: string[]): Promise<string[]>
   listImages(
     dir: string,
     recursive: boolean,
@@ -409,6 +437,31 @@ export interface Backend {
    */
   startFileDrag(paths: string[]): Promise<boolean>
   /**
+   * Writes what this pane's Up arrow should walk, for shells that bind it.
+   *
+   * Newest first. The integration script reads the file; nothing reads it back
+   * through here. See `paneHistoryFile.ts` for why a file rather than a socket.
+   */
+  writePaneHistory(paneId: string, commands: string[]): Promise<void>
+  /**
+   * Sets the passphrase that encrypts shared commands. Empty clears it.
+   *
+   * Write-only on purpose: there is no way to read one back, so no panel can
+   * display it and no log can accidentally carry it.
+   */
+  setSharePassphrase(passphrase: string): Promise<boolean>
+  /** Whether one is set, which is all a settings panel is allowed to know. */
+  hasSharePassphrase(): Promise<boolean>
+  /**
+   * Reports what is on screen, so time can be attributed without being asked.
+   *
+   * An empty `cwd` means nothing is being worked on — no focus, or no
+   * workspace — and ends whatever was open.
+   */
+  timeBeat(cwd: string, name: string): Promise<void>
+  /** Every recorded stretch of work, including the one still running. */
+  timeSpans(): Promise<TimeSpan[]>
+  /**
    * Machine load, memory, disks, network and GPU, for the monitor pane and the
    * sidebar strip. One sample per call — the rates inside it are measured
    * against the previous call, so a caller that polls irregularly gets rates
@@ -479,6 +532,14 @@ export interface Backend {
     write(paneId: string, data: string): Promise<void>
     resize(paneId: string, cols: number, rows: number): Promise<void>
     kill(paneId: string): Promise<void>
+    /**
+     * Ends a pane's shell without ending the pane.
+     *
+     * Unlike `kill` the screen is kept, nothing is archived and the pane stays
+     * where it is — this is a pane going to sleep to give its memory back, not
+     * one being closed. See `PtyManager.sleep`.
+     */
+    sleep(paneId: string): Promise<void>
     isBusy(paneId: string): Promise<boolean>
   }
 

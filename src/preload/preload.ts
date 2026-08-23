@@ -40,6 +40,7 @@ import type {
   LatestReleaseResult,
   Relay,
   RelayPublishEntry,
+  TimeSpan,
 } from '../shared/types'
 
 /**
@@ -65,10 +66,16 @@ const api = {
 
   listShells: (): Promise<ShellProfile[]> => ipcRenderer.invoke(IPC.listShells),
   pickFolder: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke(IPC.pickFolder, defaultPath),
-  pickSaveFile: (opts: { title: string; defaultName: string }): Promise<string | null> =>
-    ipcRenderer.invoke(IPC.pickSaveFile, opts),
-  pickOpenFile: (opts: { title: string; anyFile?: boolean }): Promise<string | null> =>
-    ipcRenderer.invoke(IPC.pickOpenFile, opts),
+  pickSaveFile: (opts: {
+    title: string
+    defaultName: string
+    filters?: { name: string; extensions: string[] }[]
+  }): Promise<string | null> => ipcRenderer.invoke(IPC.pickSaveFile, opts),
+  pickOpenFile: (opts: {
+    title: string
+    anyFile?: boolean
+    filters?: { name: string; extensions: string[] }[]
+  }): Promise<string | null> => ipcRenderer.invoke(IPC.pickOpenFile, opts),
   homeDir: (): Promise<string> => ipcRenderer.invoke(IPC.homeDir),
   appVersion: (): Promise<string> => ipcRenderer.invoke(IPC.appVersion),
   latestRelease: (): Promise<LatestReleaseResult> => ipcRenderer.invoke(IPC.latestRelease),
@@ -98,6 +105,8 @@ const api = {
     showHidden: boolean
   ): Promise<{ files: FileEntry[]; truncated: boolean }> =>
     ipcRenderer.invoke(IPC.listImages, dir, recursive, showHidden),
+  listByExtension: (dir: string, suffixes: string[]): Promise<string[]> =>
+    ipcRenderer.invoke(IPC.listByExtension, dir, suffixes),
   // Built here rather than fetched: it is a pure function of the path, and an
   // async call per image would make the gallery render twice.
   imageUrl: (path: string): string => encodeImagePath(path),
@@ -189,6 +198,13 @@ const api = {
   relay: (dir: string, entries: RelayPublishEntry[]): Promise<Relay> =>
     ipcRenderer.invoke(IPC.relay, dir, entries),
   startFileDrag: (paths: string[]): Promise<boolean> => ipcRenderer.invoke(IPC.startFileDrag, paths),
+  writePaneHistory: (paneId: string, commands: string[]): Promise<void> =>
+    ipcRenderer.invoke(IPC.writePaneHistory, paneId, commands),
+  setSharePassphrase: (passphrase: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.setSharePassphrase, passphrase),
+  hasSharePassphrase: (): Promise<boolean> => ipcRenderer.invoke(IPC.hasSharePassphrase),
+  timeBeat: (cwd: string, name: string): Promise<void> => ipcRenderer.invoke(IPC.timeBeat, cwd, name),
+  timeSpans: (): Promise<TimeSpan[]> => ipcRenderer.invoke(IPC.timeSpans),
   systemStats: (opts?: { drives?: boolean }): Promise<SystemStats> =>
     ipcRenderer.invoke(IPC.systemStats, opts),
   weather: (req: WeatherRequest): Promise<WeatherReading> => ipcRenderer.invoke(IPC.weather, req),
@@ -220,6 +236,7 @@ const api = {
     resize: (id: string, cols: number, rows: number): Promise<void> =>
       ipcRenderer.invoke(IPC.ptyResize, id, cols, rows),
     kill: (id: string): Promise<void> => ipcRenderer.invoke(IPC.ptyKill, id),
+    sleep: (id: string): Promise<void> => ipcRenderer.invoke(IPC.ptySleep, id),
     isBusy: (id: string): Promise<boolean> => ipcRenderer.invoke(IPC.ptyIsBusy, id),
   },
 

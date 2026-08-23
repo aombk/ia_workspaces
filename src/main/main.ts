@@ -7,13 +7,20 @@ import { listProcesses } from './processes'
 import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readTokenUsage } from './tokenUsage'
 import { startFileDrag } from './fileDrag'
+import { historyDir, writePaneHistory } from './paneHistoryFile'
+import { TimeLog, timeLogPath } from './timeLog'
+import {
+  hasSharePassphrase,
+  setSharePassphrase,
+  sharePassphrase,
+} from './sharePassphrase'
 import { publishRelay, type RelayEntry } from './relay'
 import { shareTokens, type PublishEntry } from './tokenShare'
 import { readSystemStats } from './systemStats'
 import { readWeather } from './weather'
 import { latestRelease } from './updates'
 import { PtyManager } from './ptyManager'
-import { Store } from './store'
+import { readSoftwareRendering, Store } from './store'
 import {
   prepareIntegrationScript,
   listShells,
@@ -29,6 +36,7 @@ import * as git from './git'
 import { registerImageScheme, serveImages } from './imageProtocol'
 import {
   readDirectory,
+  listByExtension,
   listImages,
   readText,
   fileStamp,
@@ -173,6 +181,14 @@ function bootApp(): void {
   // a different one.
   app.setAppUserModelId(app.isPackaged ? APP_ID : `${APP_ID}.dev`)
 
+  // Before anything else Electron does, because this is the only moment it can
+  // be said: hardware acceleration cannot be switched off once the app is
+  // ready. Read straight from the settings file rather than through the store,
+  // which does not exist yet.
+  if (readSoftwareRendering(SHARED_DATA_DIR)) {
+    app.disableHardwareAcceleration()
+  }
+
   if (!app.requestSingleInstanceLock()) {
     app.quit()
     return
@@ -192,6 +208,7 @@ function bootApp(): void {
    */
   const events = new EventLog()
   let history: CommandHistory
+  let timeLog: TimeLog
   let vault: SessionVault
   let control: ControlServer | null = null
   /** Set at window creation; see `wantsTransparentWindow`. */
@@ -560,10 +577,11 @@ function bootApp(): void {
 
     const persistBounds = () => {
       if (!win || win.isDestroyed()) return
-      const state = (store.state ?? {}) as Record<string, unknown>
       const b = win.getNormalBounds()
-      store.save({
-        ...state,
+      // `patch`, not a spread of `store.state`: that getter goes back to the
+      // disk, and doing so in the middle of a read-modify-write is how a
+      // workspace deleted a moment ago came back.
+      store.patch({
         window: { width: b.width, height: b.height, x: b.x, y: b.y, maximized: win.isMaximized() },
       })
     }
@@ -615,6 +633,9 @@ function bootApp(): void {
       IPC.listImages,
       (_e, dir: string, recursive: boolean, showHidden: boolean) =>
         listImages(dir, recursive, showHidden)
+    )
+    ipcMain.handle(IPC.listByExtension, (_e, dir: string, suffixes: string[]) =>
+      listByExtension(dir, suffixes)
     )
     ipcMain.handle(IPC.readText, (_e, target: string) => readText(target))
     ipcMain.handle(IPC.fileStamp, (_e, target: string) => fileStamp(target))
@@ -736,9 +757,26 @@ function bootApp(): void {
     // The same folder, a different question: what every machine is part-way
     // through. Reads and writes descriptions only — see `relay.ts`.
     ipcMain.handle(IPC.relay, (_e, dir: string, entries: RelayEntry[]) =>
-      publishRelay(SHARED_DATA_DIR, dir, entries)
+      publishRelay(SHARED_DATA_DIR, dir, entries, sharePassphrase(SHARED_DATA_DIR))
     )
     ipcMain.handle(IPC.startFileDrag, (event, paths: string[]) => startFileDrag(event.sender, paths))
+    // What a pane's own Up arrow walks, for the shells that bind it themselves.
+    // A file is the whole interface to them — see `paneHistoryFile.ts`.
+    ipcMain.handle(IPC.writePaneHistory, (_e, paneId: string, commands: string[]) =>
+      writePaneHistory(SHARED_DATA_DIR, paneId, commands)
+    )
+    // Set from the settings panel and never read back to it: a panel that can
+    // show a passphrase is a panel that can leak one over somebody's shoulder.
+    ipcMain.handle(IPC.setSharePassphrase, (_e, passphrase: string) =>
+      setSharePassphrase(SHARED_DATA_DIR, passphrase)
+    )
+    ipcMain.handle(IPC.hasSharePassphrase, () => hasSharePassphrase(SHARED_DATA_DIR))
+    // What is on screen, once every fifteen seconds. An empty cwd is "nothing
+    // is being worked on", which is the same call rather than a second one — a
+    // caller that must remember to say "stopped" forgets on the path nobody
+    // tested. See `timeLog.ts`.
+    ipcMain.handle(IPC.timeBeat, (_e, cwd: string, name: string) => timeLog.beat(cwd, name))
+    ipcMain.handle(IPC.timeSpans, () => timeLog.all())
     ipcMain.handle(IPC.systemStats, (_e, opts?: { drives?: boolean }) => readSystemStats(opts))
     ipcMain.handle(IPC.weather, (_e, req: WeatherRequest) => readWeather(req))
     ipcMain.handle(IPC.gitStatus, (_e, cwd: string) => gitStatus(cwd))
@@ -850,27 +888,35 @@ function bootApp(): void {
 
     ipcMain.handle(
       IPC.pickSaveFile,
-      async (_e, opts: { title: string; defaultName: string }) => {
+      async (
+        _e,
+        opts: { title: string; defaultName: string; filters?: Electron.FileFilter[] }
+      ) => {
         if (!win) return null
         const res = await dialog.showSaveDialog(win, {
           title: opts.title,
           defaultPath: opts.defaultName,
-          filters: WORKSPACE_FILTERS,
+          // The caller's own type where it named one. Workspace files are only
+          // the default because this dialog started life saving those.
+          filters: opts.filters ?? WORKSPACE_FILTERS,
           properties: ['createDirectory', 'showOverwriteConfirmation'],
         })
         return res.canceled || !res.filePath ? null : res.filePath
       }
     )
 
-    ipcMain.handle(IPC.pickOpenFile, async (_e, opts: { title: string; anyFile?: boolean }) => {
-      if (!win) return null
-      const res = await dialog.showOpenDialog(win, {
-        title: opts.title,
-        filters: opts.anyFile ? ANY_FILTERS : WORKSPACE_FILTERS,
-        properties: ['openFile'],
-      })
-      return res.canceled ? null : res.filePaths[0]
-    })
+    ipcMain.handle(
+      IPC.pickOpenFile,
+      async (_e, opts: { title: string; anyFile?: boolean; filters?: Electron.FileFilter[] }) => {
+        if (!win) return null
+        const res = await dialog.showOpenDialog(win, {
+          title: opts.title,
+          filters: opts.filters ?? (opts.anyFile ? ANY_FILTERS : WORKSPACE_FILTERS),
+          properties: ['openFile'],
+        })
+        return res.canceled ? null : res.filePaths[0]
+      }
+    )
 
     ipcMain.handle(IPC.ptySpawn, (_e, req: SpawnRequest) => ptys.spawn(req))
     ipcMain.handle(IPC.ptyWrite, (_e, id: string, data: string) => ptys.write(id, data))
@@ -878,6 +924,7 @@ function bootApp(): void {
       ptys.resize(id, cols, rows)
     )
     ipcMain.handle(IPC.ptyKill, (_e, id: string) => ptys.kill(id))
+    ipcMain.handle(IPC.ptySleep, (_e, id: string) => ptys.sleep(id))
     ipcMain.handle(IPC.ptyIsBusy, (_e, id: string) => ptys.isBusy(id))
 
     ipcMain.handle(IPC.agentAnswer, (_e, paneId: string, choiceId?: string) =>
@@ -1019,6 +1066,7 @@ function bootApp(): void {
     const binDir = writeCliShim(userData, 'electron', process.execPath, cliScript)
 
     history = new CommandHistory(path.join(userData, 'command-history.json'))
+    timeLog = new TimeLog(timeLogPath(userData))
     vault = new SessionVault(path.join(userData, 'vault'))
     events.mirrorTo(path.join(userData, 'events.jsonl'))
     events.emit('host', 'started', { data: { pid: process.pid, version: app.getVersion() } })
@@ -1141,6 +1189,10 @@ function bootApp(): void {
           // is the whole of the history feature.
           if (p.lastCommand) history.add(p.lastCommand, p.cwd ?? '', p.paneId)
         },
+        // What it exited with, stamped onto the entry `onMeta` just recorded.
+        // This is the whole of what makes a command's past knowable: without it
+        // the history is a list of things you typed, with no idea which worked.
+        onOutcome: ({ paneId, exitCode, ms }) => history.finish(paneId, exitCode, ms),
         onAlert: (a) => {
           send(IPC.onAlert, a)
           events.emit('alert', a.trigger, {
@@ -1172,6 +1224,7 @@ function bootApp(): void {
       () => store.settings,
       {
         notifyPipe: () => control!.address,
+        historyDir: () => historyDir(SHARED_DATA_DIR),
         token: control.token,
         binDir,
         scrollback,
@@ -1280,6 +1333,10 @@ function bootApp(): void {
       pidMap?.clear()
       control?.close()
       history?.dispose()
+      // The session that is ending is the one most worth recording, and the
+      // process is about to be killed outright — nothing runs after this.
+      timeLog?.close()
+      timeLog?.flush()
       store?.dispose()
       store?.flush()
       noteShutdown('cleanup ok')

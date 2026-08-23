@@ -27,6 +27,7 @@ await build({
     systemStats: 'src/main/systemStats.ts',
     sparkline: 'src/renderer/ui/sparkline.ts',
     lhm: 'src/main/lhm.ts',
+    sensors: 'src/shared/sensors.ts',
     weather: 'src/main/weather.ts',
   },
   bundle: true,
@@ -52,6 +53,7 @@ const {
   parseWindowsSlow,
 } = await import(`file://${out}/systemStats.js`)
 const { parseLhm, parseValue, parseBytes } = await import(`file://${out}/lhm.js`)
+const { cpuTemperature } = await import(`file://${out}/sensors.js`)
 const { parseOpenMeteo, parseOpenMeteoAir, parseOwm, parseOwmAir, readWeather } = await import(
   `file://${out}/weather.js`
 )
@@ -861,6 +863,70 @@ test('a drive\'s warning threshold is not reported as its temperature', () => {
     assert.ok(!names.includes(excluded), `${excluded} was reported as a reading`)
   }
   assert.ok(names.includes('Composite Temperature'), 'and the real one survived')
+})
+
+// ------------------------------------------------ which one is *the* CPU temp
+
+// Sampled a second apart on the AMD part this was written against:
+//
+//   Tctl=91.1  CCD1=93.4
+//   Tctl=90.6  CCD1=77.8
+//   Tctl=88.1  CCD1=66.6
+//
+// Taking the hottest reports CCD1 at the first sample and Tctl at the second,
+// so the series drawn is a splice of two unrelated ones and the figure agrees
+// with no other tool on the machine. One sensor is chosen, by name.
+const cpu = (name, celsius) => ({ name, celsius, kind: 'cpu' })
+
+test('the processor temperature is a named sensor, not whichever is hottest', () => {
+  const amd = [cpu('Core (Tctl/Tdie)', 91.1), cpu('CCD1 (Tdie)', 93.4)]
+  assert.equal(cpuTemperature(amd).name, 'Core (Tctl/Tdie)', 'AMD leads with Tctl')
+  assert.equal(cpuTemperature(amd).celsius, 91.1)
+
+  // And the same list a second later, where the hotter one has swapped over.
+  const later = [cpu('Core (Tctl/Tdie)', 88.1), cpu('CCD1 (Tdie)', 66.6)]
+  assert.equal(cpuTemperature(later).name, 'Core (Tctl/Tdie)', 'still the same sensor')
+
+  const intel = [cpu('CPU Core #1', 71), cpu('CPU Package', 68), cpu('CPU Core #2', 66)]
+  assert.equal(cpuTemperature(intel).name, 'CPU Package', 'Intel leads with the package')
+})
+
+test('an unknown processor falls back to its worst core, and nothing to null', () => {
+  const cores = [cpu('Core #0', 51), cpu('Core #1', 63), cpu('Core #2', 58)]
+  assert.equal(cpuTemperature(cores).celsius, 63)
+  assert.equal(cpuTemperature([]), null)
+  // A machine that reports drive and memory temperatures and no CPU one.
+  assert.equal(cpuTemperature([{ name: 'DIMM #0', celsius: 55, kind: 'memory' }]), null)
+})
+
+test('Intel headroom is not mistaken for a temperature', () => {
+  // `Distance to TjMax` is degrees of headroom, published as a Temperature
+  // sensor. At idle it is the largest number the processor reports — a core at
+  // 45 with 55 to spare — so anything reaching for the worst reading finds it.
+  const tree = {
+    Children: [
+      {
+        Text: 'computer',
+        Children: [
+          {
+            Text: 'Intel Core i7',
+            Children: [
+              {
+                Text: 'Temperatures',
+                Children: [
+                  { Text: 'CPU Package', Value: '45.0 °C', Type: 'Temperature', SensorId: '/intelcpu/0/temperature/0', Children: [] },
+                  { Text: 'CPU Core #1 Distance to TjMax', Value: '55.0 °C', Type: 'Temperature', SensorId: '/intelcpu/0/temperature/9', Children: [] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+  const temps = parseLhm(tree).temperatures
+  assert.deepEqual(temps.map((t) => t.name), ['CPU Package'])
+  assert.equal(cpuTemperature(temps).celsius, 45)
 })
 
 test('a comma decimal separator is read as a decimal, not truncated', () => {

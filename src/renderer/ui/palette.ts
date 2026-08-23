@@ -13,6 +13,8 @@ import { backend } from '../../backend'
 import { store, tabLabel } from '../state'
 import type { HistoryEntry, VaultEntry } from '../../shared/types'
 import { showGlossary } from './gitWord'
+import { commandsElsewhere } from './relayMonitor'
+import { SCOPES, nextScope, type HistoryScope } from './paneHistory'
 import type { UiActions } from './actions'
 
 interface Command {
@@ -32,6 +34,20 @@ let selected = 0
 const root = () => document.getElementById('palette') as HTMLDivElement
 const input = () => document.getElementById('palette-input') as HTMLInputElement
 const list = () => document.getElementById('palette-list') as HTMLDivElement
+const scopeBar = () => document.getElementById('palette-scope') as HTMLDivElement
+
+/**
+ * Which panes the history box is showing, remembered for the session.
+ *
+ * Sticky rather than reset on every open, because it is a habit and not a
+ * per-search decision: somebody who works one pane at a time will want "this
+ * pane" every time and should not have to say so every time. Not a setting —
+ * it costs one keystroke to change and forgetting it at a restart is no loss.
+ */
+let historyScope: HistoryScope = 'machine'
+
+/** The pane the history box was opened from, and will type into. */
+let historyPane: { id: string } | null = null
 
 export function initPalette(a: UiActions): void {
   actions = a
@@ -57,6 +73,15 @@ export function initPalette(a: UiActions): void {
       move(-1)
       return
     }
+    // Only the history box has two scopes, so Tab means nothing in the other
+    // modes and is left alone there. Nothing else in the box takes focus, so
+    // taking the key costs no navigation.
+    if (e.key === 'Tab' && !scopeBar().hidden) {
+      e.preventDefault()
+      historyScope = nextScope(historyScope)
+      void showHistory()
+      return
+    }
     if (e.key === 'Enter') {
       e.preventDefault()
       const command = filtered[selected]
@@ -80,6 +105,9 @@ export function togglePalette(): void {
 }
 
 export function showPalette(): void {
+  // The scope bar is the history box's, not the palette's. Left behind, it
+  // would offer to narrow a list of actions by a pane, which means nothing.
+  scopeBar().hidden = true
   commands = collect()
   selected = 0
   root().hidden = false
@@ -114,6 +142,7 @@ export function showPalette(): void {
  * offers.
  */
 export async function showVault(): Promise<void> {
+  scopeBar().hidden = true
   let entries: VaultEntry[] = []
   let folder = ''
   try {
@@ -168,25 +197,140 @@ export async function showHistory(): Promise<void> {
   }
 
   // Captured before the box opens: by the time a row is picked the palette has
-  // taken focus, and "the pane you were in" is the only sensible target.
-  const pane = store.activePane
+  // taken focus, and "the pane you were in" is the only sensible target. It is
+  // also what "this pane" means, for the same reason.
+  historyPane = store.activePane
+  if (!historyPane) historyScope = 'machine'
+
+  // Every count, before anything is dropped, so each button says how much is
+  // behind it. The useful question when a list looks short is "is that all of
+  // them, or all of them *here*", and three numbers answer it without a click.
+  const cwd = historyPane ? (store.workspaceOfPane(historyPane.id)?.cwd ?? '') : ''
+  const counts: Record<HistoryScope, number> = {
+    terminal: historyPane ? entries.filter((e) => e.paneId === historyPane!.id).length : 0,
+    machine: entries.length,
+    everywhere: entries.length,
+  }
+
+  const elsewhere: HistoryEntry[] = []
+  if (cwd) {
+    const seen = new Set(entries.map((e) => e.command))
+    for (const machine of commandsElsewhere(cwd)) {
+      for (const command of machine.commands) {
+        if (seen.has(command)) continue
+        seen.add(command)
+        elsewhere.push({ command, cwd, at: 0, elsewhere: machine.label })
+      }
+    }
+  }
+  counts.everywhere = entries.length + elsewhere.length
+
+  if (historyScope === 'terminal' && historyPane) {
+    entries = entries.filter((entry) => entry.paneId === historyPane!.id)
+  } else if (historyScope === 'everywhere') {
+    // Appended rather than interleaved: another machine's commands carry no
+    // timestamp this one can compare against its own clock, so sorting them
+    // together would produce an order that is confidently wrong.
+    entries = entries.concat(elsewhere)
+  }
+
+  const pane = historyPane
   commands = entries.map((entry) => ({
-    kind: 'History',
+    kind: entry.elsewhere ?? 'History',
     label: entry.command,
-    detail: entry.cwd,
+    detail: outcomeOf(entry),
     run: () => {
       if (pane) void backend().pty.write(pane.id, entry.command)
     },
   }))
+
+  renderScope(counts)
 
   selected = 0
   root().hidden = false
   input().value = ''
   input().placeholder = commands.length
     ? 'Type to find a command — Enter puts it on the prompt'
-    : 'Nothing recorded yet'
+    : historyScope === 'terminal'
+      ? 'Nothing recorded in this terminal — Tab widens the search'
+      : 'Nothing recorded yet'
   refine()
   input().focus()
+}
+
+/**
+ * What happened last time, beside where it ran.
+ *
+ * The folder was the whole of this line before, and it is still the thing that
+ * identifies a command — but "failed last time" is the fact that changes what
+ * you do next, and it was being thrown away. An exit code nobody recorded reads
+ * as nothing at all rather than as success: a pane with no shell integration
+ * knows neither, and the two must not look the same.
+ *
+ * Deliberately not the number itself for the failures. "exit 1" is what git
+ * said; "failed last time" is what it meant, and the number is on the screen
+ * behind this box if anybody wants it.
+ */
+function outcomeOf(entry: HistoryEntry): string {
+  const where = entry.cwd
+  if (entry.lastCode === undefined) return where
+
+  const runs = entry.runs ?? 1
+  const fails = entry.fails ?? 0
+  if (entry.lastCode !== 0) {
+    const before = fails > 1 ? `, ${fails} of ${runs} runs` : ''
+    return `failed last time (exit ${entry.lastCode})${before} · ${where}`
+  }
+  // A command that works now but has a history of not working is worth saying
+  // so about — it is usually the one with an argument you keep getting wrong.
+  if (fails > 0) return `worked last time, failed ${fails} of ${runs} · ${where}`
+  return where
+}
+
+/**
+ * The two scopes, both always drawn.
+ *
+ * The one that is not chosen is a place to go rather than something that has
+ * disappeared, so it keeps its slot and its label — and "this pane" is greyed
+ * rather than removed when there is no pane to mean, which says why it cannot
+ * be picked instead of leaving somebody to wonder where it went.
+ *
+ * Counts on the labels, because the useful question when the list looks short
+ * is "is that all of them, or all of them *here*", and the two numbers answer
+ * it without a click.
+ */
+function renderScope(counts: Record<HistoryScope, number>): void {
+  const bar = scopeBar()
+  bar.hidden = false
+  bar.replaceChildren()
+
+  for (const scope of SCOPES) {
+    const el = document.createElement('button')
+    el.type = 'button'
+    el.className = 'palette-scope__btn' + (historyScope === scope ? ' on' : '')
+    el.textContent = `${SCOPE_LABELS[scope]} (${counts[scope]})`
+    // Greyed rather than removed when there is no pane to mean, which says why
+    // it cannot be picked instead of leaving somebody to wonder where it went.
+    el.disabled = scope === 'terminal' && !historyPane
+    el.addEventListener('click', () => {
+      if (historyScope === scope) return
+      historyScope = scope
+      void showHistory()
+    })
+    bar.appendChild(el)
+  }
+
+  const hint = document.createElement('span')
+  hint.className = 'palette-scope__hint'
+  hint.textContent = 'Tab to widen'
+  bar.appendChild(hint)
+}
+
+/** The three rings, in the words the search box has room for. */
+const SCOPE_LABELS: Record<HistoryScope, string> = {
+  terminal: 'this terminal',
+  machine: 'this machine',
+  everywhere: 'everywhere',
 }
 
 export function hidePalette(): void {
@@ -308,6 +452,36 @@ function collect(): Command[] {
         label: 'token stats',
         detail: 'what Claude Code has spent in this project, and what it would have cost',
         run: () => actions.openTokens(id),
+      },
+      {
+        kind: 'Action',
+        label: 'canvas',
+        detail: 'connected notes for this project, in Obsidian’s .canvas format',
+        run: () => actions.openCanvas(id),
+      },
+      {
+        kind: 'Action',
+        label: 'today',
+        detail: 'where the day went — time, commands and saves, across every project',
+        run: () => actions.openDay(id),
+      },
+      {
+        kind: 'Action',
+        label: 'focus',
+        detail: 'time on this project, what is left to do, and a timer',
+        run: () => actions.openFocus(id),
+      },
+      {
+        kind: 'Action',
+        label: 'runbook',
+        detail: 'the commands you actually run in this project, and which of them work',
+        run: () => actions.openRunbook(id),
+      },
+      {
+        kind: 'Action',
+        label: 'command history',
+        detail: 'everything you have typed at a prompt, to put back on one — Ctrl+Alt+H',
+        run: () => void showHistory(),
       },
       {
         kind: 'Action',

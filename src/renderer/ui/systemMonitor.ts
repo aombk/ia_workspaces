@@ -21,6 +21,7 @@
 import { backend } from '../../backend'
 import { store } from '../state'
 import type { SystemStats } from '../../shared/types'
+import { cpuTemperature } from '../../shared/sensors'
 
 /**
  * How many samples the graphs keep.
@@ -96,6 +97,12 @@ let polling = false
  * Returns the unsubscribe, which every caller must actually call — see the note
  * at the top about what a monitor left running looks like.
  */
+// Coming back to the window is when somebody starts reading again, so the
+// skipped sample is taken then rather than up to an interval later.
+window.addEventListener('focus', () => {
+  if (subscribers.size) void poll()
+})
+
 export function watchSystem(listener: Listener, everyMs: number): () => void {
   subscribers.set(listener, everyMs)
   retime()
@@ -141,6 +148,17 @@ async function poll(): Promise<void> {
   // A probe that takes longer than the interval must not be asked again on top
   // of itself; the next tick is scheduled when this one lands, not before.
   if (polling) return
+
+  // Nobody is reading a reading nobody can see. On Windows the slow half of a
+  // sample costs a `powershell.exe`, and a dock left open behind another window
+  // was spawning one every few seconds all day — which is a real amount of heat
+  // for a graph nobody was looking at. The clock keeps running so the pane
+  // fills the moment it comes back; the sample is what is skipped.
+  if (document.hidden || !document.hasFocus()) {
+    schedule()
+    return
+  }
+
   polling = true
   try {
     // The drives block is the only reading here that costs a process, so it is
@@ -165,7 +183,7 @@ function record(stats: SystemStats | null): void {
   push(history.memory, stats ? percent(stats.memory.used, stats.memory.total) : null)
   push(history.rx, sum(stats?.networks.map((n) => n.rxPerSec)))
   push(history.tx, sum(stats?.networks.map((n) => n.txPerSec)))
-  push(history.cpuTemp, hottestCpu(stats))
+  push(history.cpuTemp, cpuTemperature(stats?.temperatures ?? [])?.celsius ?? null)
   push(history.gpuLoad, stats?.gpus[0]?.load ?? null)
   push(history.gpuTemp, stats?.gpus[0]?.temperature ?? null)
   push(
@@ -202,11 +220,6 @@ function record(stats: SystemStats | null): void {
  * cores idle is the machine throttling, and a mean would hide it. Null on any
  * machine with no readable sensor, which is most of Windows — see `SystemStats`.
  */
-function hottestCpu(stats: SystemStats | null): number | null {
-  const cpu = stats?.temperatures.filter((t) => t.kind === 'cpu') ?? []
-  return cpu.length ? Math.max(...cpu.map((t) => t.celsius)) : null
-}
-
 function push(series: Array<number | null>, value: number | null): void {
   series.push(value)
   if (series.length > HISTORY) series.shift()

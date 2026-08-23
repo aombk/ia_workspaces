@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { backend } from '../backend'
+import { mayRelease } from '../shared/idleShells'
 import { hasFilePath, pathsFromDrop, quotePath } from './ui/fileDrag'
 import { store, paneLabel, shellFor } from './state'
 import { activeTerminalTheme, isTranslucent, terminalBackdrop, xtermTheme } from './themes'
@@ -17,11 +18,32 @@ import { gitRoot } from './git/common'
 import { ComparePane } from './comparePane'
 import { SearchPane, type SearchPaneHooks } from './searchPane'
 import { PortsPane, type PortsPaneHooks } from './portsPane'
+import { CanvasPane } from './canvasPane'
+import { DayPane } from './dayPane'
+import { FocusPane } from './focusPane'
+import { RunbookPane } from './runbookPane'
 import { TokensPane } from './tokensPane'
 import { ImagesPane, type ImagesPaneHooks } from './imagesPane'
 import { BrowserPane, DEFAULT_URL } from './browserPane'
 import { attachInlineEditor } from './ui/editing'
 import { showContextMenu } from './ui/contextMenu'
+import { showHistory } from './ui/palette'
+import {
+  endWalk,
+  forgetPane,
+  nextScope,
+  paneScope,
+  setPaneCwd,
+  putOnPrompt,
+  refreshPaneHistory,
+  setPaneScope,
+  useHistoryFile,
+  usesHistoryFile,
+  walkHistory,
+  walking,
+} from './ui/paneHistory'
+import { shellBindsHistory } from '../shared/historyBinding'
+import type { HistoryScope } from './ui/paneHistory'
 import { beginDrag, draggingTab, endDrag } from './ui/dragState'
 import { isMac, isPrimary } from './ui/keys'
 import { DomZoom, UnavailablePane, type AuxPane, type PaneZoom } from './auxPane'
@@ -87,11 +109,34 @@ interface Instance {
    * read off the screen, so they stay live for a pane that is not rendering.
    */
   deferred: boolean
+  /** When it went off screen, for the buffer trim below. Zero while visible. */
+  deferredAt: number
   /** Bytes that arrived while deferred, replayed on reveal. See `PENDING_CAP`. */
   pending: string[]
   pendingBytes: number
   /** Set when the buffer overflowed and the oldest output had to be dropped. */
   pendingTruncated: boolean
+  /**
+   * Asleep: the pane is here, its shell is not. See `releaseIdle`.
+   *
+   * Separate from `spawned` because the two answer different questions —
+   * `spawned` is "is there a shell", this is "did we take it away on purpose",
+   * and only the second one may not be undone by a re-mount.
+   */
+  hibernated: boolean
+}
+
+/**
+ * What each history ring is called where a person reads it.
+ *
+ * Short enough for a control that floats over a terminal, and named so each one
+ * plainly contains the last: a terminal is on a machine, a machine is one of
+ * everywhere.
+ */
+const LABELS: Record<HistoryScope, string> = {
+  terminal: 'this terminal only',
+  machine: 'all terminals on this machine',
+  everywhere: 'all machines',
 }
 
 export class TerminalManager {
@@ -138,8 +183,28 @@ export class TerminalManager {
     this.pool.hidden = true
     host.parentElement?.appendChild(this.pool)
 
+    // The one timer this class owns. A minute apart and a loop over a handful
+    // of panes, which is nothing beside what it gives back — see `trimHidden`.
+    setInterval(() => {
+      this.trimHidden()
+      this.releaseIdle()
+    }, TerminalManager.TRIM_EVERY_MS)
+
     this.resizeObserver = new ResizeObserver(() => this.fitAll())
     this.resizeObserver.observe(host)
+
+    // Minimised or fully covered: the whole window is drawing nothing, so no
+    // pane needs a graphics context. Chromium does not take them back on its
+    // own — the contexts stay live, and with them the glyph atlas and backing
+    // store each one holds in the graphics process, which measured here is the
+    // second-largest block of memory this app occupies.
+    //
+    // Page visibility rather than window focus, deliberately. Focus changes
+    // every time you alt-tab, and a context created and destroyed on every
+    // alt-tab is exactly the churn that `setRenderer` exists to avoid; this
+    // fires when the window is actually minimised or covered, which is when the
+    // memory is genuinely doing nothing for anybody.
+    document.addEventListener('visibilitychange', () => this.applyWindowVisibility())
 
     // A drag that ends anywhere — dropped on nothing, or cancelled with Escape
     // — leaves whichever pane the cursor was last over still lit up. `drop` and
@@ -246,8 +311,19 @@ export class TerminalManager {
       answerColor(11, () => activeTerminalTheme(store.settings).terminal.background)
     )
 
-    term.onData((data) => void backend().pty.write(paneId, data))
-    term.onBinary((data) => void backend().pty.write(paneId, data))
+    // A pane whose shell was released has nothing to write to, and the first
+    // thing anyone does to such a pane is type at it — so that is what wakes it.
+    // The keystroke itself is dropped: it was meant for a shell that is not
+    // there yet, and replaying it into a starting one would type it at a prompt
+    // nobody is watching.
+    term.onData((data) => {
+      if (this.wakeIfAsleep(paneId)) return
+      void backend().pty.write(paneId, data)
+    })
+    term.onBinary((data) => {
+      if (this.wakeIfAsleep(paneId)) return
+      void backend().pty.write(paneId, data)
+    })
     term.attachCustomKeyEventHandler((e) => this.handleKey(e, term, paneId))
 
     // Clicking anywhere in a pane makes it the active one.
@@ -363,9 +439,11 @@ export class TerminalManager {
       // A pane is created for the tab being mounted, so it starts awake. The
       // next tab change decides properly for every pane at once.
       deferred: false,
+      deferredAt: 0,
       pending: [],
       pendingBytes: 0,
       pendingTruncated: false,
+      hibernated: false,
     }
     this.instances.set(paneId, inst)
     return inst
@@ -387,6 +465,12 @@ export class TerminalManager {
    */
   private handleKey(e: KeyboardEvent, term: Terminal, paneId: string): boolean {
     if (e.type !== 'keydown') return true
+
+    // Kept warm by typing. The Up arrow has to answer inside this handler,
+    // which is synchronous, so the list must already be in hand — and anyone
+    // about to press Up has just been pressing other keys. Guarded by age, so
+    // this is a comparison on all but one keystroke in twenty seconds.
+    refreshPaneHistory()
 
     // Cmd+C / Cmd+V on a Mac, and Ctrl+Shift+C / Ctrl+Shift+V elsewhere: both
     // are the platform's ordinary copy and paste for a terminal.
@@ -447,6 +531,39 @@ export class TerminalManager {
       void this.paste(term, paneId)
       return false
     }
+
+    // The Up arrow walks this app's own history instead of the shell's — see
+    // `paneHistory.ts` for the rules. Bare arrows only: Shift+Up is a selection
+    // and Ctrl+Up is a scroll in several shells, and neither is a recall.
+    const bare = !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey
+    // A pane whose shell binds the arrows itself is left alone entirely. Its
+    // line editor replaces its own line exactly; everything below is the
+    // second-best route for the shells that cannot — see `historyBinding.ts`.
+    if (bare && (e.code === 'ArrowUp' || e.code === 'ArrowDown') && !usesHistoryFile(paneId)) {
+      // A full-screen program owns its own arrows. The alternate screen buffer
+      // is the one reliable way to know one is running, and it needs nothing
+      // from the shell — which matters, because a pane with no shell
+      // integration must still behave exactly as it always did.
+      if (term.buffer.active.type === 'alternate') return true
+      const line = walkHistory(paneId, e.code === 'ArrowUp' ? 1 : -1)
+      // Null is "nothing to offer" — an empty history, or the end of the list.
+      // The shell gets the key it would have got, so its own recall still works
+      // underneath this.
+      if (line === null) return true
+      e.preventDefault()
+      // The clearing sequence differs by shell, and has to be separated in time
+      // from the text it clears for — see `putOnPrompt`.
+      const pane = store.pane(paneId)
+      const shell = pane
+        ? shellFor(pane, store.workspaceOfPane(paneId), store.settings).shell
+        : store.settings.shell
+      putOnPrompt(paneId, line, shell)
+      return false
+    }
+    // Any other key ends the walk, so the next Up starts from the newest entry
+    // rather than resuming halfway down from where the last one stopped.
+    if (walking(paneId)) endWalk(paneId)
+
     return true
   }
 
@@ -666,6 +783,26 @@ export class TerminalManager {
       case 'tokens':
         pane = new TokensPane(state.id, workspaceIdOf(state.id))
         break
+      // Also no hooks: it draws from the same history cache the arrows use, so
+      // opening it costs one read rather than a second poll of anything.
+      case 'runbook':
+        pane = new RunbookPane(state.id, workspaceIdOf(state.id))
+        break
+      // Time, tasks and a timer for one project. Draws from the time monitor's
+      // own read and the project's own NOTES.md; nothing else feeds it.
+      case 'focus':
+        pane = new FocusPane(state.id, workspaceIdOf(state.id))
+        break
+      // Across every project rather than about one, which is why it takes no
+      // workspace: "where did today go" is not a question about a folder.
+      case 'day':
+        pane = new DayPane(state.id)
+        break
+      // Connected notes, stored in the project's own folder in Obsidian's
+      // `.canvas` format — so a canvas started here is not trapped here.
+      case 'canvas':
+        pane = new CanvasPane(state.id, workspaceIdOf(state.id), state.file)
+        break
       // The system readings are a dock now, not a tab — see `monitorDock.ts`.
       // The kind stays so a document written before that still round-trips
       // rather than being rewritten as a terminal, and the tab says where its
@@ -751,6 +888,11 @@ export class TerminalManager {
       shell.dataset.paneId = node.paneId
       if (tab.panes.length >= 2) shell.appendChild(this.buildPaneHeader(tab, state))
       shell.appendChild(body)
+      // Over the terminal's own top-right corner rather than in a bar, because
+      // a lone pane has no bar — `buildPaneHeader` above is deliberately only
+      // built for a split, on the grounds that a row above one terminal is a
+      // wasted row. Floating it keeps one place for the control in both cases.
+      if (!state.kind || state.kind === 'terminal') shell.appendChild(this.buildHistoryCorner(state.id))
       this.wirePaneDrop(shell, tab, state.id)
       return shell
     }
@@ -774,6 +916,85 @@ export class TerminalManager {
 
   setPaneHooks(hooks: PaneHooks): void {
     this.paneHooks = hooks
+  }
+
+  /**
+   * The history control, floating over the terminal's top-right corner.
+   *
+   * Two things, because they are two halves of one question. The switch says
+   * which slice of the history the Up arrow walks — every pane, or only this
+   * one — and the button opens the search box on the same slice. Neither is
+   * discoverable from a keyboard shortcut, which is the entire reason this
+   * exists rather than another binding nobody finds.
+   *
+   * Faint until the pane is hovered. It sits over the terminal's content, so it
+   * has to be legible when wanted and close to invisible when not; a control at
+   * full strength in the corner of every pane would be in the way of the thing
+   * the pane is for.
+   */
+  private buildHistoryCorner(paneId: string): HTMLElement {
+    // The project this pane belongs to, so the widest ring knows which other
+    // machines' commands are relevant.
+    setPaneCwd(paneId, store.workspaceOfPane(paneId)?.cwd ?? '')
+
+    // Decided here rather than at keypress time because this is where both
+    // halves are already in hand: the pane's resolved shell, and whether shell
+    // integration is on. A pane that qualifies gets a file written for it and
+    // the key handler stands aside.
+    const pane = store.pane(paneId)
+    const shell = pane
+      ? shellFor(pane, store.workspaceOfPane(paneId), store.settings).shell
+      : store.settings.shell
+    if (shellBindsHistory(shell, store.settings.shellIntegration)) useHistoryFile(paneId)
+
+    const corner = document.createElement('div')
+    corner.className = 'pane-history'
+
+    const scope = document.createElement('button')
+    scope.type = 'button'
+    scope.className = 'pane-history__scope'
+
+    const draw = (): void => {
+      const at = paneScope(paneId)
+      scope.textContent = at
+      // Anything narrower than the machine is a deliberate narrowing and worth
+      // noticing without a hover; anything wider reaches other computers and is
+      // worth noticing even more. The middle one is the ordinary state.
+      scope.classList.toggle('on', at !== 'machine')
+      // What the click will do, not what the state is. A control whose hover
+      // text describes the present tense leaves you working out the rest.
+      scope.title = `Switch history mode: ${LABELS[nextScope(at)]}`
+    }
+    draw()
+
+    scope.addEventListener('click', (e) => {
+      e.stopPropagation()
+      setPaneScope(paneId, nextScope(paneScope(paneId)))
+      draw()
+      // Straight back to the terminal this corner belongs to — not to whichever
+      // pane happens to be active, which is what `focusActive` would do and is
+      // wrong when the corner clicked is on a pane beside it. Clicking a control
+      // over a terminal must never be a way to stop typing into that terminal.
+      this.instances.get(paneId)?.term.focus()
+    })
+
+    const search = document.createElement('button')
+    search.type = 'button'
+    search.className = 'pane-history__search'
+    search.textContent = '⌕'
+    search.title = 'Search command history — Ctrl+Alt+H'
+    search.addEventListener('click', (e) => {
+      e.stopPropagation()
+      // No refocus here: the history box takes the keyboard on purpose, and
+      // picking a row puts the line back in the pane it came from.
+      void showHistory()
+    })
+    // Neither control takes focus on mousedown, so the terminal never loses the
+    // caret to a click that was only ever about the corner.
+    for (const el of [scope, search]) el.addEventListener('mousedown', (e) => e.preventDefault())
+
+    corner.append(scope, search)
+    return corner
   }
 
   /**
@@ -875,6 +1096,15 @@ export class TerminalManager {
   private openPaneMenu(x: number, y: number, tab: TerminalTabState, pane: PaneState): void {
     showContextMenu(x, y, [
       { label: 'Rename pane…', shortcut: 'F2', onClick: () => this.beginRenamePane(pane.id) },
+      'separator',
+      // The commands you have typed. Here as well as on its shortcut because a
+      // shortcut nobody can find is a feature nobody has: this is the menu you
+      // open when you are looking at a prompt and wondering what you ran.
+      {
+        label: 'Command history…',
+        shortcut: 'Ctrl+Alt+H',
+        onClick: () => void showHistory(),
+      },
       'separator',
       { label: 'Split right', shortcut: 'Ctrl+\\', onClick: () => this.paneHooks?.split('row') },
       { label: 'Split down', shortcut: 'Ctrl+Shift+\\', onClick: () => this.paneHooks?.split('column') },
@@ -1046,6 +1276,10 @@ export class TerminalManager {
       if (!isTerminalPane(pane)) continue
       const inst = this.instances.get(pane.id)
       if (!inst || inst.spawned || inst.disposed) continue
+      // Asleep on purpose. Mounting its tab is looking at it, and looking at it
+      // is exactly the case this feature exists to keep cheap — it wakes on a
+      // key, not on a glance.
+      if (inst.hibernated) continue
       inst.spawned = true
       const res = await backend().pty.spawn({
         paneId: pane.id,
@@ -1294,6 +1528,10 @@ export class TerminalManager {
   // ---------------------------------------------------------------- teardown
 
   close(paneId: string): void {
+    // The pane's history scope and its place in a walk go with it. A new pane
+    // reusing the id is not this one, and must not inherit "this pane only".
+    forgetPane(paneId)
+
     const auxPane = this.aux.get(paneId)
     if (auxPane) {
       auxPane.dispose()
@@ -1326,8 +1564,15 @@ export class TerminalManager {
       if (inst.disposed) continue
       const hidden = store.tabOfPane(inst.paneId)?.id !== visibleTabId
       if (hidden === inst.deferred) continue
-      if (hidden) inst.deferred = true
-      else this.wake(inst)
+      if (hidden) {
+        inst.deferred = true
+        inst.deferredAt = Date.now()
+        // The context goes back to the driver the moment nobody is looking.
+        this.setRenderer(inst, false)
+      } else {
+        inst.deferredAt = 0
+        this.wake(inst)
+      }
     }
   }
 
@@ -1343,8 +1588,209 @@ export class TerminalManager {
    * were missing. The note is dim and one line; the ring in the main process
    * still holds more, and `iaw read-screen` can still reach it.
    */
+  /**
+   * How long a pane must be off screen before its buffer is trimmed.
+   *
+   * Long enough that switching between two tabs while working never loses a
+   * line, and short enough that a pane opened this morning and forgotten is not
+   * still holding a build log at teatime.
+   */
+  private static readonly TRIM_AFTER_MS = 30 * 60 * 1000
+
+  /** How often the trim is considered. It costs a loop over a handful of panes. */
+  private static readonly TRIM_EVERY_MS = 60_000
+
+  /**
+   * Gives back the buffer of a pane nobody has looked at for a while.
+   *
+   * The one thing in this app that grows without bound: xterm allocates buffer
+   * lines as output arrives and never releases them, so a pane that once
+   * printed ten thousand lines holds them until it is closed — around
+   * twenty-four megabytes at two hundred columns, each, forever.
+   *
+   * Setting `scrollback` lower makes xterm discard the excess immediately, and
+   * raising it back on wake does not bring them back. That is the whole cost
+   * and it is why this is a setting: `hiddenScrollback: 0` never trims.
+   */
+  private trimHidden(): void {
+    const keep = store.settings.hiddenScrollback
+    if (!keep || keep <= 0) return
+
+    const now = Date.now()
+    for (const inst of this.instances.values()) {
+      if (inst.disposed || !inst.deferred || !inst.deferredAt) continue
+      if (now - inst.deferredAt < TerminalManager.TRIM_AFTER_MS) continue
+      // Once per pane: after trimming, its option already sits at the floor and
+      // the comparison below stops it being touched again.
+      if ((inst.term.options.scrollback ?? 0) <= keep) continue
+      try {
+        inst.term.options.scrollback = keep
+      } catch {
+        /* a pane mid-teardown */
+      }
+    }
+  }
+
+  /**
+   * Ends the shells of idle agent panes, to get their memory back.
+   *
+   * The expensive thing in this app is not this app. An agent pane sitting at
+   * its prompt is around half a gigabyte of `claude.exe`, a per-session MCP
+   * server and a conhost, and three of those off screen are enough to put a
+   * 15 GB machine into paging — which is what "a few terminals and it crawls"
+   * turns out to be. They are also the only panes whose contents can be
+   * re-entered exactly, so they are the only ones this touches.
+   *
+   * Every condition, and the reason for each, is in `mayRelease`. Runs on the
+   * same minute timer as `trimHidden`, since it is the same question asked
+   * about a bigger resource.
+   */
+  private releaseIdle(): void {
+    const afterMs = Math.max(0, store.settings.idleAgentRelease) * 60_000
+    if (afterMs <= 0) return
+
+    const now = Date.now()
+    for (const inst of this.instances.values()) {
+      const candidate = {
+        spawned: inst.spawned,
+        hibernated: inst.hibernated,
+        disposed: inst.disposed,
+        deferred: inst.deferred,
+        deferredAt: inst.deferredAt,
+        // Only what `claude --resume` can bring back. `resumeAgentSessions`
+        // being off means the pane would come back to a bare prompt with its
+        // conversation stranded, which is a loss, not a saving.
+        resumable: Boolean(store.settings.resumeAgentSessions && store.pane(inst.paneId)?.agentSession),
+        indicator: store.paneIndicator(inst.paneId),
+      }
+      if (!mayRelease(candidate, afterMs, now)) continue
+      void this.sleepPane(inst)
+    }
+  }
+
+  /**
+   * Puts one pane to sleep, and says so where it happened.
+   *
+   * The note is written into the pane itself rather than shown as chrome: it is
+   * a thing that happened to this terminal, it belongs in the terminal's own
+   * scrollback beside the output it interrupted, and it is still there when you
+   * come back tomorrow and wonder why the agent is not running.
+   */
+  private async sleepPane(inst: Instance): Promise<void> {
+    inst.hibernated = true
+    inst.spawned = false
+    // So the next spawn counts as the first again and types the resume line.
+    this.startedOnce.delete(inst.paneId)
+    await backend().pty.sleep(inst.paneId)
+    this.write(
+      inst,
+      `\r\n\x1b[38;5;244m[shell released after ${store.settings.idleAgentRelease} min idle` +
+        ` — press a key to resume this conversation]\x1b[0m\r\n`
+    )
+  }
+
+  /**
+   * Wakes a released pane. True when it did, so the caller drops the keystroke.
+   */
+  private wakeIfAsleep(paneId: string): boolean {
+    const inst = this.instances.get(paneId)
+    if (!inst || !inst.hibernated || inst.disposed) return false
+    inst.hibernated = false
+    this.write(inst, '\r\n\x1b[38;5;244m[resuming…]\x1b[0m\r\n')
+    const tab = store.tabOfPane(paneId)
+    if (tab) void this.startPanes(inst.workspaceId, tab)
+    return true
+  }
+
+  /** Output for a pane, through the same gate deferred panes use. */
+  private write(inst: Instance, text: string): void {
+    if (inst.deferred) bufferWhileHidden(inst, text)
+    else inst.term.write(text)
+  }
+
+  /**
+   * Hands every context back while the window is hidden, and returns them after.
+   *
+   * A pane that is on screen inside a minimised window is not on screen. The
+   * same rule `setDeferred` applies to tabs, applied to the window itself.
+   */
+  private applyWindowVisibility(): void {
+    const visible = document.visibilityState === 'visible'
+    for (const inst of this.instances.values()) {
+      if (inst.disposed) continue
+      // A deferred pane has already given its context back and must not be
+      // handed one now just because the window came back.
+      this.setRenderer(inst, visible && !inst.deferred)
+    }
+  }
+
+  /**
+   * Gives a pane a GPU context, or takes it away.
+   *
+   * WebGL is a large speedup for a terminal that is *being looked at* and pure
+   * cost for one that is not — and it is not a cost that stays still. Chromium
+   * allows a limited number of live WebGL contexts, around sixteen; past that
+   * it forcibly loses the oldest ones. So a session that visits twenty panes
+   * used to sit in a permanent cycle of creating contexts, having them taken
+   * away, and disposing them, with the driver churning through video memory the
+   * whole time. On this machine that ended in a `VIDEO_MEMORY_MANAGEMENT_INTERNAL`
+   * bugcheck, which is what prompted looking.
+   *
+   * A deferred pane renders nothing, so it needs no renderer. Handing the
+   * context back on the way out means the number of live contexts is the number
+   * of panes on screen — one to four — rather than every pane ever opened.
+   *
+   * Losing the addon is not losing the pane: xterm falls back to its DOM
+   * renderer, which draws the same thing more slowly, and the buffer is
+   * untouched either way.
+   */
+  private setRenderer(inst: Instance, wanted: boolean): void {
+    // Translucency and WebGL are mutually exclusive — see `applySettings` — and
+    // that decision wins over this one.
+    const allowed = wanted && !isTranslucent(store.settings)
+
+    if (!allowed && inst.webgl) {
+      try {
+        inst.webgl.dispose()
+      } catch {
+        /* already gone */
+      }
+      inst.webgl = null
+      return
+    }
+    if (allowed && !inst.webgl && !inst.disposed) {
+      try {
+        const webgl = new WebglAddon()
+        // Null it as well as dispose it, or the pane believes it still has a
+        // renderer it no longer has and never asks for another.
+        webgl.onContextLoss(() => {
+          try {
+            webgl.dispose()
+          } catch {
+            /* already gone */
+          }
+          if (inst.webgl === webgl) inst.webgl = null
+        })
+        inst.term.loadAddon(webgl)
+        inst.webgl = webgl
+      } catch {
+        inst.webgl = null // the DOM renderer is fine
+      }
+    }
+  }
+
   private wake(inst: Instance): void {
     inst.deferred = false
+    this.setRenderer(inst, true)
+    // Back to the full depth for whatever it prints from here. What was already
+    // discarded is gone — see `trimHidden` — but nothing further is lost.
+    if (inst.term.options.scrollback !== store.settings.scrollback) {
+      try {
+        inst.term.options.scrollback = store.settings.scrollback
+      } catch {
+        /* a pane mid-teardown */
+      }
+    }
     if (!inst.pending.length) return
 
     const { text: backlog, truncated } = drainPending(inst)

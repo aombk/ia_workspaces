@@ -145,9 +145,13 @@ export function renderTabstrip(): void {
   const add = document.createElement('button')
   add.className = 'new-tab'
   add.textContent = '+'
-  add.title = 'New terminal (Ctrl+T) — right-click for more'
-  add.addEventListener('click', () => actions.newTab(workspace.id))
-  // Right-click offers the other tab kinds without adding a second button.
+  add.title = 'Open a new tab (Ctrl+T for a terminal)'
+  // Clicking `+` asks what to open rather than guessing. A terminal is still
+  // one click away at the top of the list, and Ctrl+T still skips the ask.
+  add.addEventListener('click', () => {
+    const rect = add.getBoundingClientRect()
+    openNewTabMenu(rect.left, rect.bottom + 4, workspace.id)
+  })
   add.addEventListener('contextmenu', (e) => {
     e.preventDefault()
     openNewTabMenu(e.clientX, e.clientY, workspace.id)
@@ -331,6 +335,22 @@ function newTabEntries(workspaceId: string): MenuEntry[] {
     {
       label: 'token stats',
       onClick: () => actions.openTokens(workspaceId),
+    },
+    {
+      label: 'runbook',
+      onClick: () => actions.openRunbook(workspaceId),
+    },
+    {
+      label: 'focus',
+      onClick: () => actions.openFocus(workspaceId),
+    },
+    {
+      label: 'today',
+      onClick: () => actions.openDay(workspaceId),
+    },
+    {
+      label: 'canvas',
+      onClick: () => actions.openCanvas(workspaceId),
     },
     // No system monitor here. This menu makes tabs, and the monitor stopped
     // being one — it is a panel docked to the window, reached by Ctrl+Shift+M

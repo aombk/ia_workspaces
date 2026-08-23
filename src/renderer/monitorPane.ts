@@ -40,6 +40,7 @@ import type {
 import { backend } from '../backend'
 import { showWeatherSettings } from './ui/weatherSettings'
 import { store } from './state'
+import { cpuTemperature } from '../shared/sensors'
 import { showContextMenu } from './ui/contextMenu'
 import { sparklines, type SparkSeries } from './ui/sparkline'
 import {
@@ -176,6 +177,7 @@ export class MonitorPane implements AuxPane {
       volumes: () => this.volumesCard(stats),
       temperatures: () => this.sensorsCard(stats),
       claude: () => this.claudeCard(),
+      app: () => this.appCard(stats),
       system: () => this.systemCard(stats),
       weather: () => this.weatherCard(),
       air: () => this.airCard(),
@@ -352,7 +354,11 @@ export class MonitorPane implements AuxPane {
    */
   private cpuCard(stats: SystemStats, history: SystemHistory): HTMLElement {
     const ram = percent(stats.memory.used, stats.memory.total)
-    const temp = history.cpuTemp[history.cpuTemp.length - 1] ?? null
+    // The sensor, not only its value: a processor publishes several and they
+    // disagree by tens of degrees, so a bare number is one nothing else on the
+    // machine can be checked against. See `cpuTemperature`.
+    const sensor = cpuTemperature(stats.temperatures)
+    const temp = sensor?.celsius ?? history.cpuTemp[history.cpuTemp.length - 1] ?? null
 
     // Load, heat and memory on the heading's own line, which is the skin's
     // arrangement and saves a line per block over a row of its own. The model
@@ -365,7 +371,7 @@ export class MonitorPane implements AuxPane {
         empty: '--°C',
         tone: temp === null ? 'idle' : hot({ name: '', celsius: temp, kind: 'cpu' }),
         series: 'temp',
-        title: 'Processor temperature',
+        title: sensor ? `Processor temperature — ${sensor.name}` : 'Processor temperature',
       },
       // Never banded, unlike the two beside it. Memory filling up is what the
       // green line is drawing, and a figure that turns amber at 75% and red at
@@ -992,6 +998,65 @@ export class MonitorPane implements AuxPane {
    * estimate come from the platform; what the pack has *lost to age*, and what
    * it is drawing right now, come from a sensor source — see `lhm.ts`.
    */
+  /**
+   * What this app costs, split by the process spending it.
+   *
+   * The total was already collected and was not actionable: an Electron app is
+   * five or six processes doing unrelated jobs, and which one is holding the
+   * memory decides what there is to do about it. The graphics process answers
+   * to “draw with the processor instead of the graphics card”; a renderer
+   * answers to scrollback and how many panes are mounted; the main process
+   * holds the saved screens and answers to neither. Measured on the machine
+   * this was written on, the graphics process alone held 349 MB — a third of
+   * what the whole app was using, and invisible until it was split out.
+   *
+   * The one panel that has no excuse for not measuring itself.
+   */
+  private appCard(stats: SystemStats): HTMLElement {
+    const app = stats.app
+    const card = this.card('this app', `${app.processes} processes`, [
+      {
+        value: bytes(app.memory, 1),
+        tone: 'idle',
+        series: 'memory',
+        title: 'Memory held by every process this app runs',
+      },
+      {
+        value: `${app.cpu.toFixed(0)}%`,
+        tone: band(Math.min(100, app.cpu)),
+        series: 'load',
+        title: 'Percent of one core, summed over those processes',
+      },
+    ])
+
+    for (const part of app.parts) {
+      card.appendChild(
+        this.reading(
+          part.count > 1 ? `${part.type} ×${part.count}` : part.type,
+          `${bytes(part.memory, 1)}`,
+          'idle'
+        )
+      )
+    }
+
+    // Said here rather than in the settings panel because this is where the
+    // number that justifies it is: a graphics process holding hundreds of
+    // megabytes on a machine that is short of them is the whole case for
+    // drawing with the processor instead, and it is only a case while that
+    // number is large.
+    const gpu = app.parts.find((p) => p.type === 'gpu')
+    if (gpu && gpu.memory > 250 * 1024 * 1024 && !store.settings.useSoftwareRendering) {
+      card.appendChild(
+        this.note(
+          `The graphics process is holding ${bytes(gpu.memory, 1)}. On a machine short of memory, ` +
+            '“draw with the processor instead of the graphics card” in Settings gives most of that ' +
+            'back, at the cost of slower drawing in full-screen programs.'
+        )
+      )
+    }
+    return card
+  }
+
   private systemCard(stats: SystemStats): HTMLElement {
     const card = this.card('battery', stats.battery?.charging === true ? 'on mains' : 'on battery')
     const battery = stats.battery

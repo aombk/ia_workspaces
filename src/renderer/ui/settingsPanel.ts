@@ -3,6 +3,7 @@ import { store } from '../state'
 import { playSound, SOUND_OPTIONS } from '../sound'
 import { renderThemeSection } from './themeEditor'
 import { showToast } from './toast'
+import { confirmDialog } from './confirm'
 import { DEFAULT_URL } from '../browserPane'
 import { refreshUsageNow } from './usageMonitor'
 import { refreshRelayNow } from './relayMonitor'
@@ -23,6 +24,22 @@ let shells: ShellProfile[] = []
  * cleared when the panel is opened, not when it is redrawn.
  */
 let query = ''
+
+
+/**
+ * Offers the restart a setting needs, rather than mentioning that it needs one.
+ *
+ * Declining is a real answer and costs nothing: the setting is saved either
+ * way, and it applies the next time the app starts.
+ */
+async function offerRestart(body: string): Promise<void> {
+  const ok = await confirmDialog({
+    title: 'Restart now?',
+    body,
+    confirmLabel: 'Restart',
+  })
+  if (ok) void backend().relaunch()
+}
 
 export function initSettingsPanel(cb: () => void): void {
   onChange = cb
@@ -66,9 +83,22 @@ function section(title: string, ...children: Node[]): HTMLElement {
   return el
 }
 
+/**
+ * Past this much explanation, the control moves below the text.
+ *
+ * A settings row is two columns — what it is on the left, what changes it on
+ * the right — and that only works while the left column is a line or two. A
+ * paragraph beside a single text box gives a tall column of prose with one
+ * field floating in the middle of an empty half, which is what this avoids.
+ *
+ * Measured in characters rather than lines because the panel is a fixed width,
+ * so the two are the same thing here.
+ */
+const STACK_HINT_AT = 200
+
 function field(name: string, hint: string, control: Node): HTMLElement {
   const row = document.createElement('div')
-  row.className = 'field'
+  row.className = 'field' + (hint.length > STACK_HINT_AT ? ' stacked' : '')
 
   const label = document.createElement('div')
   label.className = 'field-label'
@@ -88,6 +118,80 @@ function field(name: string, hint: string, control: Node): HTMLElement {
   wrap.appendChild(control)
 
   row.append(label, wrap)
+  return row
+}
+
+
+/**
+ * A passphrase you can set and clear but never read.
+ *
+ * Write-only by design: there is no IPC that returns one, so no panel can show
+ * it and no screenshot of this page can leak it. The row says whether one is
+ * set, which is the whole of what somebody needs to know here.
+ */
+function passphraseRow(): HTMLElement {
+  const row = document.createElement('div')
+  row.className = 'settings-folder'
+
+  const input = document.createElement('input')
+  input.type = 'password'
+  input.placeholder = 'not set — commands are not shared'
+  input.spellcheck = false
+  input.autocomplete = 'off'
+  row.appendChild(input)
+
+  const state = document.createElement('span')
+  state.className = 'field-value'
+  row.appendChild(state)
+
+  const save = document.createElement('button')
+  save.type = 'button'
+  save.className = 'btn'
+  save.textContent = 'Set'
+  row.appendChild(save)
+
+  const clear = document.createElement('button')
+  clear.type = 'button'
+  clear.className = 'btn'
+  clear.textContent = 'Clear'
+  row.appendChild(clear)
+
+  const refresh = (): void => {
+    void backend()
+      .hasSharePassphrase()
+      .then((has) => {
+        state.textContent = has ? 'set on this machine' : 'not set'
+        input.placeholder = has ? 'set — type a new one to replace it' : 'not set — commands are not shared'
+        clear.disabled = !has
+      })
+      .catch(() => {
+        state.textContent = ''
+      })
+  }
+  refresh()
+
+  save.addEventListener('click', () => {
+    const value = input.value
+    if (!value) return
+    void backend()
+      .setSharePassphrase(value)
+      .then(() => {
+        input.value = ''
+        refresh()
+        refreshRelayNow()
+      })
+  })
+
+  clear.addEventListener('click', () => {
+    void backend()
+      .setSharePassphrase('')
+      .then(() => {
+        input.value = ''
+        refresh()
+        refreshRelayNow()
+      })
+  })
+
   return row
 }
 
@@ -469,6 +573,52 @@ async function render(): Promise<void> {
         text(s.newWorkspaceDir, 'your home folder', (v) => patch({ newWorkspaceDir: v }))
       ),
       field(
+        'Draw with the processor instead of the graphics card',
+        'Off, and off is right on any machine with a graphics card — it is faster at what a ' +
+          'terminal does. On is for the machine where memory matters more than speed: the ' +
+          'graphics process alone can hold a few hundred megabytes, and this gives most of it ' +
+          'back. Terminals then draw through the browser’s own renderer, which is slower on a ' +
+          'full-screen program repainting constantly and no different at a prompt. Also worth ' +
+          'trying if your graphics driver is unstable. Takes effect after a restart.',
+        // The one setting the app cannot apply to itself: Electron reads it
+        // before the window exists. Saying "takes effect after a restart" and
+        // leaving the user to go and find the restart was the whole of it
+        // before — so the offer is made here, where the decision was made.
+        toggle(s.useSoftwareRendering, (v) => {
+          patch({ useSoftwareRendering: v })
+          void offerRestart(
+            v
+              ? 'Drawing moves to the processor after a restart, and the graphics process gives its memory back.'
+              : 'Drawing returns to the graphics card after a restart.'
+          )
+        })
+      ),
+      field(
+        'Scrollback kept for panes you are not looking at',
+        'The largest thing this app holds is terminal buffers, and they only ever grow — a pane ' +
+          'that once printed ten thousand lines keeps them until you close it, which is around ' +
+          'twenty-four megabytes each at a wide window. After half an hour off screen a pane is ' +
+          'cut back to this many lines. It genuinely discards them: switching back does not bring ' +
+          'them back, which is why it is a number you choose. Set it to 0 to never trim, or to the ' +
+          'same as your scrollback for the same effect. The panes holding the most are usually the ' +
+          'ones you opened once, watched a build in, and never returned to.',
+        number(s.hiddenScrollback, 0, 100000, (v) => patch({ hiddenScrollback: v }))
+      ),
+      field(
+        'Release an idle agent’s shell after',
+        'Minutes an agent pane may sit off screen before its shell is ended, in exchange for the ' +
+          'memory. This is the largest saving available: a Claude pane doing nothing holds around ' +
+          'half a gigabyte, plus its own MCP server and console host, so three forgotten ones can ' +
+          'be a gigabyte and a half — enough to put a 16 GB machine into paging, which is what it ' +
+          'feels like when a few terminals make everything slow. The pane stays exactly where it ' +
+          'is, keeps its screen, and says what happened; the next key you press starts a shell and ' +
+          'types “claude --resume”, so the conversation carries on where it stopped. Only ever ' +
+          'agent panes — a plain shell holds things a transcript cannot bring back — and never one ' +
+          'that is working, waiting on an answer, or on screen. Needs “Resume agent sessions” on. ' +
+          '0 never releases anything.',
+        number(s.idleAgentRelease, 0, 1440, (v) => patch({ idleAgentRelease: v }))
+      ),
+      field(
         'Dragging a file out of the app',
         'What other programs receive when you drag a row out of the file tree. ' +
           '“The file itself” starts the same kind of drag Explorer does, so it can ' +
@@ -518,23 +668,47 @@ async function render(): Promise<void> {
       // list is, not three panels away from it. See `showsMenu` in `sidebar.ts`.
       field(
         'A folder your machines share',
-        'A synced drive or a network share that every computer you work from ' +
-          'can see. Two things use it. Token counts are pooled, so a project ' +
-          'you work on from two machines adds up to one number on both. And ' +
-          'Relay writes down what each machine is part-way through, so a workspace ' +
-          'gets a warning triangle when another machine has unpushed commits ' +
-          '(saves not sent) or uncommitted files (changed, not saved) in it — ' +
-          'hover it for the machine, the commits and the files. Nothing is marked ' +
-          'when everything is committed and pushed. What travels is a ' +
-          'description: totals, ' +
-          'counts, branch names and the paths of files git already tracks. Never ' +
-          'a conversation, never the contents of a file, and never the name of a ' +
-          'file git is not tracking. Leave blank for neither — this machine alone.',
+        'A synced drive or a network share every computer you work from can see. ' +
+          'Two things use it. Token counts are pooled, so a project you work on ' +
+          'from two machines adds up to one number on both. And Relay marks a ' +
+          'workspace when another machine has unpushed commits (saves not sent) ' +
+          'or uncommitted files (changed, not saved) in it — nothing is marked ' +
+          'when everything is committed and pushed. Only descriptions travel: ' +
+          'counts, branch names, and the paths of files git already tracks. Never ' +
+          'a conversation, never a file’s contents, never the name of a file git ' +
+          'is not tracking. Blank is off.',
         folder(s.sharedDir, 'not shared — this machine only', (v) => {
           patch({ sharedDir: v })
           refreshTokensNow()
           refreshRelayNow()
         })
+      ),
+      field(
+        'Share the commands you run between machines',
+        'Adds a third setting to each terminal’s history switch — “everywhere” — so Up can recall ' +
+          'a command you ran on another machine in the same project. This is the one thing Relay ' +
+          'publishes that is genuinely dangerous in the clear: a command line carries bearer tokens, ' +
+          'database passwords and whatever was pasted into it, and a synced folder keeps version ' +
+          'history that outlives any deletion. So commands are never written unencrypted, and this ' +
+          'does nothing at all until a passphrase is set below. Before they are encrypted they are ' +
+          'also stripped of the obvious secret shapes — tokens, passwords in connection strings, ' +
+          '--token= flags — which is a second line of defence and not a guarantee, because a secret ' +
+          'that looks like an ordinary argument cannot be recognised by anything.',
+        toggle(s.shareCommands, (v) => {
+          patch({ shareCommands: v })
+          refreshRelayNow()
+        })
+      ),
+      field(
+        'Passphrase for shared commands',
+        'The same passphrase, typed on each of your machines. It never travels through the shared ' +
+          'folder — only what it encrypts does — so a machine you have not typed it on simply sees ' +
+          'nothing, which is not an error. Stored here through your operating system’s own keychain ' +
+          'where there is one. It cannot be shown again once set: type a new one to replace it, or ' +
+          'clear it to switch sharing off. What encryption does not hide: file sizes, timestamps, ' +
+          'which machines are involved, and that two of them work on the same project. Nor does it ' +
+          'retract anything published before it was turned on.',
+        passphraseRow()
       ),
       field(
         'Claude Code usage in the status bar',

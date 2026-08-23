@@ -119,8 +119,14 @@ export interface LhmReading {
  * publishes four more. They are constants — 83 °C, 84 °C — and putting them on
  * screen would show a drive at 52 °C as being at 84. Excluded by what they call
  * themselves, which is the only thing distinguishing them.
+ *
+ * `Distance to TjMax` is the one that is not a constant and is still not a
+ * temperature: Intel parts publish the *headroom* left before throttling, in
+ * degrees, as a Temperature sensor. At idle it is the largest number in the
+ * processor's list — a core at 45 with 55 to spare — so anything reaching for
+ * the worst reading picks up the headroom and reports it as the temperature.
  */
-const NOT_A_READING = /limit|warning|critical|resolution|threshold/i
+const NOT_A_READING = /limit|warning|critical|resolution|threshold|distance to/i
 
 /**
  * What a sensor is attached to, from the path it names itself by.

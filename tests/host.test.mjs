@@ -289,6 +289,29 @@ console.log('Session table')
     assert.equal(table.has('a'), false)
   })
 
+  // Reopening a pane as another shell kills and respawns under the same id. The
+  // old shell reports its exit a moment later, and believing it painted
+  // "[process exited]" over a pane whose new shell was running fine.
+  check('a killed shell says nothing once its id has been reused', () => {
+    const { table, events, pty } = build()
+    table.create(spec('a'))
+    const old = pty()
+    table.kill('a')
+    table.create(spec('a'))
+    const fresh = pty()
+
+    old._data('goodbye')
+    old._exit({ exitCode: -1073741510 })
+    assert.deepEqual(events.data, [])
+    assert.deepEqual(events.exit, [])
+
+    // The replacement is untouched by any of it, and still speaks for itself.
+    fresh._data('hello')
+    fresh._exit({ exitCode: 0 })
+    assert.deepEqual(events.data, [['a', 'hello', []]])
+    assert.deepEqual(events.exit, [['a', { exitCode: 0, signal: undefined }]])
+  })
+
   check('writes reach the shell, and stop when it is gone', () => {
     const { table, pty } = build()
     table.create(spec('a'))

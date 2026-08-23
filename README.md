@@ -19,7 +19,14 @@ has been tested with.
 - **Workspaces.** Add, rename (double-click or `F2`), recolour, reorder by
   dragging, remove. A workspace is a named group of terminals; it doesn't
   require a folder, though you can point one at a folder from the right-click
-  menu. The current git branch shows under the name.
+  menu. Workspaces nest, and the glyph that marks a nested one is yours to
+  choose.
+
+  What each row shows is on the sidebar's own right-click, under *Sidebar
+  shows*: the current git branch, how many tabs the workspace holds, and what it
+  has spent in tokens. Not in Settings, because it is a property of the thing
+  you are looking at rather than of the app, and the gesture is the one every
+  other panel here answers.
 - **Tabs and split panes.** Split any tab left/right or up/down, drag the
   dividers to resize, `Alt`+arrows to move between panes. Each pane is its own
   shell. Drag a tab onto a pane's edge to fold it in as a split — it brings
@@ -28,13 +35,20 @@ has been tested with.
 
   ![Split panes](docs/screenshots/split-panes.png)
 
-- **A tab is not only a terminal.** `+` opens any of ten kinds — terminal
-  (`Ctrl+T`), file tree (`Ctrl+Shift+F`), editor (`Ctrl+Shift+O`), Changes
-  (`Ctrl+Shift+D`), Compare files, Search (`Ctrl+Shift+S`), Images
-  (`Ctrl+Shift+G`), Running processes, Token stats, and Browser
-  (`Ctrl+Shift+B`) — and each splits beside a shell like any other pane.
+- **A tab is not only a terminal.** Clicking `+` asks what to open rather than
+  guessing — fourteen kinds: terminal (`Ctrl+T`), file tree (`Ctrl+Shift+F`),
+  editor (`Ctrl+Shift+O`), git (`Ctrl+Shift+D`, holding both Changes and
+  History), compare files (`Ctrl+Alt+D`), search (`Ctrl+Shift+S`), images
+  (`Ctrl+Shift+G`), running processes (`Ctrl+Shift+R`), token stats, browser
+  (`Ctrl+Shift+B`), and the four below that are about the work rather than the
+  code: **Runbook**, **Focus**, **Today** and **Canvas**. A terminal is the
+  first entry and `Ctrl+T` still opens one without asking, so the menu costs
+  nothing to the one thing you do most. Each splits beside a shell like any
+  other pane.
 
   ![Every kind of tab](docs/screenshots/tab-types.png)
+
+  <!-- screenshot wanted: docs/screenshots/tab-menu.png — the + button’s menu, open, showing the fourteen kinds -->
 
 - **A browser pane** (`Ctrl+Shift+B`), for the dev server the terminal beside
   it is building. Address bar, back/forward, and Ctrl+scroll to zoom. It is a
@@ -47,10 +61,12 @@ has been tested with.
   launched exactly as right-click → *Open in Terminal* does, startup banner and
   all; `zsh` on macOS and `bash` on Linux, as login shells so a Mac gets its
   PATH from `path_helper`. PowerShell 7, `cmd`, WSL, `fish`, `sh` and a custom
-  shell are available in Settings, per workspace from its right-click menu, and
-  per tab by right-clicking **+** — where WSL is listed once per installed
-  distribution and SSH once per host in your `~/.ssh/config`. Splitting a pane
-  gives you another of the same shell, on the same distribution or host.
+  shell are available in Settings and per workspace from its right-click menu.
+  A tab that is already open changes with **Reopen as…** on its own right-click,
+  which lists WSL once per installed distribution and SSH once per host in your
+  `~/.ssh/config`, plus *other host…* for one that is not in the config. It kills
+  that pane's shell and starts the new one in its place. Splitting a pane gives
+  you another of the same shell, on the same distribution or host.
 
   A workspace file written on one platform opens on another: a `powershell`
   pane carried to a Mac falls back down the chain to zsh rather than dying, and
@@ -63,7 +79,11 @@ has been tested with.
   table for CSV and TSV, and hex. The mode is on the tab's right-click menu and
   is remembered per tab, so the same file can be open as a table in one pane and
   as text in another. Find and replace, line numbers, a column guide, editing
-  commands and autosave; the hex view edits bytes in place.
+  commands and autosave; the hex view edits bytes in place. A file changed
+  underneath you — by an agent in the pane next door, by git, by anything — is
+  picked up rather than overwritten with what the tab last saw, and *Open in
+  external editor* hands the same file to whichever editor you name in Settings
+  when you want the one you already have.
 
   ![The editor's view modes](docs/screenshots/terminal-panel-options.png)
 
@@ -108,6 +128,12 @@ has been tested with.
   Windows Terminal says nothing about a sidebar — so the list is two columns,
   and each has its own editor.
 
+  An interface theme also carries the window itself: opacity down to 0.3, and
+  which backdrop the system composites behind it where it offers a choice. Below
+  full opacity the terminal grid goes translucent with the rest of the window,
+  and the graphics-card renderer stands down for those panes, because the two
+  cannot both have the pixels.
+
   ![The theme list](docs/screenshots/themes.png)
 
   ![Editing an interface theme](docs/screenshots/interface-themes.png)
@@ -125,8 +151,8 @@ has been tested with.
   Processor load, temperature and memory over one set of axes; a bar per core;
   graphics load, heat and video memory; network throughput with the address each
   interface answers on; per-drive activity, temperature and wear with the volumes
-  that sit on them; Claude Code's usage limits; battery and uptime; weather and
-  air quality. Right-click it to switch blocks off, and drag any block's heading
+  that sit on them; Claude Code's usage limits; **this app's own processes**;
+  battery and uptime; weather and air quality. Right-click it to switch blocks off, and drag any block's heading
   to reorder them.
 
   ![The system monitor](docs/screenshots/systemMonitor.png)
@@ -139,6 +165,15 @@ has been tested with.
   not. Where a temperature is unobtainable the block says so rather than showing
   a plausible zero.
 
+  The block about this app is the one panel that measures the thing it is part
+  of, and it is split by the process doing the spending — main, renderer,
+  graphics, utility — because a total is not something you can act on and a
+  breakdown is. Which process holds the memory decides what to do about it: the
+  graphics process answers to *Draw with the processor instead of the graphics
+  card*, a renderer answers to scrollback, the main process to neither. When the
+  graphics process is holding a few hundred megabytes the block says so, and
+  says which setting gives it back.
+
   Two exceptions, both free. NVIDIA cards answer `nvidia-smi`, which arrives with
   the driver, so load, heat and video memory are read there — AMD and Intel
   publish nothing a program can read without a sensor driver. And if you happen
@@ -146,6 +181,15 @@ has been tested with.
   → Remote Web Server, port 8085), the panel reads the sensors it publishes and
   fills in the processor and drive temperatures. It is never started, never
   installed and never asked for elevation; if it is not there, nothing happens.
+- **Two strips at the foot of the sidebar**, both optional. Claude Code's 5-hour
+  and 7-day limits, read with the token it is already signed in with — the
+  number you want before starting something long — and four lines of how the
+  machine is coping. Four lines rather than the whole monitor, because the
+  sidebar answers *is it coping* and the pane is there for *with what*. The
+  usage rows are on by default and the machine ones are off, the difference
+  being that one rides along on a network call this app makes anyway and the
+  other starts a small process every few seconds.
+
 - **Token stats per project**, on a tab of their own. What Claude Code has spent
   in this workspace, counted from the conversation transcripts it already writes
   on this machine — nothing is sent anywhere to work it out, and no API key is
@@ -174,15 +218,199 @@ has been tested with.
   belongs to the workspace above it.
 
   If you work on the same project from more than one machine, point each of them
-  at a shared folder (Settings → *Share token counts between machines*) and the
+  at a shared folder (Settings → *A folder your machines share*, which Relay uses too) and the
   tab adds them up, with a row per machine and how long since each reported.
   Projects are matched by their git remote, so the same repository lines up even
   when it lives at a different path on each machine. Only totals are written — a
   few dozen numbers per project, never a conversation.
 
+- **A runbook per project** — the commands you actually run here, taken from
+  what has been run rather than from anything you had to write down. Three
+  groups: failing now, works but not always, and what you run here. Each row
+  says how many times it has run, how many of those failed, what the last one
+  exited with and how long it took. Picking one puts it on the prompt without
+  running it.
+
+  It is the note you wish you had left yourself on a project you last touched a
+  month ago, and it costs nothing to keep: the shell integration already reports
+  every submitted line and its exit code, and this is what happens when you stop
+  throwing the exit code away.
+
+  <!-- screenshot wanted: docs/screenshots/runbook.png — the Runbook tab: failing now, flaky, and what you run here -->
+
+- **Time on each project, counted rather than started** (the **Focus** tab).
+  Every time tracker fails the same way — you forget to press the button — so
+  this one never asks. Time is counted while a workspace is on screen and the
+  window has focus, in stretches of half a minute or more: today, the last seven
+  days, the all-time total, and three weeks of daily bars.
+
+  The edges are where a tracker earns or loses your trust, so: losing focus
+  stops the clock, a lid closed at six does not record until nine the next
+  morning, and clicking through four workspaces looking for one is not four
+  sessions of work. Thinking time *does* count — reading code with the window in
+  front of you is work, and a tracker that demanded keystrokes would punish the
+  part of the job that matters most.
+
+  The same tab holds the project's **to-do list**, which is the checkboxes in its
+  own `NOTES.md`. Write `- [ ] fix the parser` in the notes and it appears here;
+  ticking it rewrites that one line and leaves the rest of the file alone. No new
+  file, no new format, and the list versions in git with the code. Beside it, a
+  plain 25/5 **pomodoro**, which does not need to be running for time to be
+  counted — that happens anyway.
+
+  <!-- screenshot wanted: docs/screenshots/focus.png — the Focus tab: time, what is left, and the timer -->
+
+- **Where the day went** (the **Today** tab), across every project rather than
+  one: time with each, the commands you ran there, which failed, and what you
+  committed. Assembled from what already happened rather than filled in, and it
+  steps back a day at a time. The useful half of a daily review is the part
+  people fake, because at six o'clock nobody can reconstruct the morning.
+
+  <!-- screenshot wanted: docs/screenshots/today.png — the Today tab across several projects -->
+
+- **Canvases of connected notes** — boxes of words you can move around, which is
+  the part of a diagram tool that actually helps with thinking. Double-click to
+  add a note, drag a note's right edge onto another to connect them, drag a
+  note's corner to resize it and double-click that corner to fit it to its text,
+  wheel to zoom, `Ctrl+0` to fit everything. Right-click the canvas for groups,
+  links, files and colours; the bar carries the canvas's name and one button.
+
+  **As many per project as you like.** The name in the bar opens the document
+  menu: new, save as, and every canvas this project holds, listed. Those two ask
+  for a name rather than opening a system file dialog — a canvas lives beside
+  the code it is about, so the folder is already decided — and *Browse…* is
+  there for a canvas in another project. A `.canvas` file in the file tree
+  offers *Open canvas* on its right-click. Each canvas gets its own tab, named
+  after itself, and one tab per file so two panes can never save over each
+  other.
+
+  **`Ctrl+F` searches the canvas**, with the same find bar the editor and the
+  terminals use. Every note holding what you typed lights up at once — a canvas
+  is a picture, and four highlighted cards answer *where is this mentioned*
+  better than being walked round them one at a time — and Enter still walks
+  them, bringing each into view. Replace works on notes.
+
+  **A canvas can hold another canvas.** The format allows it — a file node is a
+  path, with no restriction on what kind of file — so a `.canvas` on a canvas is
+  valid and opens in Obsidian too. Here it is drawn as a small picture of its own
+  notes and the lines between them, and double-clicking opens it in its own tab.
+  It is a preview you click into rather than a live canvas nested in a card: pan
+  and zoom inside pan and zoom fights the surface it sits on, which is why
+  Obsidian's embed behaves the same way.
+
+  Saved in the project folder in **[JSON Canvas][jsoncanvas]**, Obsidian's
+  published format — so the same file opens in Obsidian, versions with the code,
+  and a canvas started here is not trapped here. `notes.canvas` is only the
+  default name. Node types this pane does not create, from a canvas made
+  elsewhere, are kept and written back untouched. Note text is markdown, so
+  headings, lists, `[[links]]` and even a mermaid diagram all work inside a
+  note.
+
+  <!-- screenshot wanted: docs/screenshots/canvas.png — a canvas: notes, connections, and a nested canvas card -->
+
+- **Flowcharts written as text.** A ```` ```mermaid ```` fence in any markdown file is
+  drawn as a diagram in the reader and editor panes:
+
+  ```
+  flowchart TD
+    A[Start] --> B{Works?}
+    B -->|yes| C([Ship])
+    B -->|no| D[Fix it]
+    D --> A
+  ```
+
+  Boxes, rounded boxes, stadiums, diamonds and circles; solid, dotted and thick
+  lines, with or without arrows, labelled either of mermaid's two ways; top-down
+  or left-to-right. Written rather than depended on — mermaid itself is a
+  megabyte and dozens of transitive packages, in a project whose entire runtime
+  dependency list is one terminal library, and the diagrams people draw beside
+  code use a small corner of it. Diagrams are text, so they diff, merge and
+  travel with the repository, and they take the theme's own colours rather than
+  being a picture that is wrong in half of them. What it cannot draw —
+  subgraphs, styling directives, sequence diagrams — it refuses outright and
+  leaves as code, because a diagram silently missing a box is worse than the text
+  it replaced.
+
+  <!-- screenshot wanted: docs/screenshots/flowchart.png — a mermaid fence drawn in the editor pane -->
+
+- **`[[wikilinks]]` and backlinks** in markdown. `[[the build script]]` opens
+  `the-build-script.md` beside it, and under every document sits the list of
+  other notes that link *to* it — the half of a wiki that makes one worth
+  keeping, since a link written in March is only useful in June if the thing
+  linked to knows about it. A link that matches nothing says so rather than
+  creating a file nobody meant to make.
+
+- **Knowing what your other machines are up to** (**Relay**). Working on one
+  project from a laptop, a desktop and another machine through the same day, the
+  question that will not go away is *did I leave something uncommitted on the
+  other one?* — and no repository can answer it, because it knows what this
+  machine has done to it and nothing about what a machine three rooms away has.
+
+  So each machine writes down its own answer in the folder they already share,
+  and a workspace gets a warning triangle when another machine has unpushed
+  commits (saves not sent) or uncommitted files (changed, not saved) in it.
+  Hovering names the machine, the commits, the files and how long ago it
+  reported. Nothing is marked when everything is committed and pushed: a badge
+  that appears on every row is a badge nobody reads.
+
+  **It reports and does nothing else.** Nothing here moves work between machines
+  or runs a git operation on your behalf — deciding what to do about it is
+  yours, in the Git pane, on the machine it affects. What travels is a
+  description, never the thing described: branch names, counts, and the paths of
+  files git already tracks. Never a file's contents, and never the name of a file
+  git is not tracking, because a tracked path is already in the repository's
+  history while an untracked one can be a scratch dump or a key somebody pasted.
+
+  A project nobody has touched writes nothing at all — there is no heartbeat —
+  so the folder stays a few kilobytes rather than filling with the same sentence
+  on a timer.
+
+  <!-- screenshot wanted: docs/screenshots/relay.png — Relay: what another machine is part-way through -->
+
+- **Command history that is yours, not the shell's** (`Ctrl+Alt+H`, or a pane's
+  right-click menu). It survives the shell exiting, knows which pane and which
+  project each line came from, and records what each one exited with — so the
+  box says *failed last time (exit 1)* or *worked last time, failed 2 of 7*
+  beside where it ran. An outcome that was never reported says nothing at all
+  rather than claiming success.
+
+  Up and Down at a prompt walk it. A small control over each terminal's
+  top-right corner switches which slice: **this terminal**, **this machine**, or
+  **everywhere** — the last recalling commands run on your *other* machines in
+  the same project. Where the shell can bind its own arrows (PowerShell, pwsh,
+  bash, zsh) the binding lives in the shell, so its own line editor replaces its
+  own line; everywhere else the app types it in. The ⌕ beside the switch opens
+  the searchable history on the same slice.
+
+  Sharing commands between machines is off by default and inert without a
+  passphrase, because it is the one thing worth publishing that is dangerous in
+  the clear — a command line carries bearer tokens, connection strings and
+  whatever was pasted into it, and a synced folder keeps version history that
+  outlives any deletion. Commands are stripped of the obvious secret shapes and
+  then encrypted with AES-256-GCM under a passphrase you type on each machine;
+  the shared folder only ever holds ciphertext. What that does not hide — file
+  sizes, timestamps, which machines are involved — is stated beside the setting.
+
+  <!-- screenshot wanted: docs/screenshots/command-history.png — the history overlay on a pane -->
+
+- **Dragging a file out of the app** hands other programs the file itself, so a
+  row from the tree can be dropped into an upload, onto a message, or into a
+  mail attachment. Settings → Behaviour chooses between the file, its location
+  as text, or the default: the file unless it lives inside WSL, where a
+  Windows-shaped path is not one another program could open. Dropping onto this
+  app's own panes works as it always did.
+
 - **Remembers everything.** Workspaces, their names, folders and colours; every
   tab, its pane layout, and the folder each pane was last in; which tab was
-  selected; window size; all settings and custom themes.
+  selected; window size; all settings and custom themes. Written so that losing
+  power does not lose the file. Writing straight over the live file loses
+  everything if the machine stops mid-write, and writing to a temporary file and
+  renaming only covers a *process* dying — the rename is metadata the filesystem
+  journals on its own schedule, so it can land while the data blocks never
+  arrived, publishing a file of the right length full of NUL bytes. This app
+  lost every workspace that way once. So: write the temporary file, **flush it
+  to the disk**, keep a copy of the version being replaced, and only then
+  rename.
 - **Saves workspaces to a file you keep.** Right-click a workspace → *Save
   workspace…* (it and anything nested under it), *Save all workspaces…*, or
   *Load workspaces…*. Layout only — names, folders, colours, shells, tabs and
@@ -202,18 +430,51 @@ has been tested with.
   replays its last screen before its new shell starts. The build output or stack
   trace you were reading is there even when the process behind it is not.
   Settings → Behaviour turns it off.
-- **Every command you have typed**, in the same box as the palette
-  (`Ctrl+Alt+H`). Collected for free — the shell integration already reports
-  each submitted line so a restored agent pane can resume, and this keeps more
-  than the last one. Picking one *types it without submitting*: what you last
-  ran might be a build, a push or a delete, and putting that in front of the
-  Enter key on your behalf is not this app's decision to make.
 - **Transcripts of panes you have closed** (`Ctrl+Alt+V`). Closing a pane used
   to delete its scrollback outright — right for the buffer, which exists to
   restore a pane that is not coming back, and wrong for the content. Now it is
   written to a text file first. There is no new pane to learn: picking one opens
   it in the editor, which already has find, and the last entry points the search
   pane at the whole folder. The newest 200 are kept.
+- **Gives back the buffer of a pane you stopped looking at** (Settings →
+  Behaviour → *Scrollback kept for panes you are not looking at*). Terminal
+  buffers are the largest thing this app holds and they only ever grow: xterm
+  allocates lines as output arrives and never gives them back, so a pane that
+  once printed ten thousand lines keeps them until you close it — around
+  twenty-four megabytes each at a wide window. After half an hour off screen a
+  pane is cut back to this many lines. It genuinely discards them, which is why
+  it is a number you choose rather than something clever done behind your back;
+  0 never trims. The panes holding the most are usually the ones you opened
+  once, watched a build in, and never went back to.
+
+- **Gives an idle agent's memory back** (Settings → Behaviour → *Release an idle
+  agent's shell after*). The most expensive thing this app hosts is not this app:
+  a Claude Code pane sitting at its prompt holds around half a gigabyte, plus a
+  session MCP server and a console host of its own, so three panes nobody is
+  looking at can be a gigabyte and a half — enough to put a 16 GB machine into
+  paging, which is what it feels like when a few terminals make everything slow.
+
+  Set a number of minutes and a pane that has been off screen that long ends its
+  shell. The pane stays exactly where it is, keeps its screen, and says what
+  happened; the next key you press starts a shell and types `claude --resume`,
+  so the conversation carries on where it stopped. Only ever agent panes — a
+  plain shell holds an SSH session, a half-typed command and a folder three
+  levels down, and a transcript brings none of that back — and never one that is
+  working, waiting on an answer, or on screen. Off by default: it ends processes,
+  and that has to be a number you chose.
+
+  <!-- screenshot wanted: docs/screenshots/idle-agent.png — a released pane saying so, before a key wakes it -->
+
+- **"Open in ia_workspaces" on a folder's right-click** in the file manager
+  (Settings → Behaviour; Windows only for now, written to `HKCU` so it needs no
+  administrator). Opening a folder that way lands it as a workspace, which is
+  the shortest path from *this folder* to *a terminal in this folder*.
+
+- **Looks for a newer release once at startup**, shortly after the window opens,
+  and tells you in the app rather than sending you to a page. It is the only
+  kind of check that catches an update you were not already looking for — and it
+  is a network call made without being asked, so it is a switch you can turn off.
+
 - **Tells you when a terminal needs you** — desktop notification when the window
   is in the background, in-app toast when it isn't, a chime, a ring around the
   pane, a dot on the tab and workspace, and a notification panel (`Ctrl+I`) with
@@ -430,6 +691,8 @@ cannot do:
 - Git status markers per file, and on folders containing changes
 - Breadcrumbs, expandable folders, hidden-file toggle, copy path
 - Sort by name, size, date modified or type, either direction — folders stay on top
+- Size and modified-date columns, each switched on separately, for the times the
+  name is not the thing you are picking by
 - **Multiple selection**, and **cut, copy and paste** between trees
 
 | | |
@@ -754,7 +1017,13 @@ iaw read-screen --lines 50   # what a pane has printed lately, as text
 iaw send "npm test" --enter  # type into a pane
 iaw send-key c --ctrl        # send one key
 iaw events --follow          # what has happened, as it happens
+iaw answer-agent --pane <id> --choice <id>   # answer a blocked pane from outside
 ```
+
+`answer-agent` relays one of the choices that pane itself published, and is
+refused for anything else: a pane that is not blocked, or a choice it never
+offered. It is the same click, made from somewhere else — which is what makes a
+blocked agent answerable by a script, another machine, or a phone over SSH.
 
 ### Watching, rather than asking
 
@@ -1016,11 +1285,11 @@ different things can still lose one.
 | `Ctrl` `Alt` `V` | transcripts of panes you have closed |
 | `Ctrl` `I` | notification panel |
 | `Ctrl` `Shift` `U` | jump to oldest unread |
-| `Ctrl` `F` | find in terminal |
+| `Ctrl` `F` | find — in the terminal, the editor, or the canvas you are on |
 | `Ctrl` `K` | clear scrollback |
 | `Ctrl` `B` | collapse sidebar |
 | `Ctrl` `,` | settings |
-| `Ctrl` `+` / `-` / `0` | font size |
+| `Ctrl` `+` / `-` / `0` | font size — on a canvas, zoom, and `Ctrl` `0` fits everything |
 | `Ctrl` `C` | copy when text is selected, otherwise interrupt |
 | `Ctrl` `V`, `Shift` `Insert` | paste — an image goes to the agent, or lands as a file path |
 
@@ -1130,3 +1399,5 @@ Issues and pull requests are welcome.
 ## Licence
 
 [MIT](LICENSE).
+
+[jsoncanvas]: https://jsoncanvas.org

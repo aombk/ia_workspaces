@@ -31,6 +31,7 @@ import { confirmDialog, promptDialog } from './ui/confirm'
 import { showToast } from './ui/toast'
 import type { WorkspaceFile } from '../shared/workspaceFile'
 import type { UiActions } from './ui/actions'
+import { initCanvasPanes } from './canvasPane'
 import { DEFAULT_SETTINGS, isTerminalPane } from '../shared/types'
 import type { NotificationRecord, PaneState, TerminalAlert, Workspace } from '../shared/types'
 import {
@@ -42,11 +43,12 @@ import {
   togglePalette,
 } from './ui/palette'
 import { isNavigation, isPrimary } from './ui/keys'
-import { fallbackCwd, isWindows, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
+import { fallbackCwd, isWindows, joinPath, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
 import { isWslPath, wslDistroOf } from '../shared/wsl'
 import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
 import { initRelayMonitor, watchRelay } from './ui/relayMonitor'
+import { initTimeMonitor } from './ui/timeMonitor'
 import { initTokenMonitor } from './ui/tokenMonitor'
 import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
@@ -94,6 +96,10 @@ export async function start(): Promise<void> {
 
   terminals.setReaderHooks({
     openExternally: (target) => openInEditor(target),
+    // A `[[wikilink]]` opens the note it names in a reader, which is the same
+    // thing a search hit does. Following a link between notes is reading, and
+    // a tab per hop turns a train of thought into twelve tabs.
+    openDocument: (target) => actions.openReader(target),
   })
 
   terminals.setEditorHooks({
@@ -137,6 +143,10 @@ export async function start(): Promise<void> {
     openEditorTab: (path) => {
       const workspace = store.activeWorkspace
       if (workspace) actions.openEditor(workspace.id, path)
+    },
+    openCanvasTab: (path) => {
+      const workspace = store.activeWorkspace
+      if (workspace) actions.openCanvas(workspace.id, path)
     },
     openInEditor: (path) => openInEditor(path),
   })
@@ -199,9 +209,11 @@ export async function start(): Promise<void> {
   render()
 
   initPalette(actions)
+  initCanvasPanes(actions)
   initUsageMonitor()
   initTokenMonitor()
   initRelayMonitor()
+  initTimeMonitor()
   // A sweep lands on its own timer, not through the store, so the sidebar would
   // otherwise keep yesterday's triangles until something unrelated redrew it.
   watchRelay(render)
@@ -210,6 +222,12 @@ export async function start(): Promise<void> {
   // involved any more, which is the whole point of it being a dock.
   initSystemStrip(() => actions.openMonitor(''))
   window.addEventListener('palette-closed', () => terminals.focusActive())
+  // A file node on a canvas, opened. Through an event rather than a hook so the
+  // canvas needs to know nothing about how this app opens files.
+  window.addEventListener('canvas-open-file', (e) => {
+    const file = (e as CustomEvent<{ file?: string }>).detail?.file
+    if (file) actions.openReader(file)
+  })
 
   wireContextMenuFallback()
   wireKeyboard()
@@ -379,6 +397,22 @@ function openInEditor(target: string): void {
  * per workspace — the changes and search panes answer questions about *this*
  * project, unlike the inbox and the process list which span the whole app.
  */
+/**
+ * Is this canvas pane showing that canvas?
+ *
+ * Both sides are normalised through "no file means the project's own", so a
+ * pane saved before canvases had names and a request for `notes.canvas` by its
+ * full path are recognised as the same canvas rather than opening it twice.
+ */
+function sameCanvas(pane: PaneState, wanted: string, workspaceId: string): boolean {
+  const workspace = store.workspaces.find((w) => w.id === workspaceId)
+  const fallback = workspace
+    ? joinPath(backend().capabilities.platform, workspace.cwd, 'notes.canvas')
+    : ''
+  const resolve = (file: string): string => (file || fallback).toLowerCase()
+  return resolve(pane.file ?? '') === resolve(wanted)
+}
+
 function findPane(
   match: (pane: PaneState) => boolean,
   workspaceId?: string
@@ -700,6 +734,63 @@ const actions: UiActions = {
       return
     }
     store.addTab(workspaceId, undefined, 'tokens')
+    void syncMountedTab()
+  },
+
+  openCanvas(workspaceId, file) {
+    // One pane per *file*, not per workspace. Two panes on one canvas would
+    // each save over the other — the same trap the editor avoids — but two
+    // panes on two canvases is just a project with two canvases in it, which is
+    // the point of them having names.
+    //
+    // A pane with no file recorded is the project's own `notes.canvas`, so
+    // asking for that by name finds it as well as asking for it by default.
+    const wanted = file ?? ''
+    const existing = findPane(
+      (p) => p.kind === 'canvas' && sameCanvas(p, wanted, workspaceId),
+      workspaceId
+    )
+    if (existing) {
+      actions.jumpToPane(existing.workspaceId, existing.paneId)
+      return
+    }
+    store.addTabWith(workspaceId, 'canvas', { file: wanted })
+    void syncMountedTab()
+  },
+
+  openDay(workspaceId) {
+    // One for the whole app: it is about a day rather than about a project, so
+    // a second copy would be the same afternoon twice.
+    const existing = findPane((p) => p.kind === 'day')
+    if (existing) {
+      actions.jumpToPane(existing.workspaceId, existing.paneId)
+      return
+    }
+    store.addTab(workspaceId, undefined, 'day')
+    void syncMountedTab()
+  },
+
+  openFocus(workspaceId) {
+    // One per workspace: everything in it is about this project's own time and
+    // this project's own notes file.
+    const existing = findPane((p) => p.kind === 'focus', workspaceId)
+    if (existing) {
+      actions.jumpToPane(existing.workspaceId, existing.paneId)
+      return
+    }
+    store.addTab(workspaceId, undefined, 'focus')
+    void syncMountedTab()
+  },
+
+  openRunbook(workspaceId) {
+    // One per workspace, because that is what it is about — the commands run in
+    // *this* project's folder. Reopening jumps to the existing tab.
+    const existing = findPane((p) => p.kind === 'runbook', workspaceId)
+    if (existing) {
+      actions.jumpToPane(existing.workspaceId, existing.paneId)
+      return
+    }
+    store.addTab(workspaceId, undefined, 'runbook')
     void syncMountedTab()
   },
 
@@ -1069,6 +1160,7 @@ function syncDockedTree(): void {
       workspaceRoot: () => store.workspaces.find((w) => w.id === workspaceId)?.cwd ?? '',
       openReader: (path) => actions.openReader(path),
       openEditorTab: (path) => actions.openEditor(workspaceId, path),
+      openCanvasTab: (path) => actions.openCanvas(workspaceId, path),
       openInEditor: (path) => openInEditor(path),
     })
     // The docked tree is built here rather than by `ensureAux`, so it does not
@@ -1333,6 +1425,15 @@ function wireKeyboard(): void {
       // Every shortcut below is gated on this, so the platform's modifier is
       // chosen once: Command on a Mac, Control everywhere else.
       const ctrl = isPrimary(e) && !e.altKey
+      /**
+       * The same modifier *with* Alt, for the two shortcuts that want it.
+       *
+       * Needed because `ctrl` above excludes Alt by definition, which made
+       * `ctrl && e.altKey` a condition that could never be true — Ctrl+Alt+H
+       * and Ctrl+Alt+V were unreachable from the day they were written. Named
+       * rather than inlined so the next Alt shortcut cannot repeat it.
+       */
+      const ctrlAlt = isPrimary(e) && e.altKey
       const key = e.key.toLowerCase()
 
       // Splits
@@ -1427,7 +1528,7 @@ function wireKeyboard(): void {
       // Ctrl+Alt+H — everything you have typed before, in the same box. Alt
       // rather than Shift because Ctrl+Shift+H is find-and-replace in every
       // editor the rest of these shortcuts borrow from.
-      if (ctrl && e.altKey && key === 'h') {
+      if (ctrlAlt && key === 'h') {
         e.preventDefault()
         void showHistory()
         return
@@ -1436,7 +1537,7 @@ function wireKeyboard(): void {
       // in the editor; the last entry searches the whole folder. Alt rather
       // than Shift because Ctrl+Shift+V is paste in every Linux terminal, and
       // claiming it would break the reflex of anyone who has one.
-      if (ctrl && e.altKey && key === 'v') {
+      if (ctrlAlt && key === 'v') {
         e.preventDefault()
         void showVault()
         return
@@ -1503,7 +1604,7 @@ function wireKeyboard(): void {
       // rather than another letter because the two are the same idea at
       // different scopes, and the pairing is easier to remember than a
       // mnemonic would be.
-      if (ctrl && e.altKey && key === 'd') {
+      if (ctrlAlt && key === 'd') {
         e.preventDefault()
         if (workspace) void actions.openCompare(workspace.id)
         return

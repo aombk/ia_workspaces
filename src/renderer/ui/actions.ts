@@ -37,6 +37,20 @@ export interface UiActions {
   openPorts(workspaceId: string): void
   /** What this workspace has spent on Claude, as a tab. */
   openTokens(workspaceId: string): void
+  /** The commands you actually run in this project, as a tab. */
+  openRunbook(workspaceId: string): void
+  /** Time on this project, what is left to do, and a timer, as a tab. */
+  openFocus(workspaceId: string): void
+  /** Where the day went, across every project, as a tab. */
+  openDay(workspaceId: string): void
+  /**
+   * A canvas of connected notes, as a tab.
+   *
+   * With no file it is the project's own `notes.canvas`; with one it is that
+   * canvas, and a workspace may hold as many as it has files. One pane per
+   * file either way — two panes on one canvas would save over each other.
+   */
+  openCanvas(workspaceId: string, file?: string): void
   /** Focus the machine monitor, opening it if none is open. */
   /**
    * Shows or hides the system panel.

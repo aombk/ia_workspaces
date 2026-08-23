@@ -62,6 +62,16 @@ interface Session {
    * process that ended last Tuesday.
    */
   acked: Set<string>
+  /**
+   * Killed on purpose, and already dropped from the table.
+   *
+   * The pty still reports its exit a moment later, and by then the same id may
+   * belong to a brand-new session — reopening a pane as another shell kills and
+   * respawns under the pane's own id. Announcing that exit would be reporting
+   * the death of a shell nobody is watching, against a pane whose shell is
+   * fine, so the late event is dropped instead.
+   */
+  discarded: boolean
 }
 
 export interface SessionHooks {
@@ -118,11 +128,15 @@ export class SessionTable {
       meta: spec.meta,
       attached: new Set(),
       acked: new Set(),
+      discarded: false,
     }
     this.sessions.set(spec.id, session)
 
     pty.onData((chunk) => {
       const bytes = Buffer.from(chunk, 'utf8')
+      // A killed shell can still print on its way out, and the id may already
+      // belong to its replacement — those bytes would land in the wrong pane.
+      if (session.discarded) return
       session.ring.write(bytes)
       // Emitted even with nobody attached — the ring is the point. A client
       // that connects in an hour gets this byte; the hooks simply have nobody
@@ -134,6 +148,7 @@ export class SessionTable {
       session.exit = { exitCode: e.exitCode, signal: e.signal }
       session.pty = null
       session.acked.clear()
+      if (session.discarded) return
       this.hooks.onExit(session.id, session.exit)
     })
 
@@ -212,6 +227,7 @@ export class SessionTable {
   kill(id: string): boolean {
     const session = this.sessions.get(id)
     if (!session) return false
+    session.discarded = true
     if (session.pty) {
       try {
         session.pty.kill()

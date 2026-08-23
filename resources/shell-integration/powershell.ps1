@@ -53,6 +53,10 @@ try {
           # failure: a second call would submit the line twice. Only the markers
           # are best-effort.
           [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+          # A submitted line ends any walk, so the next Up starts from the
+          # newest entry rather than resuming halfway down from where the last
+          # one stopped.
+          $global:__iawHistAt = -1
           try {
             $__e = [char]27
             $__b = [char]7
@@ -67,6 +71,75 @@ try {
             [Console]::Write($__o)
           } catch { }
         } -ErrorAction SilentlyContinue
+
+        # ------------------------------------------------------------ history
+        #
+        # The arrows walk the app's own history rather than PSReadLine's, when
+        # the app has written a list for this pane. This is the whole reason the
+        # binding lives in here: RevertLine and Insert are the line editor
+        # replacing its own line, which is exact. Doing it from outside means
+        # writing bytes that look like typing, and then having to send whatever
+        # key *this* edit mode reads as "clear the line" — a guess that differs
+        # per shell, per mode, and is ambiguous for Escape.
+        #
+        # Falls back to PSReadLine's own recall whenever there is nothing to
+        # walk: no file, an empty file, or a walk that has run off the end. A
+        # pane whose shell integration is on but whose history is empty behaves
+        # exactly as it did before any of this existed.
+        $global:__iawHistFile = if ($env:IAW_HISTORY_DIR -and $env:IAW_PANE_ID) {
+          Join-Path $env:IAW_HISTORY_DIR ($env:IAW_PANE_ID + '.txt')
+        } else { $null }
+        $global:__iawHist = @()
+        $global:__iawHistAt = -1
+
+        function global:__iawHistLoad {
+          # Re-read at the start of each walk rather than caching for the
+          # session: the app rewrites this file when you flip all/this, and a
+          # cached list would keep walking the old scope until the pane closed.
+          $global:__iawHist = @()
+          if ($global:__iawHistFile -and (Test-Path -LiteralPath $global:__iawHistFile)) {
+            try {
+              $global:__iawHist = @(Get-Content -LiteralPath $global:__iawHistFile -ErrorAction Stop)
+            } catch { }
+          }
+        }
+
+        function global:__iawHistStep([int]$delta) {
+          if ($global:__iawHistAt -lt 0) { __iawHistLoad }
+          if ($global:__iawHist.Count -eq 0) { return $false }
+
+          $next = $global:__iawHistAt + $delta
+          if ($next -lt 0) {
+            # Back past the newest entry: the walk is over and the line goes
+            # empty, which is where it was before the first Up.
+            $global:__iawHistAt = -1
+            [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+            return $true
+          }
+          # Off the oldest end: stay put rather than returning false, which
+          # would hand the key to PSReadLine and silently continue the walk
+          # through *its* history from the bottom of ours.
+          if ($next -ge $global:__iawHist.Count) { $next = $global:__iawHist.Count - 1 }
+
+          $global:__iawHistAt = $next
+          [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+          [Microsoft.PowerShell.PSConsoleReadLine]::Insert($global:__iawHist[$next])
+          return $true
+        }
+
+        try {
+          Set-PSReadLineKeyHandler -Key UpArrow -ScriptBlock {
+            if (-not (__iawHistStep 1)) {
+              [Microsoft.PowerShell.PSConsoleReadLine]::PreviousHistory()
+            }
+          } -ErrorAction SilentlyContinue
+
+          Set-PSReadLineKeyHandler -Key DownArrow -ScriptBlock {
+            if (-not (__iawHistStep -1)) {
+              [Microsoft.PowerShell.PSConsoleReadLine]::NextHistory()
+            }
+          } -ErrorAction SilentlyContinue
+        } catch { }
       } catch {
         # PSReadLine too old to have Set-PSReadLineKeyHandler.
       }

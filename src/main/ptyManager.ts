@@ -116,6 +116,15 @@ export interface PtyManagerHooks {
   onMeta(payload: TerminalMeta): void
   onAlert(alert: TerminalAlert): void
   onStatus(status: PaneStatus): void
+  /**
+   * A command finished, with what it exited with and how long it took.
+   *
+   * Separate from `onAlert` because that one is deliberately picky — it fires
+   * only for commands long enough to be worth interrupting somebody about — and
+   * this has to see every one of them, including the instant failures, which
+   * are exactly the ones worth remembering.
+   */
+  onOutcome(outcome: { paneId: string; exitCode: number; ms: number }): void
 }
 
 export interface PtyManagerDeps {
@@ -125,6 +134,8 @@ export interface PtyManagerDeps {
    * from a named pipe to loopback TCP when the first pane starts.
    */
   notifyPipe: () => string
+  /** Folder holding each pane's recallable commands, for the integration script. */
+  historyDir: () => string
   /** Proof a caller is talking to us from inside one of our panes. */
   token: string
   /** Folder holding the `iaw.cmd` shim, prepended to each pane's PATH. */
@@ -141,6 +152,20 @@ export interface PtyManagerDeps {
 
 export class PtyManager {
   private readonly sessions = new Map<string, Session>()
+  /**
+   * Panes killed a moment ago, by pane id and when.
+   *
+   * A shell reports its exit after it has been asked to end, and a pane that is
+   * being reopened as another shell has already spawned its replacement under
+   * the same id by then. The broker we are talking to may be an older build
+   * that still announces those, so the exit is matched against this and dropped
+   * rather than pinned on the shell that is now running there.
+   */
+  private readonly killed = new Map<string, number>()
+  /** How long after a kill an exit is still the killed shell's. */
+  private static readonly KILL_ECHO_MS = 5_000
+  /** Grace given to a slept shell's children before they count as orphans. */
+  private static readonly SLEEP_REAP_AFTER_MS = 2_000
   private readonly activity: ActivityMonitor
   readonly agents: AgentStateRegistry
   private backend: PtyBackend | null = null
@@ -348,6 +373,9 @@ export class PtyManager {
           IAW_WORKSPACE_ID: req.workspaceId,
           IAW_PIPE: this.deps.notifyPipe(),
           IAW_TOKEN: this.deps.token,
+          // Where this pane's recallable commands are written. The integration
+          // script binds the arrows and reads `$IAW_HISTORY_DIR/$IAW_PANE_ID.txt`.
+          IAW_HISTORY_DIR: this.deps.historyDir(),
           // Last, so a shell that needs its own environment to find our
           // integration gets it. Only zsh does; see `applyIntegration`.
           ...resolved.env,
@@ -430,7 +458,12 @@ export class PtyManager {
         // nothing for the renderer to persist when nothing changed.
         if (command === session.lastCommand) return
         session.lastCommand = command
-        this.hooks.onMeta({ paneId: session.id, lastCommand: command })
+        // The folder travels with the line. Without it every entry recorded a
+        // blank `cwd`, which is fine for a list you scroll and useless for
+        // everything that asks "what do I run *here*" — the runbook filters on
+        // it, and cross-machine sharing groups on it. The session has known the
+        // folder all along; it simply was not on this message.
+        this.hooks.onMeta({ paneId: session.id, lastCommand: command, cwd: session.cwd })
       },
     })
 
@@ -516,6 +549,19 @@ export class PtyManager {
     // happen even for a pane we no longer know about — otherwise the record
     // would outlive every client and keep the broker awake forever.
     void this.backend?.ackExit(paneId)
+
+    // The shell we ended ourselves, saying so on its way out. Whatever holds
+    // this pane id now is its replacement and is running fine.
+    const killedAt = this.killed.get(paneId)
+    if (killedAt !== undefined) {
+      this.killed.delete(paneId)
+      // Only an echo while whatever holds the id now is still running. A
+      // replacement that really did die this fast — a bad ssh host — has to be
+      // reported, and its pid is gone by the time we are asked.
+      if (Date.now() - killedAt <= PtyManager.KILL_ECHO_MS && (!session || isPidAlive(session.pid)))
+        return
+    }
+
     if (!session) return
 
     const code = exit.exitCode
@@ -643,10 +689,77 @@ export class PtyManager {
     // Closed by the user, so unlike an exit its screen is not coming back.
     this.deps.scrollback.drop(paneId)
     this.backend?.kill(paneId)
+    const now = Date.now()
+    for (const [id, at] of this.killed) {
+      if (now - at > PtyManager.KILL_ECHO_MS) this.killed.delete(id)
+    }
+    this.killed.set(paneId, now)
     if (!s) return
     this.deps.pidMap.unregister(s.pid)
     if (s.flushTimer) clearTimeout(s.flushTimer)
     this.sessions.delete(paneId)
+  }
+
+  /**
+   * The pane stays; its shell does not.
+   *
+   * Between `kill` and `release`: the shell is ended for real, but the pane is
+   * not being closed and its shells are not being handed over to anybody, so
+   * everything that makes the pane what it is survives — the saved screen, the
+   * transcript, its place in the workspace. Only the processes go.
+   *
+   * What that gives back is the reason this exists. An idle agent pane is half
+   * a gigabyte of `claude.exe` plus its MCP servers, and ConPTY does not
+   * reliably take those children with it: killing the shell can leave the
+   * expensive half of the tree running and orphaned, which would make the whole
+   * feature a lie. So the tree is reaped afterwards, through the same identity
+   * check the phantom-exit path uses — a pid is not an identity, and this must
+   * never take out somebody else's work on the strength of a recycled number.
+   */
+  async sleep(paneId: string): Promise<void> {
+    const s = this.sessions.get(paneId)
+    if (!s) return
+    this.activity.stop(paneId)
+    this.agents.release(paneId)
+    // Deliberately *not* `scrollback.drop`: the screen is the pane's, and the
+    // pane is still here. Flushed instead, so a restart restores what it said.
+    void this.deps.scrollback.flush(paneId)
+    this.backend?.kill(paneId)
+    // The pane writes its own line about going to sleep; an exit notice from
+    // the shell we just ended would be the same news, worded as a failure.
+    this.killed.set(paneId, Date.now())
+    this.deps.pidMap.unregister(s.pid)
+    if (s.flushTimer) clearTimeout(s.flushTimer)
+    this.sessions.delete(paneId)
+    await this.reapAfterSleep(s)
+  }
+
+  /**
+   * Makes sure the shell's children went with it.
+   *
+   * A grace period first, because the ordinary case is that they did and the
+   * cheapest correct thing is to look once, late, rather than race the shell's
+   * own shutdown and reap a tree that was already leaving.
+   */
+  private async reapAfterSleep(session: Session): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, PtyManager.SLEEP_REAP_AFTER_MS))
+    if (!isPidAlive(session.pid)) return
+    const { identity, reaped } = await reapPhantom({
+      pid: session.pid,
+      spawnedAt: session.spawnedAt,
+      shellImage: session.shellImage,
+    })
+    if (reaped) {
+      console.warn(
+        `[pty] ${session.id}: slept, and its tree outlived the shell` +
+          ` (identity: ${identity}) — reaped pid ${session.pid} and its children`
+      )
+    } else if (identity === 'unconfirmed') {
+      console.warn(
+        `[pty] ${session.id}: slept, but pid ${session.pid} could not be confirmed as ours —` +
+          ' left alone'
+      )
+    }
   }
 
   /**
@@ -1089,6 +1202,14 @@ export class PtyManager {
     const wasRunning = session.running
     const startedAt = session.commandStartedAt
     session.running = false
+
+    // Recorded first and unconditionally. Everything below this is about
+    // whether to *interrupt* somebody, which is a different question with a
+    // different answer — and a command that failed in half a second is beneath
+    // the notification threshold and is the most worth writing down.
+    if (wasRunning && startedAt) {
+      this.hooks.onOutcome({ paneId: session.id, exitCode, ms: Date.now() - startedAt })
+    }
 
     const n = this.getSettings().notifications
     if (!n.onCommandFinished || !wasRunning || !startedAt) return

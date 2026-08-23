@@ -19,7 +19,7 @@
  */
 import { backend } from '../../backend'
 import { store } from '../state'
-import type { Relay, RelayPresence } from '../../shared/types'
+import type { Relay, RelayPresence, RelayPublishEntry } from '../../shared/types'
 
 /** Between sweeps. One `git status` per repository workspace, so: not often. */
 const POLL_MS = 60 * 1000
@@ -32,6 +32,49 @@ const POLL_MS = 60 * 1000
  * session. It is needed before the first coffee, which this comfortably beats.
  */
 const FIRST_SWEEP_MS = 5000
+
+/**
+ * How long a project nobody is looking at may go unchecked.
+ *
+ * Checking one costs a `git status`, which on Windows is a process creation
+ * plus whatever the antivirus does to it — `git.ts` documents measuring 26 of
+ * 66 concurrent `git.exe` processes coming from this app. Asking every
+ * workspace every minute meant sixteen of those a minute on a machine with
+ * sixteen workspaces, to discover sixteen times a minute that nothing had
+ * changed.
+ *
+ * So the project on screen is checked every sweep and the rest are checked
+ * rarely. Little is lost: a project nobody is looking at changes because *you*
+ * changed it, and the three moments where that is true — a git operation
+ * finishing, the window regaining focus, switching workspace — each force a
+ * sweep of their own already.
+ */
+const STALE_MS = 10 * 60 * 1000
+
+/**
+ * How many neglected projects are checked per sweep.
+ *
+ * Spread rather than done together: sixteen `git status` calls in one tick is
+ * the same burst whether it happens every minute or every ten, and the point of
+ * this is to stop the app producing bursts at all.
+ */
+const IDLE_PER_SWEEP = 2
+
+/** When each workspace folder was last asked about. */
+const checkedAt = new Map<string, number>()
+
+/**
+ * Where the commands come from, registered rather than imported.
+ *
+ * `paneHistory.ts` owns the cache and already imports this file for the other
+ * direction, so importing it back would make a cycle. A seam the owner fills in
+ * costs one line and cannot be got wrong by module ordering.
+ */
+let commandsFor: ((cwd: string) => string[]) | null = null
+
+export function setCommandSource(fn: (cwd: string) => string[]): void {
+  commandsFor = fn
+}
 
 /**
  * Past this, a record's `open` flag is not to be believed.
@@ -49,7 +92,7 @@ const FIRST_SWEEP_MS = 5000
  */
 const LIVE_MS = 2 * 2 * 60 * 1000 + POLL_MS
 
-let latest: Relay = { machine: '', keys: {}, byProject: {}, problem: 'off' }
+let latest: Relay = { machine: '', keys: {}, byProject: {}, commandsByProject: {}, problem: 'off' }
 let timer: ReturnType<typeof setTimeout> | null = null
 const listeners = new Set<() => void>()
 
@@ -117,13 +160,37 @@ async function sweep(): Promise<void> {
  * working on that project, and reporting it as such to two other machines is
  * how a warning learns to be ignored.
  */
-function entries() {
+function entries(): RelayPublishEntry[] {
   const focused = document.hasFocus()
   const active = store.activeWorkspace?.id
-  return store.workspaces.map((workspace) => ({
+  const sharing = store.settings.shareCommands
+  const now = Date.now()
+
+  // The one on screen, always: it is the only project that can be changing
+  // while nobody has told us so.
+  const wanted = store.workspaces.filter((workspace) => workspace.id === active)
+
+  // Then a couple of the most neglected. Sorted by how long each has gone
+  // unchecked, so every project comes round in turn rather than the same two
+  // being picked forever.
+  const idle = store.workspaces
+    .filter((workspace) => workspace.id !== active)
+    .map((workspace) => ({ workspace, at: checkedAt.get(workspace.cwd) ?? 0 }))
+    .filter(({ at }) => now - at > STALE_MS)
+    .sort((a, b) => a.at - b.at)
+    .slice(0, IDLE_PER_SWEEP)
+  for (const { workspace } of idle) wanted.push(workspace)
+
+  for (const workspace of wanted) checkedAt.set(workspace.cwd, now)
+
+  return wanted.map((workspace) => ({
     cwd: workspace.cwd,
     name: workspace.name,
     open: focused && workspace.id === active,
+    // Only when asked for. The main process refuses to write them without a
+    // passphrase as well, so there are two independent gates on the one payload
+    // that cannot be un-published.
+    commands: sharing ? (commandsFor?.(workspace.cwd) ?? undefined) : undefined,
   }))
 }
 
@@ -158,6 +225,20 @@ export function live(record: RelayPresence, now = Date.now()): boolean {
  * old rather than up to a minute, and a row repeating it worse is a row that
  * will eventually contradict it.
  */
+/**
+ * What every other machine has run in the project this folder belongs to.
+ *
+ * Empty unless commands are being shared and this machine's passphrase opens
+ * what the others wrote — see `shareCrypto.ts`. Each entry says which machine
+ * it came from, because a command that only makes sense on a Mac is worth being
+ * able to recognise before it lands on a Windows prompt.
+ */
+export function commandsElsewhere(cwd: string): { label: string; commands: string[] }[] {
+  const key = latest.keys[cwd]
+  if (!key) return []
+  return latest.commandsByProject[key] ?? []
+}
+
 export function othersFor(cwd: string): RelayPresence[] {
   const key = latest.keys[cwd]
   if (!key) return []

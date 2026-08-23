@@ -15,6 +15,7 @@ import { copyText } from './ui/clipboard'
 import { showToast } from './ui/toast'
 import { remoteHostOfPane, store } from './state'
 import { sortEntries } from '../shared/images'
+import { isCanvasPath } from '../shared/canvas'
 import type { FileEntry, GitStatusMap, Settings } from '../shared/types'
 
 /**
@@ -60,6 +61,8 @@ export interface FilesPaneHooks {
   openReader(path: string): void
   /** Open a file in an editor tab, to change it. */
   openEditorTab(path: string): void
+  /** Open a `.canvas` file as a canvas, rather than as its JSON. */
+  openCanvasTab(path: string): void
   /** Hand a file to the editor named in settings. */
   openInEditor(path: string): void
   /**
@@ -1295,6 +1298,12 @@ export class FilesPane {
       ...(entry.isDir
         ? [{ label: 'Open here', onClick: () => this.navigate(entry.path) }]
         : [
+            // A canvas is a document with its own pane, not JSON to be edited —
+            // so it leads, and `Edit` below still opens the text for the times
+            // when the JSON is exactly what you meant.
+            ...(isCanvasPath(entry.path)
+              ? [{ label: 'Open canvas', onClick: () => this.hooks.openCanvasTab(entry.path) }]
+              : []),
             { label: 'Edit', onClick: () => this.hooks.openEditorTab(entry.path) },
             { label: 'Open in reader', onClick: () => this.hooks.openReader(entry.path) },
             { label: 'Open in external editor', onClick: () => this.hooks.openInEditor(entry.path) },

@@ -15,6 +15,7 @@
  * markup, so text can only ever become text.
  */
 import { encodeImagePath } from '../shared/images'
+import { renderFlowchart } from './flowchart'
 
 /** The folder part of a file path, for resolving what it points at. */
 export function folderOf(file: string): string {
@@ -65,8 +66,11 @@ function inline(text: string, baseDir = ''): DocumentFragment {
   // whoever edits the file and renders as nothing, which is what every other
   // Markdown reader does with one. The alternative has no capture group, so the
   // numbering below is unaffected.
+  // `[[name]]` sits before the ordinary link rule, because `[` starts both and
+  // the ordinary one would otherwise take the first bracket and leave a stray
+  // one behind. See `wiki` below for what it becomes.
   const pattern =
-    /`([^`]+)`|<!--[\s\S]*?-->|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)/
+    /`([^`]+)`|<!--[\s\S]*?-->|\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)/
   let rest = text
 
   while (rest) {
@@ -74,9 +78,26 @@ function inline(text: string, baseDir = ''): DocumentFragment {
     if (!match) break
     if (match.index > 0) frag.appendChild(document.createTextNode(rest.slice(0, match.index)))
 
-    const [, code, strong1, strong2, em1, em2, alt, src, linkText, href] = match
+    const [, code, wikiTarget, wikiText, strong1, strong2, em1, em2, alt, src, linkText, href] = match
     if (match[0].startsWith('<!--')) {
       // Nothing: the comment is dropped and the text either side closes up.
+    } else if (wikiTarget !== undefined) {
+      // `[[note]]`, or `[[note|what to call it]]`. The convention Obsidian and
+      // every wiki before it use, and the reason people keep notes that way:
+      // linking is one pair of brackets rather than a path anybody has to be
+      // right about.
+      //
+      // Nothing is resolved here. Whether `note.md` exists is a question for a
+      // filesystem, and this function is given a string — the pane that shows
+      // the document decides what a click does, which is also what makes the
+      // same markup work in the editor's preview and in the reader.
+      const el = document.createElement('button')
+      el.type = 'button'
+      el.className = 'md-wikilink'
+      el.dataset.wiki = wikiTarget.trim()
+      el.textContent = (wikiText ?? wikiTarget).trim()
+      el.title = `Open ${wikiTarget.trim()}`
+      frag.appendChild(el)
     } else if (src !== undefined) {
       // Local files only, through the app's own image protocol. A remote image
       // is a network request made by opening a file, which tells whoever is
@@ -171,6 +192,21 @@ export function renderMarkdown(source: string, baseDir = ''): DocumentFragment {
       const body: string[] = []
       while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) body.push(lines[i++])
       if (i < lines.length) i++
+      // A mermaid block becomes a picture where we can draw it, and stays the
+      // code it is where we cannot — a diagram that silently omits the box it
+      // failed to parse is worse than the text it replaced. See
+      // `shared/flowchart.ts` for exactly which syntax is understood.
+      if (fence[1]?.toLowerCase() === 'mermaid') {
+        const drawn = renderFlowchart(body.join('\n'))
+        if (drawn) {
+          const figure = document.createElement('div')
+          figure.className = 'flowchart-figure'
+          figure.appendChild(drawn)
+          out.appendChild(figure)
+          continue
+        }
+      }
+
       const pre = document.createElement('pre')
       const code = document.createElement('code')
       if (fence[1]) code.dataset.lang = fence[1]
