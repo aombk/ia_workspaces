@@ -65,7 +65,12 @@ export function startDrag(e: DragEvent, paths: string[]): void {
   // One path in this one, always. Every reader of it opens a single file, and a
   // space-joined list would be read as one absurd path.
   e.dataTransfer?.setData(FILE_DRAG, first)
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
+  // `copyMove` rather than `copy`: the file tree now accepts its own rows as a
+  // move into a folder, and a target may only set a `dropEffect` the source
+  // allowed — asking for `move` against a copy-only drag cancels the drop
+  // outright. Every existing target sets its own effect, so none of them
+  // changes behaviour.
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copyMove'
 
   const mode = store.settings.fileDrag ?? 'auto'
   if (mode === 'path') return

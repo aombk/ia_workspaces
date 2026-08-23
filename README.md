@@ -610,6 +610,12 @@ cannot do:
 - Size and modified-date columns, each switched on separately, for the times the
   name is not the thing you are picking by
 - **Multiple selection**, and **cut, copy and paste** between trees
+- **Drag a row onto a folder** to move it there, in this tree or another one.
+  The target folder is outlined, a closed one opens if you rest on it, and what
+  moved is named in a toast you can click to put it back. Dropping on the space
+  below the rows, or on the root row, moves things up to the folder the tree is
+  standing in. Only rows from a tree — a file dragged in from Explorer or Finder
+  is not moved.
 
 | | |
 | --- | --- |
@@ -620,6 +626,7 @@ cannot do:
 | `Ctrl` `X` / `C` / `V` | cut / copy / paste |
 | `Del` | delete, with one confirmation for the lot |
 | `Esc` | drop the selection |
+| drag onto a folder | move it there |
 
 Every action takes the whole selection: cut, copy, delete, **Send paths to
 terminal**, and dragging onto a shell — where five files arrive as five quoted

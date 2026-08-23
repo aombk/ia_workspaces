@@ -414,7 +414,9 @@ export class TerminalManager {
       { passive: false, capture: true }
     )
 
-    term.attachCustomWheelEventHandler(programWheelDriver(term, element))
+    // macOS is the platform that accelerates a wheel without saying so, which
+    // is the thing the driver has to undo. See `classifyWheel`.
+    term.attachCustomWheelEventHandler(programWheelDriver(term, element, isMac()))
 
     // Absolutely positioned, so it never enters xterm's size measurement.
     const blockedBar = document.createElement('div')

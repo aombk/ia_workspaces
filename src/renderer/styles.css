@@ -6802,6 +6802,26 @@ html.translucent .titlebar {
   opacity: 0.45;
 }
 
+/* The folder a drag would drop into.
+   The whole row, filled and outlined, rather than a line between rows: this
+   gesture moves files on disk, and the one thing it must never be is ambiguous
+   about which folder it means. A hairline insertion marker reads as "between
+   these two" — which is what a reordering tree means by it, and this tree does
+   not reorder anything. */
+.files-row.drop-into {
+  background-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+
+/* The empty space under the rows, which means the folder the tree is showing.
+   Inset so the outline is visible against the pane's own edge. */
+.files-list.drop-into {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  border-radius: var(--radius-sm);
+}
+
 /* --------------------------------------------------------- picking by line */
 
 /* The bar above the patch. It only ever says one of two things: what a tick

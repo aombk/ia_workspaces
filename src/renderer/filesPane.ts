@@ -1,6 +1,7 @@
 import { backend } from '../backend'
-import { quotePath, startDrag } from './ui/fileDrag'
+import { pathsFromDrop, quotePath, startDrag } from './ui/fileDrag'
 import {
+  isInsideDir,
   parentDir,
   parseUserPath,
   pathAncestors,
@@ -91,6 +92,24 @@ export interface FilesPaneHooks {
 let clipboard: { paths: string[]; mode: 'copy' | 'cut' } | null = null
 
 /**
+ * The rows currently being dragged out of some tree, or null.
+ *
+ * Module state for the same reason the clipboard is: a drag that starts in one
+ * pane should be droppable in another, and both are in this renderer.
+ *
+ * It exists at all because `dragover` cannot read the drag. The `dataTransfer`
+ * is write-only until the drop, by design — a page must not be able to read
+ * what you are dragging over it — and a drop target that cannot see what it is
+ * being offered cannot decide whether to light up. Every drag that begins in a
+ * tree records itself here, and a target reads *this* rather than the event.
+ *
+ * That also settles which drags the tree will take: a drag from Finder or
+ * Explorer never sets it, so it is never treated as a move. Dropping a file in
+ * from another program is a separate feature and not this one.
+ */
+let dragging: string[] | null = null
+
+/**
  * Re-reads every open tree.
  *
  * For something outside the tree changing a file on disk — the images pane
@@ -164,10 +183,24 @@ export class FilesPane {
   private token = 0
   /** Live rows by path, so selection can move without a re-render. */
   private rowEls = new Map<string, HTMLElement>()
+  /** The folder row a drag is currently over, so its highlight can be taken off. */
+  private dropRow: HTMLElement | null = null
+  /**
+   * A collapsed folder a drag has been resting on, and the timer that will open
+   * it.
+   *
+   * Held rather than opened at once. Instant expand-on-hover is what makes
+   * Explorer's version of this gesture dangerous: the tree moves under the
+   * cursor mid-drag, rows slide to new positions, and the drop lands one folder
+   * away from the one you were aiming at. Waiting means passing over a folder
+   * on the way somewhere else never disturbs anything.
+   */
+  private hoverExpand: { path: string; timer: ReturnType<typeof setTimeout> } | null = null
   /** What the folders on screen looked like last time, so a poll can no-op. */
   private signature = ''
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private readonly onWindowFocus = () => void this.refresh()
+  private readonly onDragEnd = () => FilesPane.endDrag()
 
   /** Every tree on screen, so a column switch reaches all of them at once. */
   private static readonly live = new Set<FilesPane>()
@@ -249,6 +282,31 @@ export class FilesPane {
     // whatever the focused terminal thinks.
     this.listEl.tabIndex = -1
     this.listEl.addEventListener('keydown', (e) => this.onKeyDown(e))
+
+    // The empty space under the rows means the folder the tree is standing in,
+    // the same as the root row does. It is a big target for the commonest move
+    // of all — something several folders deep coming back to the top.
+    this.listEl.addEventListener('dragover', (e) => {
+      if ((e.target as HTMLElement).closest('.files-row')) return
+      if (!dragging || !canDropInto(this.cwd, dragging)) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      this.hint(this.listEl)
+      this.cancelExpand()
+    })
+    this.listEl.addEventListener('dragleave', (e) => {
+      if (this.listEl.contains(e.relatedTarget as Node)) return
+      if (this.dropRow === this.listEl) this.hint(null)
+    })
+    this.listEl.addEventListener('drop', (e) => {
+      if ((e.target as HTMLElement).closest('.files-row')) return
+      const paths = this.dropPaths(e)
+      FilesPane.endDrag()
+      if (!paths || !canDropInto(this.cwd, paths)) return
+      e.preventDefault()
+      void this.dropInto(this.cwd, paths)
+    })
+
     this.element.appendChild(this.listEl)
 
 
@@ -262,6 +320,15 @@ export class FilesPane {
     // pane next door — should appear without anyone reaching for ⟳.
     this.pollTimer = setInterval(() => void this.poll(), POLL_MS)
     window.addEventListener('focus', this.onWindowFocus)
+    // Capture, both of them: a drop target that stops propagation — the pane
+    // grid does — would otherwise leave the drag looking as though it were
+    // still in flight, and the next folder a cursor crossed would light up for
+    // a drag that had already ended.
+    window.addEventListener('dragend', this.onDragEnd, true)
+    // A drop anywhere else in the app ends the drag as surely as `dragend`
+    // does, and an operating-system drag does not always report the latter to
+    // the window it started in.
+    window.addEventListener('drop', this.onDragEnd, true)
     FilesPane.live.add(this)
 
     void this.refresh()
@@ -550,6 +617,10 @@ export class FilesPane {
     const scroll = this.listEl.scrollTop
     this.listEl.replaceChildren()
     this.rowEls.clear()
+    // Every row here is about to be discarded, the highlighted one included.
+    // The drag carries on — `dragover` fires again while the pointer rests, so
+    // the folder under it lights up again on the new rows.
+    this.dropRow = null
 
     this.listEl.appendChild(this.renderRootRow())
 
@@ -609,6 +680,10 @@ export class FilesPane {
       })
       return row
     }
+
+    // The way back out. Without it a file dragged three folders deep can be
+    // moved anywhere except up, and "up" is most of what this gesture is for.
+    this.acceptDrops(row, this.cwd)
 
     const name = document.createElement('span')
     name.className = 'files-name'
@@ -831,17 +906,68 @@ export class FilesPane {
     // five quoted arguments. Dragging an unselected row takes just that row,
     // rather than whatever happened to be highlighted somewhere else.
     row.addEventListener('dragstart', (e) => {
-      const dragging = this.selection.has(entry.path)
+      const picked = this.selection.has(entry.path)
         ? this.selectedEntries().map((x) => x.path)
         : [entry.path]
       // Decides for itself whether this leaves as a file the rest of the
       // desktop can take or as a path only this app can read — see the
       // `fileDrag` setting. Either way the path is on the drag first, so an
       // internal drop works whichever kind it turned out to be.
-      startDrag(e, dragging)
+      startDrag(e, picked)
+      // What every drop target reads, because `dragover` cannot read the drag
+      // itself. Set after `startDrag` so an OS drag records it too: that branch
+      // prevents the HTML5 drag and Electron carries the gesture instead, but
+      // the drop still arrives here as an ordinary event.
+      dragging = picked
     })
 
+    // Cleared wherever the gesture can end. `dragend` does not fire on the row
+    // when the drag became an operating-system one, so the window hears it too
+    // — and a stale value would light a folder up for somebody else's drag.
+    row.addEventListener('dragend', () => FilesPane.endDrag())
+
+    if (entry.isDir) this.acceptDrops(row, entry.path, entry)
+
     return row
+  }
+
+  /**
+   * Makes a folder row a place rows can be dropped to move them into it.
+   *
+   * Folders only. Dropping onto a file could reasonably mean "into the folder
+   * this file is in", which is what VS Code does, but it is a guess made on
+   * your behalf about a gesture that moves things on disk — and a row that
+   * never highlights is a clearer refusal than one that highlights and acts
+   * somewhere other than where you pointed.
+   */
+  private acceptDrops(row: HTMLElement, folder: string, expand?: FileEntry): void {
+    row.addEventListener('dragover', (e) => {
+      if (!dragging || !canDropInto(folder, dragging)) return
+      // Both are required: the first says a drop is allowed here at all, the
+      // second says which of the effects the drag offered this one is.
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      this.hint(row)
+      if (expand) this.scheduleExpand(expand)
+    })
+
+    row.addEventListener('dragleave', (e) => {
+      // Rows contain the twisty, the name and the columns, so a drag crossing
+      // between them fires `dragleave` on the row while never leaving it.
+      if (row.contains(e.relatedTarget as Node)) return
+      if (this.dropRow === row) this.hint(null)
+      this.cancelExpand()
+    })
+
+    row.addEventListener('drop', (e) => {
+      const paths = this.dropPaths(e)
+      FilesPane.endDrag()
+      if (!paths || !canDropInto(folder, paths)) return
+      e.preventDefault()
+      e.stopPropagation()
+      void this.dropInto(folder, paths)
+    })
   }
 
   /**
@@ -1234,6 +1360,138 @@ export class FilesPane {
     FilesPane.refreshAll()
   }
 
+  // ------------------------------------------------------------ drag to move
+
+  /** Marks the folder a drop would land in, and unmarks the last one. */
+  private hint(target: HTMLElement | null): void {
+    if (this.dropRow === target) return
+    this.dropRow?.classList.remove('drop-into')
+    this.dropRow = target
+    target?.classList.add('drop-into')
+  }
+
+  /** Opens a closed folder a drag has been resting on. See `hoverExpand`. */
+  private scheduleExpand(entry: FileEntry): void {
+    if (this.expanded.has(entry.path) || this.hoverExpand?.path === entry.path) return
+    this.cancelExpand()
+    this.hoverExpand = {
+      path: entry.path,
+      timer: setTimeout(() => {
+        this.hoverExpand = null
+        // Only while the drag is still happening. A drop, or a drag abandoned
+        // with Escape, should not open a folder half a second later.
+        if (dragging) void this.toggle(entry)
+      }, HOVER_EXPAND_MS),
+    }
+  }
+
+  private cancelExpand(): void {
+    if (!this.hoverExpand) return
+    clearTimeout(this.hoverExpand.timer)
+    this.hoverExpand = null
+  }
+
+  /**
+   * Ends a drag everywhere.
+   *
+   * Static because the drag is: it may have started in this tree, crossed two
+   * others and been dropped in a fourth, and every one of them may be holding
+   * a highlight or a pending expand.
+   */
+  private static endDrag(): void {
+    dragging = null
+    for (const pane of FilesPane.live) {
+      pane.hint(null)
+      pane.cancelExpand()
+    }
+  }
+
+  /**
+   * The rows this drop is actually carrying, or null if it is not ours.
+   *
+   * `dragging` holds the whole selection, which the event cannot: our own drag
+   * type carries one path, and in `file` mode the operating system took the
+   * gesture and left only the files behind. So the event is used to *check* the
+   * drop rather than to read it — if what landed is not what left one of these
+   * trees, this is somebody else's drag and the tree keeps its hands off it.
+   */
+  private dropPaths(e: DragEvent): string[] | null {
+    const held = dragging
+    if (!held) return null
+    const dropped = pathsFromDrop(e)
+    if (dropped.length && !dropped.every((path) => held.includes(path))) return null
+    return held
+  }
+
+  /**
+   * Moves dropped rows into `folder`.
+   *
+   * One at a time, and for the same reason `paste` is: each destination name
+   * depends on what is already there, and two at once would both be told the
+   * same free name.
+   */
+  private async dropInto(folder: string, paths: readonly string[]): Promise<void> {
+    const moved: Array<{ from: string; to: string }> = []
+    const failures: string[] = []
+
+    for (const source of paths) {
+      try {
+        const landed = await backend().files.move(source, folder)
+        // `move` answers with the source untouched when it was already there,
+        // which is the no-op in a mixed selection rather than a failure.
+        if (landed !== source) moved.push({ from: source, to: landed })
+      } catch (err) {
+        failures.push(`${folderLeaf(source)}: ${messageOf(err)}`)
+      }
+    }
+
+    this.pendingSelect = moved.map((m) => m.to)
+
+    if (failures.length) {
+      showToast(
+        moved.length ? 'Some items could not be moved' : 'Could not move',
+        failures.join('\n'),
+        { kind: 'error' }
+      )
+    } else if (moved.length) {
+      // The undo is the point. Dragging is the one gesture here that can put a
+      // file somewhere you did not mean and give you nothing to read afterwards
+      // — Explorer's version of this loses folders into their neighbours daily.
+      // A move is reversible, so saying so is the whole cost of making it safe.
+      showToast(`Moved to ${folderLeaf(folder)}`, `${describe(moved.map((m) => m.from))} — click to undo`, {
+        onClick: () => void this.undoMove(moved),
+      })
+    }
+
+    // Both ends can be on screen at once, in this tree or another.
+    FilesPane.refreshAll()
+  }
+
+  /**
+   * Puts a move back.
+   *
+   * Back to the folder each row came from, not to its exact old path: something
+   * may have taken the name in between, and `move` will find a free one rather
+   * than overwrite it. That is a rename you can see, where the alternative is a
+   * file quietly destroyed by its own undo.
+   */
+  private async undoMove(moved: ReadonlyArray<{ from: string; to: string }>): Promise<void> {
+    const back: string[] = []
+    const failures: string[] = []
+
+    for (const { from, to } of moved) {
+      try {
+        back.push(await backend().files.move(to, parentOf(from)))
+      } catch (err) {
+        failures.push(`${folderLeaf(to)}: ${messageOf(err)}`)
+      }
+    }
+
+    this.pendingSelect = back
+    if (failures.length) showToast('Could not undo the move', failures.join('\n'), { kind: 'error' })
+    FilesPane.refreshAll()
+  }
+
   /** Where a paste goes for a given row: into a folder, or beside a file. */
   private pasteTarget(entry?: FileEntry): string {
     if (!entry) return this.cwd
@@ -1474,10 +1732,21 @@ export class FilesPane {
     FilesPane.live.delete(this)
     if (this.pollTimer !== null) clearInterval(this.pollTimer)
     this.pollTimer = null
+    this.cancelExpand()
     window.removeEventListener('focus', this.onWindowFocus)
+    window.removeEventListener('dragend', this.onDragEnd, true)
+    window.removeEventListener('drop', this.onDragEnd, true)
     this.element.remove()
   }
 }
+
+/**
+ * How long a drag rests on a closed folder before it opens, in milliseconds.
+ *
+ * Long enough that crossing one on the way somewhere else never opens it, short
+ * enough that deliberately hovering does not feel broken.
+ */
+const HOVER_EXPAND_MS = 700
 
 /** How often the tree re-reads the folders it is showing, in milliseconds. */
 const POLL_MS = 2000
@@ -1554,6 +1823,21 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 function folderLeaf(dir: string): string {
   return dir.split(/[\\/]/).filter(Boolean).pop() || dir
+}
+
+/**
+ * Whether dropping `paths` into `folder` would move anything.
+ *
+ * Any one of them is enough. Dragging five files where one is already in the
+ * target folder is a perfectly ordinary thing to do, and refusing the whole
+ * drop over it would be worse than moving the other four.
+ */
+function canDropInto(folder: string, paths: readonly string[]): boolean {
+  const platform = backend().capabilities.platform
+  return paths.some(
+    (source) =>
+      !isInsideDir(platform, folder, source) && !samePath(platform, parentOf(source), folder)
+  )
 }
 
 /** `parentDir` against the host we are actually running on. */

@@ -211,6 +211,29 @@ export function samePath(p: PlatformKind, a: string, b: string): boolean {
 }
 
 /**
+ * Whether `child` is `parent`, or sits anywhere beneath it.
+ *
+ * The question a move has to answer before it starts: putting a folder inside
+ * its own subtree is the one filesystem gesture that destroys data rather than
+ * failing, because `rename` and `cp` both begin it and then recurse until the
+ * disk is full. `moveEntry` refuses it at the point of doing it; the file tree
+ * asks here first, so a drop that would only be rejected never lights up.
+ *
+ * Case is treated exactly as `samePath` treats it, and for the same reason: a
+ * check that disagreed with it would call `C:\Dev` and `c:\dev` different
+ * places on the one platform that considers them the same.
+ */
+export function isInsideDir(p: PlatformKind, child: string, parent: string): boolean {
+  if (samePath(p, child, parent)) return true
+  const trim = (v: string): string => v.replace(/[\\/]+$/, '')
+  const under = trim(parent) + pathSeparator(p)
+  const value = trim(child)
+  return p === 'linux'
+    ? value.startsWith(under)
+    : value.toLowerCase().startsWith(under.toLowerCase())
+}
+
+/**
  * A path somebody typed or pasted, turned into one this platform can open.
  *
  * Quotes come along when a path is copied out of a shell and `~` is a shorthand

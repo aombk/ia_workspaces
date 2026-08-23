@@ -41,6 +41,71 @@ const TILE = hex('#ffffff')
 const EDGE = hex('#d8d8d8')
 const INK = hex('#101010')
 
+// ------------------------------------------------------------------- the mark
+
+/**
+ * The mark, in units where 1 is the chevron's own reach.
+ *
+ * Three blades opened from one pivot: the chevron's two arms, and a third
+ * straight up that closes the letter. Written down in its own coordinates
+ * rather than in pixels so that every size, and the SVG, are the same drawing
+ * scaled — there is one description here and nothing to keep in step with it.
+ */
+const STROKE = 0.852
+/** Blades narrow towards the tip, the way an opened blade does. */
+const TIP = 0.55
+const BLADES = [
+  [2.1, -1.75], // arm, up and right
+  [2.1, 1.75], // arm, down and right
+  [0, -1.96], // the third blade, straight up
+]
+/** The rivet the blades turn on, and the hole through it. */
+const RIVET = 0.72
+const BORE = 0.3
+/** Wider at small sizes, or the hole closes before the icon is even small. */
+const BORE_SMALL = 0.42
+
+/**
+ * How much of the icon the mark's bounding box fills.
+ *
+ * Small sizes get proportionally more, which is the same trade the tile makes
+ * with its own margin: at 16px a mark drawn to the large-icon proportions is a
+ * few dark pixels adrift in whitespace, and that is the size that has to read
+ * the hardest.
+ */
+const FILL = 0.62
+const FILL_SMALL = 0.71
+
+/**
+ * The mark's bounding box, in mark units.
+ *
+ * Computed rather than eyeballed, and it is what gets centred — not the pivot.
+ * There is a blade going up and none going down, so the ink is not symmetric
+ * about the pivot, and centring the pivot leaves the mark visibly high.
+ */
+const BOX = (() => {
+  const cap = (TIP * STROKE) / 2
+  const half = STROKE / 2
+  let xmin = -RIVET * STROKE
+  let xmax = RIVET * STROKE
+  let ymin = -RIVET * STROKE
+  let ymax = RIVET * STROKE
+  for (const [x, y] of BLADES) {
+    xmin = Math.min(xmin, x - cap, -half)
+    xmax = Math.max(xmax, x + cap, half)
+    ymin = Math.min(ymin, y - cap, -half)
+    ymax = Math.max(ymax, y + cap, half)
+  }
+  return { xmin, xmax, ymin, ymax, w: xmax - xmin, h: ymax - ymin,
+           cx: (xmin + xmax) / 2, cy: (ymin + ymax) / 2 }
+})()
+
+/** Where the pivot lands, and how big a mark unit is, for an icon of `size`. */
+function placeMark(size, small) {
+  const unit = ((small ? FILL_SMALL : FILL) * size) / Math.max(BOX.w, BOX.h)
+  return { unit, x: size / 2 - BOX.cx * unit, y: size / 2 - BOX.cy * unit }
+}
+
 /** Signed distance to a rounded rectangle, used for anti-aliased edges. */
 function roundedRectDistance(x, y, cx, cy, halfW, halfH, radius) {
   const dx = Math.abs(x - cx) - (halfW - radius)
@@ -86,12 +151,20 @@ function render(size) {
     }
   }
 
-  /** Thick anti-aliased line segment, in ink colour. */
-  const stroke = (x1, y1, x2, y2, width) => {
-    const minX = Math.max(0, Math.floor(Math.min(x1, x2) - width))
-    const maxX = Math.min(size - 1, Math.ceil(Math.max(x1, x2) + width))
-    const minY = Math.max(0, Math.floor(Math.min(y1, y2) - width))
-    const maxY = Math.min(size - 1, Math.ceil(Math.max(y1, y2) + width))
+  /**
+   * A blade: a thick anti-aliased segment with round ends, narrowing to `w2`.
+   *
+   * Round because the coverage is distance to the segment, which is a capsule.
+   * A tapering one ends in a small dome rather than a point, which is what a
+   * rounded blade actually looks like and what stops the tip disappearing when
+   * the icon is 16 pixels across.
+   */
+  const stroke = (x1, y1, x2, y2, w1, w2 = w1, rgb = INK) => {
+    const pad = Math.max(w1, w2) + 1
+    const minX = Math.max(0, Math.floor(Math.min(x1, x2) - pad))
+    const maxX = Math.min(size - 1, Math.ceil(Math.max(x1, x2) + pad))
+    const minY = Math.max(0, Math.floor(Math.min(y1, y2) - pad))
+    const maxY = Math.min(size - 1, Math.ceil(Math.max(y1, y2) + pad))
     const vx = x2 - x1
     const vy = y2 - y1
     const lenSq = vx * vx + vy * vy
@@ -102,23 +175,44 @@ function render(size) {
         const wy = y + 0.5 - y1
         const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, (wx * vx + wy * vy) / lenSq))
         const dist = Math.hypot(wx - vx * t, wy - vy * t)
+        const width = w1 + (w2 - w1) * t
         const coverage = Math.min(1, Math.max(0, width / 2 - dist + 0.5))
-        if (coverage > 0) blend((y * size + x) * 4, INK, coverage)
+        if (coverage > 0) blend((y * size + x) * 4, rgb, coverage)
       }
     }
   }
 
-  // The mark itself: a chevron pointing left. Two strokes meeting at a point,
-  // which is still one shape — the apex is the only detail in it, and a single
-  // corner is what survives 16px when a glyph would not.
-  const reach = small ? 0.155 : 0.135
-  const apexX = size * (0.5 - reach * 1.05)
-  const armX = size * (0.5 + reach * 1.05)
-  const midY = size * 0.5
-  const armY = size * reach * 1.75
-  const width = Math.max(1.5, size * (small ? 0.145 : 0.115))
-  stroke(armX, midY - armY, apexX, midY, width)
-  stroke(apexX, midY, armX, midY + armY, width)
+  /** Anti-aliased filled circle. The rivet, and the hole punched through it. */
+  const disc = (cx, cy, r, rgb) => {
+    for (let y = Math.max(0, Math.floor(cy - r - 1)); y <= Math.min(size - 1, Math.ceil(cy + r + 1)); y++) {
+      for (let x = Math.max(0, Math.floor(cx - r - 1)); x <= Math.min(size - 1, Math.ceil(cx + r + 1)); x++) {
+        const coverage = Math.min(1, Math.max(0, r - Math.hypot(x + 0.5 - cx, y + 0.5 - cy) + 0.5))
+        if (coverage > 0) blend((y * size + x) * 4, rgb, coverage)
+      }
+    }
+  }
+
+  // The mark: three blades opened from a rivet. The two that point right are
+  // the chevron this app has always had; the third closes it into a K.
+  const { unit, x: pivotX, y: pivotY } = placeMark(size, small)
+  const width = Math.max(1.5, STROKE * unit)
+
+  for (const [bx, by] of BLADES) {
+    const ex = pivotX + bx * unit
+    const ey = pivotY + by * unit
+    // The box was measured to the outside of the cap, so the blade is drawn to
+    // a point pulled back by the tip radius rather than to the box edge.
+    const len = Math.hypot(ex - pivotX, ey - pivotY) || 1
+    const pull = (TIP * width) / 2
+    stroke(pivotX, pivotY, ex - ((ex - pivotX) / len) * pull, ey - ((ey - pivotY) / len) * pull,
+           width, TIP * width)
+  }
+
+  disc(pivotX, pivotY, RIVET * width, INK)
+  // A hole too small to read as a hole is a smudge, and a solid rivet is the
+  // better drawing at that point. Below about a pixel of radius it is dropped.
+  const bore = (small ? BORE_SMALL : BORE) * width
+  if (bore >= 1) disc(pivotX, pivotY, bore, TILE)
   return px
 }
 
@@ -253,6 +347,140 @@ function encodeIco(sizes) {
   return Buffer.concat([header, directory, ...images])
 }
 
+// ----------------------------------------------------------------------- ICNS
+
+/**
+ * Packs one PNG per size into an .icns, for the macOS bundle.
+ *
+ * The container is as simple as it looks: a magic word, the total length, and
+ * then a run of typed chunks whose own length includes their eight-byte
+ * header. Every type here is a PNG one — macOS has read those since 10.7, and
+ * the raw ARGB types that came before need their own greyscale mask chunk
+ * alongside them, which is a second encoder for machines nobody is running.
+ *
+ * The 16px slot has no PNG type of its own. `ic11` is the 16@2x one, which is
+ * what a Retina Finder actually asks for; a non-Retina Mac downscales from 32
+ * and looks no worse than it would have.
+ */
+const ICNS_TYPES = [
+  ['ic07', 128],
+  ['ic08', 256],
+  ['ic09', 512],
+  ['ic10', 1024],
+  ['ic11', 32],
+  ['ic12', 64],
+  ['ic13', 256],
+  ['ic14', 512],
+]
+
+function encodeIcns() {
+  const chunks = ICNS_TYPES.map(([type, size]) => {
+    const png = encodePng(render(size), size)
+    const header = Buffer.alloc(8)
+    header.write(type, 0, 'ascii')
+    header.writeUInt32BE(png.length + 8, 4)
+    return Buffer.concat([header, png])
+  })
+
+  const body = Buffer.concat(chunks)
+  const header = Buffer.alloc(8)
+  header.write('icns', 0, 'ascii')
+  header.writeUInt32BE(body.length + 8, 4)
+  return Buffer.concat([header, body])
+}
+
+// ------------------------------------------------------------------------ SVG
+
+/**
+ * One blade as a filled outline.
+ *
+ * A stroke cannot be used: SVG strokes are one width end to end and these
+ * narrow towards the tip. So the shape is traced instead — the convex hull of
+ * the two end circles, which is two straight tangents and two arcs, and is
+ * exact rather than an approximation of the raster.
+ */
+function bladePath(px, py, ex, ey, r1, r2) {
+  const dx = ex - px
+  const dy = ey - py
+  const d = Math.hypot(dx, dy)
+  const n = (v) => Number(v.toFixed(3))
+
+  // One circle inside the other: the hull is just the larger circle.
+  if (d <= Math.abs(r1 - r2)) {
+    const r = Math.max(r1, r2)
+    const [cx, cy] = r1 >= r2 ? [px, py] : [ex, ey]
+    return `M ${n(cx - r)} ${n(cy)} a ${n(r)} ${n(r)} 0 1 0 ${n(2 * r)} 0 a ${n(r)} ${n(r)} 0 1 0 ${n(-2 * r)} 0 Z`
+  }
+
+  const a = Math.atan2(dy, dx)
+  const b = Math.acos((r1 - r2) / d)
+  const at = (cx, cy, r, angle) => [n(cx + r * Math.cos(angle)), n(cy + r * Math.sin(angle))]
+  const p1 = at(px, py, r1, a + b)
+  const p2 = at(ex, ey, r2, a + b)
+  const p3 = at(ex, ey, r2, a - b)
+  const p4 = at(px, py, r1, a - b)
+
+  // Both arcs turn the same way round the outline. The tip is the short way
+  // round the small circle; the back of the rivet is the long way round the
+  // large one, which is the only place the large-arc flag is set.
+  return (
+    `M ${p1[0]} ${p1[1]} L ${p2[0]} ${p2[1]}` +
+    ` A ${n(r2)} ${n(r2)} 0 0 0 ${p3[0]} ${p3[1]}` +
+    ` L ${p4[0]} ${p4[1]}` +
+    ` A ${n(r1)} ${n(r1)} 0 1 0 ${p1[0]} ${p1[1]} Z`
+  )
+}
+
+/**
+ * The icon as an editable SVG.
+ *
+ * Deliberately separate shapes rather than one merged path: this file is the
+ * one an editor opens, and a mark you can take a blade off is worth more there
+ * than a single outline you would have to cut apart first. The raster above is
+ * the same drawing, from the same numbers.
+ *
+ * The bore is a white disc over the rivet rather than a hole cut through it,
+ * for the same reason — two circles are editable where an even-odd compound
+ * path is a thing you have to understand first. On the white tile the two are
+ * identical; over anything else, union the blades and set `fill-rule` to
+ * `evenodd` to make it a real hole.
+ */
+function markSvg(size) {
+  const margin = size * 0.07
+  const half = size / 2 - margin
+  const radius = size * 0.22
+  const edgeWidth = size * 0.012
+  const { unit, x: pivotX, y: pivotY } = placeMark(size, false)
+  const width = STROKE * unit
+  const n = (v) => Number(v.toFixed(3))
+
+  const blades = BLADES.map(([bx, by]) => {
+    const ex = pivotX + bx * unit
+    const ey = pivotY + by * unit
+    const len = Math.hypot(ex - pivotX, ey - pivotY) || 1
+    const pull = (TIP * width) / 2
+    return bladePath(pivotX, pivotY, ex - ((ex - pivotX) / len) * pull,
+                     ey - ((ey - pivotY) / len) * pull, width / 2, (TIP * width) / 2)
+  })
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated by tools/make-icon.mjs. The raster icons come from the same
+     numbers; edit here and they will not follow, so change the constants in
+     that file if a change is meant to reach the app. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+  <g id="tile">
+    <rect x="${n(size / 2 - half)}" y="${n(size / 2 - half)}" width="${n(half * 2)}" height="${n(half * 2)}"
+          rx="${n(radius)}" ry="${n(radius)}" fill="#ffffff" stroke="#d8d8d8" stroke-width="${n(edgeWidth)}"/>
+  </g>
+  <g id="mark" fill="#101010">
+${blades.map((d, i) => `    <path id="blade-${i + 1}" d="${d}"/>`).join('\n')}
+    <circle id="rivet" cx="${n(pivotX)}" cy="${n(pivotY)}" r="${n(RIVET * width)}"/>
+  </g>
+  <circle id="bore" cx="${n(pivotX)}" cy="${n(pivotY)}" r="${n(BORE * width)}" fill="#ffffff"/>
+</svg>
+`
+}
+
 // ----------------------------------------------------------------------- write
 
 function write(relative, data) {
@@ -279,3 +507,25 @@ if (!process.argv.includes('--ico')) {
 
 const ico = encodeIco(ICO_SIZES)
 write(path.join('packaging', 'icons', 'icon.ico'), ico)
+
+// The Tauri host is parked, but its icon is not regenerated by anything else,
+// and a parked host that comes back wearing last year's mark is a bug nobody
+// would think to look for.
+write(path.join('src-tauri', 'icons', 'icon.ico'), ico)
+
+// macOS, and the loose PNGs electron-builder picks up for Linux. These are the
+// bundle's own icons: without them the Mac app and the AppImage keep whatever
+// was generated last time, which is how a rebranded app ships half rebranded.
+write(path.join('packaging', 'icons', 'icon.icns'), encodeIcns())
+for (const [name, size] of [
+  ['icon.png', 512],
+  ['128x128.png', 128],
+  ['128x128@2x.png', 256],
+  ['32x32.png', 32],
+]) {
+  write(path.join('packaging', 'icons', name), encodePng(render(size), size))
+}
+
+// The editable copy. Written on every run, including `--ico`, because it costs
+// nothing and a stale one is worse than none.
+write(path.join('packaging', 'icons', 'icon.svg'), Buffer.from(markSvg(512), 'utf8'))

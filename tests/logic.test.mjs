@@ -50,7 +50,16 @@ const { isPhantomExit, classifyReapIdentity, mayReap } = await import(
 const { buildTree, flattenPanes } = await import(`file://${out}/controlSurface.js`)
 const { normalise } = await import(`file://${out}/browserPane.js`)
 const { stepZoom } = await import(`file://${out}/auxPane.js`)
-const { withBinDir, ipcAddress, isPipeAddress, pathAncestors, parentDir, samePath, parseUserPath } =
+const {
+  withBinDir,
+  ipcAddress,
+  isPipeAddress,
+  pathAncestors,
+  parentDir,
+  samePath,
+  isInsideDir,
+  parseUserPath,
+} =
   await import(`file://${out}/platform.js`)
 const { isOrphan, selectOrphans, ORPHAN_GRACE_MS } = await import(`file://${out}/orphans.js`)
 const { EventLog, parseCategories } = await import(`file://${out}/events.js`)
@@ -58,7 +67,9 @@ const { SessionVault } = await import(`file://${out}/vault.js`)
 const { bufferWhileHidden, drainPending, clearPending } = await import(
   `file://${out}/paneBuffer.js`
 )
-const { wheelTicks } = await import(`file://${out}/programWheel.js`)
+const { wheelTicks, classifyWheel, NO_WHEEL_MEMORY } = await import(
+  `file://${out}/programWheel.js`
+)
 const { acceptSession, resumeCommand, RECORD_REFRESH_MS } = await import(
   `file://${out}/agentSessions.js`
 )
@@ -898,6 +909,31 @@ console.log('Browser zoom steps')
     assert.equal(samePath('windows', 'C:\\Dev\\', 'c:\\dev'), true)
   })
 
+  check('a folder is inside itself, and inside everything above it', () => {
+    // What the file tree asks before it will move anything: the answer being
+    // wrong the permissive way is a folder copied into its own subtree until
+    // the disk fills.
+    assert.equal(isInsideDir('macos', '/a/b/c', '/a/b'), true)
+    assert.equal(isInsideDir('macos', '/a/b', '/a/b'), true)
+    assert.equal(isInsideDir('macos', '/a/b', '/a/b/c'), false)
+    assert.equal(isInsideDir('macos', '/a/b', '/a'), true)
+
+    // A prefix of the name is not a parent. `/a/bcd` starts with `/a/b` as a
+    // string and is nowhere near it as a path, which is the whole reason this
+    // compares against the separator rather than the bare prefix.
+    assert.equal(isInsideDir('macos', '/a/bcd', '/a/b'), false)
+    assert.equal(isInsideDir('linux', '/a/bcd', '/a/b'), false)
+
+    // Trailing separators mean nothing, on either platform.
+    assert.equal(isInsideDir('macos', '/a/b/c', '/a/b/'), true)
+    assert.equal(isInsideDir('windows', 'C:\\a\\b\\c', 'C:\\a\\b\\'), true)
+
+    // Case, exactly as `samePath` has it: significant on Linux, nowhere else.
+    assert.equal(isInsideDir('windows', 'C:\\A\\b', 'c:\\a'), true)
+    assert.equal(isInsideDir('macos', '/A/b', '/a'), true)
+    assert.equal(isInsideDir('linux', '/A/b', '/a'), false)
+  })
+
   check('a pasted path survives being pasted', () => {
     // The bug: a POSIX path copied out of one file tree came back as
     // `\Users\me\dev` in the next one, and the tree said "No such folder".
@@ -961,6 +997,69 @@ console.log('Browser zoom steps')
     // conversion is one line each way and cheaper than being wrong.
     assert.equal(wheelTicks({ deltaY: 3, deltaMode: 1 }, CELL, ROWS, 0).ticks, 3)
     assert.equal(wheelTicks({ deltaY: 1, deltaMode: 2 }, CELL, ROWS, 0).ticks, ROWS)
+  })
+
+  check('a detent is counted, not measured', () => {
+    // The bug this exists for: macOS accelerates a mouse wheel silently, so the
+    // same notch arrives as four pixels turned slowly and a hundred and twenty
+    // turned fast. Measured, that is a notch which moves nothing followed by
+    // one which moves half a screen. Counted, every notch is three lines.
+    assert.equal(wheelTicks(px(4), CELL, ROWS, 0, 3).ticks, 3)
+    assert.equal(wheelTicks(px(120), CELL, ROWS, 0, 3).ticks, 3)
+    assert.equal(wheelTicks(px(-4), CELL, ROWS, 0, 3).ticks, -3)
+    // And nothing is carried out of one, or the next would arrive long.
+    assert.equal(wheelTicks(px(4), CELL, ROWS, 0.9, 3).carry, 0)
+  })
+}
+
+// -------------------------------------------------------- wheel classifier
+console.log('Telling a wheel from a trackpad')
+{
+  // Both platforms send pixels; the difference is in the shape of the numbers.
+  const feed = (events) => {
+    let memory = NO_WHEEL_MEMORY
+    let last
+    events.forEach((e, i) => {
+      last = classifyWheel(e, 1000 + i * 30, memory)
+      memory = last.memory
+    })
+    return last
+  }
+  const y = (deltaY) => ({ deltaX: 0, deltaY })
+
+  check('repeated whole deltas on one axis are a wheel', () => {
+    // A detent, four times. Same size, no fractions, one axis.
+    assert.equal(feed([y(40), y(40), y(40), y(40)]).physical, true)
+  })
+
+  check('an accelerating wheel is still a wheel', () => {
+    // macOS ramps a held-down scroll, and each is a multiple of the last —
+    // which is the signal that this has notches at all.
+    assert.equal(feed([y(4), y(8), y(16), y(32)]).physical, true)
+  })
+
+  check('fractional deltas are a trackpad', () => {
+    assert.equal(feed([y(1.5), y(3.25), y(7.75), y(11.5)]).physical, false)
+  })
+
+  check('two axes at once is a trackpad, whole numbers or not', () => {
+    // A finger drifts sideways. A wheel cannot.
+    assert.equal(feed([{ deltaX: 2, deltaY: 9 }, { deltaX: 3, deltaY: 14 }]).physical, false)
+  })
+
+  check('putting the mouse down and picking up the trackpad is judged afresh', () => {
+    // Without the gap the four clean notches would outvote the first strokes of
+    // the trackpad, and a flick would arrive as a page.
+    let memory = NO_WHEEL_MEMORY
+    for (const e of [y(40), y(40), y(40), y(40)]) memory = classifyWheel(e, 1000, memory).memory
+    const after = classifyWheel(y(1.5), 1000 + 900, memory)
+    assert.equal(after.physical, false)
+  })
+
+  check('nothing remembered is nothing decided against', () => {
+    // The very first event of a session has no history to weigh, and a lone
+    // whole delta on one axis is a wheel until something says otherwise.
+    assert.equal(classifyWheel(y(40), 1000, NO_WHEEL_MEMORY).physical, true)
   })
 }
 

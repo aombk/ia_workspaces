@@ -50,3 +50,6 @@ src-tauri/target/
 src-tauri/gen/
 src-wails/build/
 src-wails/frontend/
+
+# Promo drafts, not published
+promo/
