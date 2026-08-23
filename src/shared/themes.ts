@@ -147,6 +147,18 @@ export const RADIUS_SCALE: Record<
  * how round a panel is, whether the desktop shows through. Nobody publishes one
  * of these, and no program can address a colour in it.
  */
+/**
+ * What the interface is lettered in when a theme does not say.
+ *
+ * Windows' own UI face first, then whatever the platform calls its system font.
+ * Kept here rather than only in the stylesheet because the theme editor shows
+ * it as the placeholder — the field is empty and the answer is still visible.
+ */
+/** The built-in interface text size, in pixels. */
+export const UI_FONT_SIZE = 13
+
+export const UI_FONT_FALLBACK = "'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif"
+
 export interface InterfaceTheme {
   id: string
   name: string
@@ -165,6 +177,34 @@ export interface InterfaceTheme {
    * existed keeps the look it was designed with.
    */
   roundness?: Roundness
+  /**
+   * Interface text size in pixels; 13 is the built-in look.
+   *
+   * Multiplies every size in the stylesheet rather than setting one, so the
+   * 10px hints stay smaller than the 13px labels. Terminals keep their own.
+   */
+  fontSize?: number
+  /**
+   * How large the interface is drawn, 1 being the built-in look.
+   *
+   * Text, padding and control heights together — text alone grows into buttons
+   * that no longer fit it. Terminals are excluded.
+   */
+  uiScale?: number
+  /**
+   * The typeface for everything that is not a terminal.
+   *
+   * On the theme rather than in Settings because it is the same kind of
+   * decision as the colours and the corners: a theme is a look, and a look is
+   * partly its lettering. Terminals keep their own font setting — they need a
+   * monospace with box-drawing characters that meet, which is a different
+   * requirement with a different answer, and moving both together would break
+   * the frames agents draw the moment somebody picked a nice sans.
+   *
+   * A CSS font stack, so it can name a fallback: `Inter, Segoe UI, sans-serif`.
+   * Absent means the platform's own — see `UI_FONT_FALLBACK`.
+   */
+  fontFamily?: string
   /**
    * The shape of a workspace's colour marker, on its own switch.
    *
@@ -695,6 +735,9 @@ export function duplicateInterfaceTheme(
     backdrop: source.backdrop,
     roundness: source.roundness,
     workspaceDots: source.workspaceDots,
+    fontFamily: source.fontFamily,
+    fontSize: source.fontSize,
+    uiScale: source.uiScale,
     chrome: { ...source.chrome },
   }
 }
@@ -727,6 +770,18 @@ export function coerceBackdrop(raw: unknown, fallback: BackdropMaterial = 'none'
   return BACKDROP_MATERIALS.includes(raw as BackdropMaterial) ? (raw as BackdropMaterial) : fallback
 }
 
+/** Readable at both ends: below 9 nothing is legible, above 24 nothing fits. */
+export function clampFontSize(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  return Math.min(24, Math.max(9, Math.round(value * 10) / 10))
+}
+
+/** Half size to double. Wider than anyone needs and narrow enough to recover from. */
+export function clampScale(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  return Math.min(2, Math.max(0.5, Math.round(value * 100) / 100))
+}
+
 export function coerceInterfaceTheme(
   raw: unknown,
   fallback: InterfaceTheme,
@@ -752,6 +807,15 @@ export function coerceInterfaceTheme(
     backdrop: coerceBackdrop(source.backdrop, fallback.backdrop),
     roundness: source.roundness ?? fallback.roundness,
     workspaceDots: source.workspaceDots ?? fallback.workspaceDots,
+    // A font stack is free text — it is handed to CSS, which ignores what it
+    // cannot parse — so the only check worth making is that it is a string and
+    // not something that would end up as "[object Object]" on every label.
+    fontFamily:
+      typeof source.fontFamily === 'string' && source.fontFamily.trim()
+        ? source.fontFamily.trim()
+        : fallback.fontFamily,
+    fontSize: clampFontSize(source.fontSize ?? fallback.fontSize),
+    uiScale: clampScale(source.uiScale ?? fallback.uiScale),
     chrome,
   }
 }

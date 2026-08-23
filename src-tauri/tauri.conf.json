@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ia_workspaces",
+  "version": "1.1.0",
+  "identifier": "dev.iaworkspaces.terminal",
+  "build": {
+    "frontendDist": "../out/tauri/renderer",
+    "beforeDevCommand": "node build.mjs --watch",
+    "beforeBuildCommand": "node build.mjs"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ia_workspaces",
+        "width": 1280,
+        "height": 800,
+        "decorations": false,
+        "transparent": false
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"]
+  }
+}

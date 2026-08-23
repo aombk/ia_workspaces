@@ -18,6 +18,7 @@ import { publishRelay, type RelayEntry } from './relay'
 import { shareTokens, type PublishEntry } from './tokenShare'
 import { readSystemStats } from './systemStats'
 import { readWeather } from './weather'
+import { readCrypto } from './crypto'
 import { latestRelease } from './updates'
 import { PtyManager } from './ptyManager'
 import { readSoftwareRendering, Store } from './store'
@@ -779,6 +780,7 @@ function bootApp(): void {
     ipcMain.handle(IPC.timeSpans, () => timeLog.all())
     ipcMain.handle(IPC.systemStats, (_e, opts?: { drives?: boolean }) => readSystemStats(opts))
     ipcMain.handle(IPC.weather, (_e, req: WeatherRequest) => readWeather(req))
+    ipcMain.handle(IPC.crypto, (_e, req: { coins: string; currency: string }) => readCrypto(req))
     ipcMain.handle(IPC.gitStatus, (_e, cwd: string) => gitStatus(cwd))
     ipcMain.handle(IPC.isDirectory, (_e, dir: string) => isDirectory(dir))
     ipcMain.handle(IPC.createFile, (_e, parent: string, name: string) =>

@@ -132,6 +132,11 @@ function field(name: string, hint: string, control: Node): HTMLElement {
 function passphraseRow(): HTMLElement {
   const row = document.createElement('div')
   row.className = 'settings-folder'
+  // Greyed out rather than taken away when sharing is off: the row keeps its
+  // place, and a control that is there and unavailable says "this belongs to
+  // the switch above" in a way an empty gap never does.
+  const live = store.settings.shareCommands
+  if (!live) row.title = 'Switch on “Share the commands you run between machines” first.'
 
   const input = document.createElement('input')
   input.type = 'password'
@@ -157,12 +162,14 @@ function passphraseRow(): HTMLElement {
   row.appendChild(clear)
 
   const refresh = (): void => {
+    input.disabled = !live
+    save.disabled = !live
     void backend()
       .hasSharePassphrase()
       .then((has) => {
-        state.textContent = has ? 'set on this machine' : 'not set'
+        state.textContent = live ? (has ? 'set on this machine' : 'not set') : 'not needed while sharing is off'
         input.placeholder = has ? 'set — type a new one to replace it' : 'not set — commands are not shared'
-        clear.disabled = !has
+        clear.disabled = !has || !live
       })
       .catch(() => {
         state.textContent = ''
@@ -606,17 +613,21 @@ async function render(): Promise<void> {
       ),
       field(
         'Release an idle agent’s shell after',
-        'Minutes an agent pane may sit off screen before its shell is ended, in exchange for the ' +
-          'memory. This is the largest saving available: a Claude pane doing nothing holds around ' +
-          'half a gigabyte, plus its own MCP server and console host, so three forgotten ones can ' +
-          'be a gigabyte and a half — enough to put a 16 GB machine into paging, which is what it ' +
-          'feels like when a few terminals make everything slow. The pane stays exactly where it ' +
-          'is, keeps its screen, and says what happened; the next key you press starts a shell and ' +
-          'types “claude --resume”, so the conversation carries on where it stopped. Only ever ' +
-          'agent panes — a plain shell holds things a transcript cannot bring back — and never one ' +
-          'that is working, waiting on an answer, or on screen. Needs “Resume agent sessions” on. ' +
-          '0 never releases anything.',
+        'Ends the shell of an agent pane left off screen this long, and about half a gigabyte ' +
+          'with it. The pane keeps its screen; the next key resumes the conversation. Never a ' +
+          'plain shell, and never one that is working or waiting on you. 0 to switch it off.',
         number(s.idleAgentRelease, 0, 1440, (v) => patch({ idleAgentRelease: v }))
+      ),
+      field(
+        'Coins in the monitor’s crypto block',
+        'Written as you would say them: btc, eth, ltc. Prices come from CoinGecko every couple ' +
+          'of minutes, and only while the block is on — right-click the monitor to show it.',
+        text(s.cryptoCoins, 'btc, eth, ltc', (v) => patch({ cryptoCoins: v }))
+      ),
+      field(
+        'Currency for the crypto block',
+        'Three letters — eur, usd, gbp, or anything else CoinGecko will quote in.',
+        text(s.cryptoCurrency, 'eur', (v) => patch({ cryptoCurrency: v }))
       ),
       field(
         'Dragging a file out of the app',
@@ -694,9 +705,16 @@ async function render(): Promise<void> {
           'also stripped of the obvious secret shapes — tokens, passwords in connection strings, ' +
           '--token= flags — which is a second line of defence and not a guarantee, because a secret ' +
           'that looks like an ordinary argument cannot be recognised by anything.',
+        // `patch` redraws the panel, which matters here more than elsewhere:
+        // the passphrase row below greys out with this switch, and every
+        // terminal's history control stops offering "everywhere" — see
+        // `availableScopes`.
         toggle(s.shareCommands, (v) => {
           patch({ shareCommands: v })
           refreshRelayNow()
+          // `patch` repaints the app but not this panel, and the row under
+          // this switch changes with it.
+          void refreshSettings()
         })
       ),
       field(

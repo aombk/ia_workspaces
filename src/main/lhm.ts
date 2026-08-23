@@ -66,6 +66,19 @@ interface LhmNode {
  * an external SSD is reported by Windows under its *enclosure's* identity and
  * by LibreHardwareMonitor under the *drive's*, and they share no words at all.
  */
+/**
+ * What a graphics card says about its own memory.
+ *
+ * Read here because `nvidia-smi` will not always say: on a laptop with switched
+ * graphics it reports `memory.used` as 0 MiB while the card is parked, which is
+ * not zero bytes in use — it is the tool declining to look. LibreHardwareMonitor
+ * asks the driver a different way and answers 232 MB where nvidia-smi answers 0.
+ */
+export interface LhmGpuMemory {
+  usedBytes: number | null
+  totalBytes: number | null
+}
+
 export interface LhmDisk {
   name: string
   /** The live reading, not one of the thresholds beside it. */
@@ -109,6 +122,8 @@ export interface LhmReading {
   temperatures: TemperatureStats[]
   disks: LhmDisk[]
   battery: LhmBattery | null
+  /** The first card that reported its memory, or null. */
+  gpuMemory: LhmGpuMemory | null
 }
 
 /**
@@ -198,7 +213,9 @@ export function parseLhm(root: unknown): LhmReading {
   /** Per drive, keyed by the sensor path prefix — `/nvme/0`, `/ssd/2`. */
   const drives = new Map<string, LhmDisk>()
   let battery: LhmBattery | null = null
-  if (!root || typeof root !== 'object') return { temperatures, disks: [], battery: null }
+  let gpuMemory: LhmGpuMemory | null = null
+  if (!root || typeof root !== 'object')
+    return { temperatures, disks: [], battery: null, gpuMemory: null }
 
   const visit = (node: LhmNode, ancestors: string[]): void => {
     const children = node.Children ?? []
@@ -228,6 +245,23 @@ export function parseLhm(root: unknown): LhmReading {
       // drives in one machine share a name and nothing else.
       // The battery names its own path after the pack — `/battery/L22B4PC0_1/`
       // — so there is nothing stable to match but the prefix.
+      // Megabytes, as `SmallData`. Only the card's own memory: the two
+      // `D3D ... Memory Used` sensors beside these are per-process figures for
+      // whatever Windows last drew, and adding them to the total would double
+      // count the same megabytes.
+      if (/^\/gpu/.test(sensorId) && node.Type === 'SmallData') {
+        const megabytes = parseValue(node.Value)
+        if (megabytes !== null) {
+          if (name === 'GPU Memory Used') {
+            gpuMemory ??= { usedBytes: null, totalBytes: null }
+            gpuMemory.usedBytes ??= megabytes * 1024 * 1024
+          } else if (name === 'GPU Memory Total') {
+            gpuMemory ??= { usedBytes: null, totalBytes: null }
+            gpuMemory.totalBytes ??= megabytes * 1024 * 1024
+          }
+        }
+      }
+
       if (sensorId.startsWith('/battery/')) {
         battery ??= {
           chargePercent: null,
@@ -274,7 +308,7 @@ export function parseLhm(root: unknown): LhmReading {
   }
 
   visit(root as LhmNode, [])
-  return { temperatures, disks: [...drives.values()], battery }
+  return { temperatures, disks: [...drives.values()], battery, gpuMemory }
 }
 
 /**
@@ -288,9 +322,9 @@ export function parseLhm(root: unknown): LhmReading {
 export async function readLhm(): Promise<LhmReading> {
   try {
     const response = await fetch(LHM_URL, { signal: AbortSignal.timeout(LHM_TIMEOUT_MS) })
-    if (!response.ok) return { temperatures: [], disks: [], battery: null }
+    if (!response.ok) return { temperatures: [], disks: [], battery: null, gpuMemory: null }
     return parseLhm(await response.json())
   } catch {
-    return { temperatures: [], disks: [], battery: null }
+    return { temperatures: [], disks: [], battery: null, gpuMemory: null }
   }
 }

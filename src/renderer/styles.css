@@ -83,8 +83,8 @@ body {
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
-  font-size: 13px;
+  font-family: var(--ui-font, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif);
+  font-size: calc(13px * var(--ui-text, 1));
   user-select: none;
 }
 
@@ -112,7 +112,11 @@ select:focus {
   border-color: var(--accent);
 }
 
+/* The theme's interface size. `zoom` rather than a font size, because a bigger
+   interface is bigger controls and padding too -- text alone grows into buttons
+   that no longer fit it. Terminals opt out below: they have their own size. */
 .app {
+  zoom: var(--ui-scale, 1);
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -179,14 +183,14 @@ html.mac-caption .titlebar-drag {
 
 .app-name {
   font-weight: 600;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   letter-spacing: 0.02em;
   color: var(--text-dim);
   flex: none;
 }
 
 .titlebar-context {
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   color: var(--text-faint);
   white-space: nowrap;
   overflow: hidden;
@@ -204,7 +208,7 @@ html.mac-caption .titlebar-drag {
   display: grid;
   place-items: center;
   font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets';
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-dim);
 }
 
@@ -244,7 +248,7 @@ html.mac-caption .titlebar-drag {
 }
 
 .sidebar-title {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -340,8 +344,8 @@ html.mac-caption .titlebar-drag {
   width: 10px;
   flex: none;
   text-align: center;
-  font-family: 'Segoe UI Symbol', 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
-  font-size: 11px;
+  font-family: 'Segoe UI Symbol', var(--ui-font, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif);
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1;
   color: var(--text-faint);
   /* Sits low in its em box, so it lines up with the name rather than the cap. */
@@ -365,7 +369,7 @@ html.mac-caption .titlebar-drag {
   width: 10px;
   flex: none;
   text-align: center;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -392,7 +396,7 @@ html.mac-caption .titlebar-drag {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
 }
 
 .workspace-name-input {
@@ -400,11 +404,11 @@ html.mac-caption .titlebar-drag {
   min-width: 0;
   height: 24px;
   padding: 0 6px;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
 }
 
 .workspace-count {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   background: rgba(255, 255, 255, 0.06);
@@ -489,7 +493,7 @@ html.mac-caption .titlebar-drag {
   height: 32px;
   border-radius: var(--radius);
   color: var(--text-faint);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
 }
 
 .add-workspace:hover {
@@ -500,7 +504,7 @@ html.mac-caption .titlebar-drag {
 .add-workspace .plus {
   width: 8px;
   text-align: center;
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-text, 1));
   line-height: 1;
 }
 
@@ -642,7 +646,7 @@ html.mac-caption .titlebar-drag {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .tab-title-input {
@@ -650,7 +654,7 @@ html.mac-caption .titlebar-drag {
   min-width: 0;
   height: 22px;
   padding: 0 4px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .tab-close {
@@ -659,7 +663,7 @@ html.mac-caption .titlebar-drag {
   border-radius: var(--radius-sm);
   display: grid;
   place-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   flex: none;
   opacity: 0;
@@ -680,7 +684,7 @@ html.mac-caption .titlebar-drag {
   display: grid;
   place-items: center;
   color: var(--text-faint);
-  font-size: 16px;
+  font-size: calc(16px * var(--ui-text, 1));
   flex: none;
 }
 
@@ -710,7 +714,10 @@ html.mac-caption .titlebar-drag {
 }
 
 /* Every terminal stays mounted so scrollback survives tab switches. */
+/* Back to real pixels. A terminal's size is its own setting, and a grid drawn
+   at 1.25x then measured in CSS pixels reports the wrong number of columns. */
 .pane {
+  zoom: calc(1 / var(--ui-scale, 1));
   position: relative;
   flex: 1;
   min-width: 0;
@@ -734,18 +741,18 @@ html.mac-caption .titlebar-drag {
 
 .empty-title {
   margin: 0;
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-text, 1));
   color: var(--text-dim);
 }
 
 .empty-hint {
   margin: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 kbd {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   border-bottom-width: 2px;
@@ -799,7 +806,7 @@ kbd {
   padding: 0 12px;
   background: var(--bg-raised);
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -825,7 +832,7 @@ kbd {
   border-radius: var(--radius-lg);
   background: rgba(88, 166, 255, 0.12);
   color: var(--accent);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -862,7 +869,7 @@ kbd {
   width: 100%;
   padding: 6px 10px;
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   color: var(--text);
   text-align: left;
 }
@@ -906,7 +913,7 @@ kbd {
 
 .context-menu .shortcut {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 .context-menu .sep {
@@ -983,7 +990,7 @@ kbd {
 .settings-head h2 {
   margin: 0;
   flex: none;
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-text, 1));
   font-weight: 600;
 }
 
@@ -1027,7 +1034,7 @@ kbd {
 
 .settings-section > h3 {
   margin: 0 0 10px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1079,11 +1086,11 @@ kbd {
 }
 
 .field-label .name {
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
 }
 
 .field-label .hint {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   line-height: 1.4;
 }
@@ -1110,7 +1117,7 @@ kbd {
    ever drawn when that is true, so it is allowed to be loud. */
 .workspace-relay-warn {
   margin-left: 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1;
   color: var(--warn);
   cursor: help;
@@ -1199,7 +1206,7 @@ kbd {
   /* The bar is the hint and one button now, so the sentence takes the room and
      the control sits at the far end of it. */
   margin-right: auto;
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--ui-text, 1));
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1253,8 +1260,8 @@ kbd {
 
 .canvas-wire__label {
   fill: var(--text-faint);
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
-  font-size: 11px;
+  font-family: var(--ui-font, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif);
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 /* A group is a container for what sits on it, and the spec puts groups first in
@@ -1267,7 +1274,7 @@ kbd {
 
 .canvas-node--group .canvas-node__body {
   align-self: flex-start;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -1280,7 +1287,7 @@ kbd {
 .canvas-node__body.markdown h1,
 .canvas-node__body.markdown h2,
 .canvas-node__body.markdown h3 {
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   margin: 6px 0 4px;
 }
 
@@ -1350,7 +1357,7 @@ kbd {
 .canvas-node__body {
   flex: 1;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text);
   white-space: pre-wrap;
@@ -1445,7 +1452,7 @@ kbd {
   flex: none;
   padding: 4px 10px;
   border-bottom: 1px solid var(--border);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--ui-text, 1));
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1479,7 +1486,7 @@ kbd {
 .canvas-node__code {
   margin: 0;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
   white-space: pre;
@@ -1527,7 +1534,7 @@ kbd {
 }
 
 .day-label {
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   color: var(--text);
 }
 
@@ -1546,13 +1553,13 @@ kbd {
 }
 
 .day-figure__value {
-  font-size: 18px;
+  font-size: calc(18px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
 
 .day-figure__label {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -1569,20 +1576,20 @@ kbd {
   align-items: baseline;
   gap: 12px;
   margin: 0 0 6px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   font-weight: 600;
   color: var(--text);
 }
 
 .day-card__time {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
 }
 
 .day-item {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-text, 1));
   line-height: 1.6;
   color: var(--text-faint);
   overflow: hidden;
@@ -1594,7 +1601,7 @@ kbd {
    than as one more command. */
 .day-item--commit {
   font-family: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   color: var(--text);
 }
 
@@ -1604,13 +1611,13 @@ kbd {
 
 .day-item--more {
   font-family: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   opacity: 0.8;
 }
 
 .day-note {
   margin: 4px 0 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
 }
@@ -1651,7 +1658,7 @@ kbd {
 .reader-backlinks h3 {
   width: 100%;
   margin: 0 0 2px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -1687,8 +1694,8 @@ kbd {
 
 .flow-node__label {
   fill: var(--text);
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
-  font-size: 12px;
+  font-family: var(--ui-font, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif);
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .flow-edge {
@@ -1711,8 +1718,8 @@ kbd {
 
 .flow-edge__label {
   fill: var(--text-faint);
-  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
-  font-size: 10.5px;
+  font-family: var(--ui-font, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif);
+  font-size: calc(10.5px * var(--ui-text, 1));
 }
 
 /* --------------------------------------------------------------- focus pane
@@ -1748,7 +1755,7 @@ kbd {
 
 .focus-card h3 {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -1769,13 +1776,13 @@ kbd {
 }
 
 .focus-figure__value {
-  font-size: 18px;
+  font-size: calc(18px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
 
 .focus-figure__label {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -1816,7 +1823,7 @@ kbd {
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   text-align: left;
   cursor: pointer;
 }
@@ -1834,7 +1841,7 @@ kbd {
 
 .focus-check {
   flex: none;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   line-height: 1;
 }
 
@@ -1846,7 +1853,7 @@ kbd {
 }
 
 .focus-clock {
-  font-size: 30px;
+  font-size: calc(30px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   line-height: 1.1;
@@ -1866,7 +1873,7 @@ kbd {
 
 .focus-note {
   margin: 8px 0 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
 }
@@ -1914,7 +1921,7 @@ kbd {
 
 .runbook-card h3 {
   margin: 0 0 2px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -1923,7 +1930,7 @@ kbd {
 
 .runbook-hint {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.4;
   color: var(--text-faint);
 }
@@ -1953,7 +1960,7 @@ kbd {
    two-line command breaks the scan down the left edge that makes this a list. */
 .runbook-command {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1962,14 +1969,14 @@ kbd {
 
 .runbook-facts {
   flex: none;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
 }
 
 .runbook-note {
   margin: 8px 0 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
 }
@@ -2006,7 +2013,7 @@ kbd {
   background: var(--bg-raised, var(--bg));
   color: var(--text-faint);
   font: inherit;
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-text, 1));
   line-height: 1;
   cursor: pointer;
 }
@@ -2031,7 +2038,7 @@ kbd {
 }
 
 .pane-history__search {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 /* ---------------------------------------------------------------- relay
@@ -2065,7 +2072,7 @@ kbd {
   border-radius: var(--radius-lg);
   padding: 9px 12px;
   background: var(--bg-raised);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.5;
   color: var(--text);
 }
@@ -2085,7 +2092,7 @@ kbd {
 
 .relay-card h3 {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -2096,7 +2103,7 @@ kbd {
 }
 
 .relay-tag {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   letter-spacing: 0.02em;
   text-transform: none;
   color: var(--text-faint);
@@ -2127,17 +2134,17 @@ kbd {
 }
 
 .relay-machine {
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   color: var(--text);
 }
 
 .relay-faint {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
 .relay-state {
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text);
   margin-top: 2px;
@@ -2148,7 +2155,7 @@ kbd {
 }
 
 .relay-detail {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
   margin-top: 2px;
@@ -2163,7 +2170,7 @@ kbd {
 
 .relay-note {
   margin: 8px 0 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
 }
@@ -2199,7 +2206,7 @@ kbd {
 
 .tokens-card h3 {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: lowercase;
@@ -2221,13 +2228,13 @@ kbd {
 }
 
 .tokens-figure__value {
-  font-size: 18px;
+  font-size: calc(18px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
 
 .tokens-figure__label {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -2235,13 +2242,13 @@ kbd {
 .tokens-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .tokens-table th {
   text-align: left;
   font-weight: 500;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   letter-spacing: 0.04em;
   color: var(--text-faint);
   padding: 0 0 4px;
@@ -2276,7 +2283,7 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   /* A long path is a long path. Scrolling one row beats wrapping every row. */
   overflow-x: auto;
@@ -2285,7 +2292,7 @@ kbd {
 
 .tokens-note {
   margin: 8px 0 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
 }
@@ -2299,7 +2306,7 @@ kbd {
   border: 0;
   background: none;
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--accent, var(--text));
   cursor: pointer;
   text-decoration: underline;
@@ -2409,7 +2416,7 @@ kbd {
   border-radius: var(--radius);
   border: 1px solid var(--border-strong);
   background: var(--bg-active);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .btn:hover {
@@ -2439,7 +2446,7 @@ kbd {
   border-radius: var(--radius);
   background: rgba(88, 166, 255, 0.08);
   border: 1px solid rgba(88, 166, 255, 0.25);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.5;
   color: var(--text-dim);
 }
@@ -2457,7 +2464,7 @@ kbd {
 
 .callout code {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   background: rgba(255, 255, 255, 0.06);
   padding: 1px 4px;
   border-radius: var(--radius-sm);
@@ -2486,7 +2493,7 @@ kbd {
 }
 
 .inbox-title {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -2506,7 +2513,7 @@ kbd {
   padding: 24px 12px;
   text-align: center;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 /* The danger rail matches the tab and workspace tint, so the same question
@@ -2530,7 +2537,7 @@ kbd {
   padding: 0;
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
   min-width: 0;
 }
@@ -2556,7 +2563,7 @@ kbd {
 
 .inbox-reason {
   color: var(--text);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   overflow-wrap: anywhere;
 }
 
@@ -2574,7 +2581,7 @@ kbd {
   background: var(--bg-active);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -2589,7 +2596,7 @@ kbd {
 
 .inbox-note,
 .inbox-sent {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -2615,7 +2622,7 @@ kbd {
 
 .tasks-title {
   flex: 1;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -2628,7 +2635,7 @@ kbd {
   background: var(--bg-active);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   cursor: pointer;
   max-width: 60%;
   overflow: hidden;
@@ -2659,7 +2666,7 @@ kbd {
   padding: 24px 12px;
   text-align: center;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .tasks-row {
@@ -2692,7 +2699,7 @@ kbd {
   border: 1px solid var(--border);
   background: var(--bg-active);
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1;
   cursor: pointer;
 }
@@ -2712,7 +2719,7 @@ kbd {
 
 .tasks-name {
   color: var(--text);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2720,7 +2727,7 @@ kbd {
 
 .tasks-command {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2735,7 +2742,7 @@ kbd {
   border-radius: var(--radius-sm);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   padding: 2px 6px;
 }
 
@@ -2774,7 +2781,7 @@ kbd {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-text, 1));
   outline: none;
 }
 
@@ -2797,7 +2804,7 @@ kbd {
   background: none;
   color: var(--text-faint);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -2814,12 +2821,16 @@ kbd {
 .palette-scope__btn:disabled {
   opacity: 0.4;
   cursor: default;
+  /* Struck through as well as dimmed. Dim on its own reads as "not selected"
+     beside two other unselected buttons; a line through it reads as a slice
+     that is not there to be picked, which is the fact. Its tooltip says why. */
+  text-decoration: line-through;
 }
 
 /* The key that swaps them, said once where it is useful. */
 .palette-scope__hint {
   margin-left: auto;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -2834,7 +2845,7 @@ kbd {
   padding: 20px;
   text-align: center;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .palette-row {
@@ -2853,7 +2864,7 @@ kbd {
 
 .palette-label {
   color: var(--text);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   flex: none;
   max-width: 45%;
   overflow: hidden;
@@ -2865,7 +2876,7 @@ kbd {
   flex: 1;
   min-width: 0;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2874,7 +2885,7 @@ kbd {
 .palette-kind {
   flex: none;
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -2902,7 +2913,7 @@ kbd {
 .reader-path {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2920,7 +2931,7 @@ kbd {
   background: var(--bg-active);
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -2938,13 +2949,13 @@ kbd {
 
 .reader-error {
   color: var(--danger);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .reader-plain {
   margin: 0;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.5;
   color: var(--text);
   white-space: pre-wrap;
@@ -2955,7 +2966,7 @@ kbd {
    unreadable however good the typography is. */
 .reader-body.markdown {
   color: var(--text);
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--ui-text, 1));
   line-height: 1.65;
   max-width: 78ch;
 }
@@ -3023,7 +3034,7 @@ kbd {
 .reader-body.markdown pre code {
   background: none;
   padding: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.5;
   overflow-wrap: normal;
 }
@@ -3121,7 +3132,7 @@ kbd {
   background: none;
   color: var(--text-faint);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -3153,7 +3164,7 @@ kbd {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -3181,7 +3192,7 @@ kbd {
   background: var(--bg-active);
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -3226,7 +3237,7 @@ kbd {
   background: none;
   color: var(--text-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   text-align: left;
   cursor: pointer;
   min-width: 0;
@@ -3255,7 +3266,7 @@ kbd {
   flex: none;
   width: 12px;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   text-align: center;
 }
 
@@ -3279,14 +3290,14 @@ kbd {
 .diff-empty {
   padding: 24px 16px;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .diff-text {
   margin: 0;
   padding: 8px 0;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.45;
   display: flex;
   flex-direction: column;
@@ -3369,7 +3380,7 @@ button:disabled .gw-note {
 
 .diff-group__title {
   flex: 1;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--text-dim);
@@ -3384,7 +3395,7 @@ button:disabled .gw-note {
   background: none;
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -3400,7 +3411,7 @@ button:disabled .gw-note {
 
 .diff-group__note {
   padding: 0 6px 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
 }
@@ -3422,7 +3433,7 @@ button:disabled .gw-note {
   width: 100%;
   padding: 3px 6px;
   border-radius: var(--radius);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   min-width: 0;
 }
 
@@ -3448,7 +3459,7 @@ button:disabled .gw-note {
   background: none;
   color: inherit;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   text-align: left;
   cursor: pointer;
   padding: 0;
@@ -3469,7 +3480,7 @@ button:disabled .gw-note {
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -3496,7 +3507,7 @@ button:disabled .gw-note {
   background: var(--bg);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.4;
 }
 
@@ -3514,7 +3525,7 @@ button:disabled .gw-note {
 
 .diff-foot__note {
   flex: 1 1 100%;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
 }
@@ -3547,7 +3558,7 @@ button:disabled .gw-note {
 
 .history-where {
   flex: none;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-dim);
 }
 
@@ -3575,7 +3586,7 @@ button:disabled .gw-note {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.5;
   color: var(--text-dim);
 }
@@ -3604,7 +3615,7 @@ button:disabled .gw-note {
   background: none;
   color: var(--accent);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   text-decoration: underline;
   cursor: pointer;
 }
@@ -3625,7 +3636,7 @@ button:disabled .gw-note {
 
 .history-branches__label {
   flex: none;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -3640,7 +3651,7 @@ button:disabled .gw-note {
   background: var(--bg-active);
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   white-space: nowrap;
   cursor: pointer;
 }
@@ -3702,7 +3713,7 @@ button:disabled .gw-note {
   background: none;
   color: var(--text-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   text-align: left;
   cursor: pointer;
 }
@@ -3755,7 +3766,7 @@ circle.lane-7 { fill: #ff9e64; }
 
 .history-overflow {
   fill: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 .history-row__text {
@@ -3778,7 +3789,7 @@ circle.lane-7 { fill: #ff9e64; }
   padding: 0 6px;
   border-radius: 999px;
   border: 1px solid var(--border-strong);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   line-height: 15px;
   white-space: nowrap;
 }
@@ -3810,7 +3821,7 @@ circle.lane-7 { fill: #ff9e64; }
   border-radius: 999px;
   background: rgba(224, 175, 104, 0.16);
   color: var(--warn);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   line-height: 15px;
   white-space: nowrap;
 }
@@ -3819,7 +3830,7 @@ circle.lane-7 { fill: #ff9e64; }
 .history-row__sha {
   flex: none;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   white-space: nowrap;
 }
 
@@ -3839,14 +3850,14 @@ circle.lane-7 { fill: #ff9e64; }
 }
 
 .history-detail__subject {
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   color: var(--text);
   line-height: 1.4;
 }
 
 .history-detail__who {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-dim);
 }
 
@@ -3855,14 +3866,14 @@ circle.lane-7 { fill: #ff9e64; }
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
 .history-detail__body {
   margin: 8px 0 0;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.5;
   color: var(--text-dim);
   white-space: pre-wrap;
@@ -3870,7 +3881,7 @@ circle.lane-7 { fill: #ff9e64; }
 
 .history-detail__files {
   padding: 6px 12px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   border-bottom: 1px solid var(--border);
 }
@@ -3888,7 +3899,7 @@ circle.lane-7 { fill: #ff9e64; }
 
 .glossary-rule {
   margin: 0 0 16px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.5;
   color: var(--text-faint);
 }
@@ -3899,7 +3910,7 @@ circle.lane-7 { fill: #ff9e64; }
 
 .glossary-group h3 {
   margin: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--text);
@@ -3907,7 +3918,7 @@ circle.lane-7 { fill: #ff9e64; }
 
 .glossary-note {
   margin: 3px 0 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -3932,18 +3943,18 @@ circle.lane-7 { fill: #ff9e64; }
 
 .glossary-term code {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   color: var(--text);
 }
 
 .glossary-plain {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--accent);
 }
 
 .glossary-meaning {
   flex: 1;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.55;
   color: var(--text-dim);
   white-space: pre-wrap;
@@ -3997,7 +4008,7 @@ circle.lane-7 { fill: #ff9e64; }
 }
 
 .compare-slot__label {
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   color: var(--text);
   max-width: 100%;
   overflow: hidden;
@@ -4006,7 +4017,7 @@ circle.lane-7 { fill: #ff9e64; }
 }
 
 .compare-slot__hint {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   direction: rtl; /* a path that does not fit should lose its start, not its name */
   text-align: left;
@@ -4051,7 +4062,7 @@ circle.lane-7 { fill: #ff9e64; }
 .compare-col__inner {
   min-width: max-content;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.45;
   padding: 4px 0;
 }
@@ -4066,7 +4077,7 @@ circle.lane-7 { fill: #ff9e64; }
 .compare-split {
   min-width: max-content;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.45;
   padding: 4px 0;
 }
@@ -4187,7 +4198,7 @@ circle.lane-7 { fill: #ff9e64; }
   background: var(--bg-active);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   outline: none;
 }
 
@@ -4203,7 +4214,7 @@ circle.lane-7 { fill: #ff9e64; }
   background: var(--bg-active);
   color: var(--text-faint);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -4215,7 +4226,7 @@ circle.lane-7 { fill: #ff9e64; }
 .search-status {
   flex: none;
   padding: 5px 12px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   border-bottom: 1px solid var(--border);
 }
@@ -4242,7 +4253,7 @@ circle.lane-7 { fill: #ff9e64; }
   background: none;
   color: var(--text-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   text-align: left;
   cursor: pointer;
   min-width: 0;
@@ -4266,7 +4277,7 @@ circle.lane-7 { fill: #ff9e64; }
 
 .search-file__count {
   flex: none;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
   background: rgba(255, 255, 255, 0.06);
   border-radius: var(--radius-lg);
@@ -4283,7 +4294,7 @@ circle.lane-7 { fill: #ff9e64; }
   background: none;
   color: var(--text-dim);
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-text, 1));
   text-align: left;
   cursor: pointer;
   min-width: 0;
@@ -4335,14 +4346,14 @@ circle.lane-7 { fill: #ff9e64; }
 }
 
 .ports-title {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-faint);
 }
 
 .ports-status {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -4357,7 +4368,7 @@ circle.lane-7 { fill: #ff9e64; }
   padding: 24px 16px;
   text-align: center;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .ports-pane-row {
@@ -4371,7 +4382,7 @@ circle.lane-7 { fill: #ff9e64; }
   background: none;
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   text-align: left;
   cursor: pointer;
   min-width: 0;
@@ -4412,7 +4423,7 @@ circle.lane-7 { fill: #ff9e64; }
   flex: 1;
   min-width: 0;
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4421,7 +4432,7 @@ circle.lane-7 { fill: #ff9e64; }
 .ports-pid {
   flex: none;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -4429,7 +4440,7 @@ circle.lane-7 { fill: #ff9e64; }
 .ports-port {
   flex: none;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   border-radius: var(--radius-sm);
@@ -4444,7 +4455,7 @@ circle.lane-7 { fill: #ff9e64; }
   background: var(--bg-active);
   color: var(--text-faint);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
   opacity: 0;
 }
@@ -4465,7 +4476,7 @@ circle.lane-7 { fill: #ff9e64; }
 .ports-held-head {
   padding: 8px 12px 4px;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 .ports-held-row {
@@ -4481,7 +4492,7 @@ circle.lane-7 { fill: #ff9e64; }
   background: var(--bg-active);
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -4500,7 +4511,7 @@ circle.lane-7 { fill: #ff9e64; }
   flex: none;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.45;
   color: var(--text-faint);
 }
@@ -4527,7 +4538,7 @@ circle.lane-7 { fill: #ff9e64; }
   align-items: flex-start;
   gap: 10px;
   color: var(--text-faint);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
 }
 
 /* The formatting-as-you-type view: one editable surface where the markup stays
@@ -4541,7 +4552,7 @@ circle.lane-7 { fill: #ff9e64; }
   padding: 16px 20px;
   outline: none;
   color: var(--text);
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--ui-text, 1));
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -4644,7 +4655,7 @@ circle.lane-7 { fill: #ff9e64; }
 [data-mode='json'] .md-editor,
 [data-mode='text'] .md-editor {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-text, 1));
   line-height: 1.55;
 }
 
@@ -4752,7 +4763,7 @@ circle.lane-7 { fill: #ff9e64; }
   text-align: right;
   color: var(--text-faint);
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   user-select: none;
   pointer-events: none;
 }
@@ -4794,7 +4805,7 @@ circle.lane-7 { fill: #ff9e64; }
 .editor-conflict__text {
   flex: 1;
   min-width: 220px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   color: var(--text);
 }
 
@@ -4812,7 +4823,7 @@ circle.lane-7 { fill: #ff9e64; }
   flex: 1;
   min-width: 0;
   padding: 3px 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .find-input.find-miss {
@@ -4821,7 +4832,7 @@ circle.lane-7 { fill: #ff9e64; }
 
 .find-count {
   flex: none;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   min-width: 5.5em;
   text-align: right;
@@ -4848,7 +4859,7 @@ circle.lane-7 { fill: #ff9e64; }
 
 .csv-table {
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   font-family: 'Cascadia Mono', Consolas, monospace;
 }
 
@@ -4887,7 +4898,7 @@ thead .csv-cell {
 
 .csv-note {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   padding: 8px 4px 0;
 }
 
@@ -4897,7 +4908,7 @@ thead .csv-cell {
   overflow: auto;
   padding: 12px 16px;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.5;
   user-select: text;
 }
@@ -4951,7 +4962,7 @@ thead .csv-cell {
    nothing is wrong — and coloured only when something is. */
 .notes-status {
   flex: none;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   letter-spacing: 0.01em;
 }
@@ -5000,7 +5011,7 @@ thead .csv-cell {
 
 .notes-hint {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   margin: 0;
 }
 
@@ -5018,7 +5029,7 @@ thead .csv-cell {
   background: var(--bg);
   color: var(--text);
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-text, 1));
   line-height: 1.6;
   tab-size: 2;
 }
@@ -5042,7 +5053,7 @@ thead .csv-cell {
 /* The waiting-for-you button lives with Settings: both are app-wide, neither
    belongs to the workspace you happen to be looking at. */
 #open-inbox .inbox-glyph {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   flex: none;
 }
 
@@ -5056,7 +5067,7 @@ thead .csv-cell {
 
 .inbox-count {
   margin-left: auto;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   background: var(--danger);
   color: #fff;
@@ -5083,14 +5094,14 @@ thead .csv-cell {
 
 .sidebar-usage.muted {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 .usage-row {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -5120,7 +5131,7 @@ thead .csv-cell {
   padding: 0;
   color: var(--text-faint);
   font: inherit;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
@@ -5189,14 +5200,14 @@ thead .csv-cell {
 
 .sidebar-system.muted {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 .system-row {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -5261,7 +5272,7 @@ thead .csv-cell {
   background: none;
   color: var(--text-faint);
   font: inherit;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
@@ -5314,13 +5325,13 @@ thead .csv-cell {
 }
 
 .toast-title {
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   font-weight: 600;
   margin-bottom: 2px;
 }
 
 .toast-body {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5384,7 +5395,7 @@ thead .csv-cell {
 }
 
 .workspace-branch {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5521,7 +5532,7 @@ thead .csv-cell {
   padding: 6px 10px;
   background: var(--bg-raised);
   border-top: 2px solid var(--danger);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .pane-blocked__reason {
@@ -5541,7 +5552,7 @@ thead .csv-cell {
   background: var(--bg-hover);
   color: var(--text);
   cursor: pointer;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .pane-blocked__choice:hover {
@@ -5555,7 +5566,7 @@ thead .csv-cell {
 .pane-blocked__sent {
   flex: none;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 /* ------------------------------------------------------------ notifications */
@@ -5603,7 +5614,7 @@ thead .csv-cell {
   border-radius: var(--radius);
   background: var(--warn);
   color: #141414;
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-text, 1));
   font-weight: 700;
   line-height: 14px;
   text-align: center;
@@ -5636,7 +5647,7 @@ thead .csv-cell {
 
 .notif-head h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
 }
 
 .notif-head-actions {
@@ -5646,7 +5657,7 @@ thead .csv-cell {
 
 .notif-head-actions .btn {
   padding: 3px 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 .notif-list {
@@ -5659,7 +5670,7 @@ thead .csv-cell {
   margin: 0;
   padding: 24px 12px;
   text-align: center;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -5692,19 +5703,19 @@ thead .csv-cell {
 }
 
 .notif-title {
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   font-weight: 600;
   color: var(--text);
 }
 
 .notif-when {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
   flex: none;
 }
 
 .notif-body {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5712,7 +5723,7 @@ thead .csv-cell {
 }
 
 .notif-where {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -5720,7 +5731,7 @@ thead .csv-cell {
   margin: 0;
   padding: 8px 12px;
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -5796,7 +5807,7 @@ thead .csv-cell {
   width: 100%;
   padding: 6px 10px;
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   text-align: left;
   color: var(--text-dim);
   overflow: hidden;
@@ -5850,7 +5861,7 @@ thead .csv-cell {
 
 .theme-hint {
   margin: 10px 0 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -5872,7 +5883,7 @@ thead .csv-cell {
 
 .theme-group h4 {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -5905,7 +5916,7 @@ thead .csv-cell {
 
 .color-label {
   flex: 1;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5915,7 +5926,7 @@ thead .csv-cell {
   width: 90px;
   flex: none;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   padding: 3px 6px;
 }
 
@@ -5948,7 +5959,7 @@ thead .csv-cell {
   display: grid;
   place-items: center;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   flex: none;
 }
 
@@ -5962,7 +5973,7 @@ thead .csv-cell {
   min-width: 0;
   height: 22px;
   padding: 0 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-family: 'Cascadia Mono', Consolas, monospace;
 }
 
@@ -5977,7 +5988,7 @@ thead .csv-cell {
   height: 22px;
   /* Room on the right for the clear button to sit inside the field. */
   padding: 0 22px 0 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 .files-filter-clear {
@@ -5991,7 +6002,7 @@ thead .csv-cell {
   border-radius: var(--radius-sm);
   background: none;
   color: var(--text-faint);
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-text, 1));
   line-height: 1;
   cursor: pointer;
 }
@@ -6020,7 +6031,7 @@ thead .csv-cell {
 .files-crumb {
   padding: 2px 4px;
   border-radius: var(--radius-sm);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-dim);
   flex: none;
 }
@@ -6036,7 +6047,7 @@ thead .csv-cell {
 
 .files-crumb-sep {
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   flex: none;
 }
 
@@ -6055,7 +6066,7 @@ thead .csv-cell {
   padding-right: 6px;
   padding-left: 4px;
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   cursor: default;
   white-space: nowrap;
 }
@@ -6132,7 +6143,7 @@ thead .csv-cell {
   min-width: 0;
   height: 18px;
   padding: 0 4px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
 }
 
 .files-row.dir .files-name {
@@ -6142,7 +6153,7 @@ thead .csv-cell {
 .files-twisty {
   width: 10px;
   flex: none;
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-text, 1));
   color: var(--text-faint);
   text-align: center;
 }
@@ -6160,7 +6171,7 @@ thead .csv-cell {
 .files-date {
   flex: none;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-family: 'Cascadia Mono', Consolas, monospace;
   text-align: right;
   overflow: hidden;
@@ -6179,7 +6190,7 @@ thead .csv-cell {
   flex: none;
   width: 13px;
   text-align: center;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   font-weight: 700;
   font-family: 'Cascadia Mono', Consolas, monospace;
 }
@@ -6199,7 +6210,7 @@ thead .csv-cell {
 .files-empty {
   margin: 0;
   padding: 16px 10px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
   text-align: center;
 }
@@ -6281,7 +6292,7 @@ html.translucent .titlebar {
   border-bottom: 1px solid var(--border);
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: grab;
   user-select: none;
 }
@@ -6297,7 +6308,7 @@ html.translucent .titlebar {
 
 .pane-grip {
   flex: none;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   letter-spacing: -1px;
   opacity: 0.6;
 }
@@ -6314,7 +6325,7 @@ html.translucent .titlebar {
   min-width: 0;
   height: 17px;
   padding: 0 4px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
 }
 
 .pane-close {
@@ -6324,7 +6335,7 @@ html.translucent .titlebar {
   border-radius: var(--radius-sm);
   display: grid;
   place-items: center;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
   opacity: 0;
 }
@@ -6432,7 +6443,7 @@ html.translucent .titlebar {
   border-radius: var(--radius);
   background: transparent;
   color: var(--text-dim);
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-text, 1));
   line-height: 1;
   cursor: pointer;
 }
@@ -6458,7 +6469,7 @@ html.translucent .titlebar {
   background: var(--bg-input, var(--bg-hover));
   color: var(--text);
   font-family: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   outline: none;
 }
 
@@ -6495,7 +6506,7 @@ html.translucent .titlebar {
   border-radius: var(--radius);
   background: var(--bg);
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   display: none;
 }
 
@@ -6516,12 +6527,12 @@ html.translucent .titlebar {
 }
 
 .unavailable-title {
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   color: var(--text-dim);
 }
 
 .unavailable-body {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.5;
   max-width: 42ch;
   margin: 0 auto;
@@ -6542,7 +6553,7 @@ html.translucent .titlebar {
   background: transparent;
   color: var(--text-dim);
   font-family: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
@@ -6578,7 +6589,7 @@ html.translucent .titlebar {
   background: none;
   color: var(--text-dim);
   font: inherit;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-text, 1));
   padding: 2px 8px;
   border-radius: var(--radius);
   cursor: pointer;
@@ -6601,7 +6612,7 @@ html.translucent .titlebar {
 .images-status {
   margin-left: auto;
   color: var(--text-dim);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-text, 1));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6692,7 +6703,7 @@ html.translucent .titlebar {
   align-items: center;
   justify-content: center;
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   text-align: center;
   padding: 24px;
 }
@@ -6718,7 +6729,7 @@ html.translucent .titlebar {
 .images-single-name {
   flex: 1;
   color: var(--text-dim);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--ui-text, 1));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6809,7 +6820,7 @@ html.translucent .titlebar {
 
 .hunk-bar__note {
   flex: 1;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -6823,7 +6834,7 @@ html.translucent .titlebar {
   gap: 8px;
   padding: 4px 10px;
   background: var(--bg-active);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -6855,7 +6866,7 @@ html.translucent .titlebar {
 
 .hunk-body {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.5;
 }
 
@@ -6925,7 +6936,7 @@ html.translucent .titlebar {
 /* A patch there is nothing to tick in — binary, a rename, an untracked file. */
 .diff-note {
   padding: 8px 10px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.5;
   color: var(--text-faint);
   border-bottom: 1px solid var(--border);
@@ -6967,7 +6978,7 @@ html.translucent .titlebar {
 
 .diff-foot__undo-label {
   flex: 1 1 100%;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -6987,14 +6998,14 @@ html.translucent .titlebar {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--text-faint);
 }
 
 .history-search__field .text-input {
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   text-transform: none;
   letter-spacing: 0;
 }
@@ -7010,7 +7021,7 @@ html.translucent .titlebar {
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.5;
   color: var(--text-dim);
 }
@@ -7025,7 +7036,7 @@ html.translucent .titlebar {
   background: none;
   color: var(--text-dim);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -7051,7 +7062,7 @@ html.translucent .titlebar {
 
 .history-detail__filelist .history-link {
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   text-decoration: none;
 }
 
@@ -7073,13 +7084,13 @@ html.translucent .titlebar {
 
 .publish-say {
   margin: 0;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   line-height: 1.55;
   color: var(--text-dim);
 }
 
 .publish-note {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.5;
   color: var(--text-faint);
 }
@@ -7093,7 +7104,7 @@ html.translucent .titlebar {
   border: 1px solid var(--warn);
   background: color-mix(in srgb, var(--warn) 10%, transparent);
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1.5;
 }
 
@@ -7104,7 +7115,7 @@ html.translucent .titlebar {
 }
 
 .publish-field__label {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -7126,7 +7137,7 @@ html.translucent .titlebar {
   background: var(--bg-active);
   color: var(--text-dim);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   cursor: pointer;
 }
 
@@ -7149,7 +7160,7 @@ html.translucent .titlebar {
   padding: 0 4px;
   border-radius: 999px;
   color: var(--text-faint);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-text, 1));
   line-height: 1;
 }
 
@@ -7164,7 +7175,7 @@ html.translucent .titlebar {
   border-radius: 999px;
   background: #3fb950;
   color: #08170c;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
 }
 
 /* Left-aligned, with Close pinned to the far end.
@@ -7214,7 +7225,7 @@ html.translucent .titlebar {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   color: var(--text);
 }
 
@@ -7223,7 +7234,7 @@ html.translucent .titlebar {
 .git-progress__count {
   flex: none;
   font-family: 'Cascadia Mono', Consolas, monospace;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
 }
@@ -7372,7 +7383,7 @@ html.translucent .titlebar {
 .monitor-card__head h3 {
   margin: 0;
   flex: none;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text);
@@ -7386,7 +7397,7 @@ html.translucent .titlebar {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -7395,7 +7406,7 @@ html.translucent .titlebar {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-dim);
 }
 
@@ -7423,9 +7434,24 @@ html.translucent .titlebar {
   color: var(--danger);
 }
 
+/* A price and which way it went. Up and down are the two states people look
+   for, and "unchanged" is a third worth showing rather than leaving to look
+   like one of them. */
+.monitor-reading--up .monitor-reading__value {
+  color: var(--ok, #7ec87e);
+}
+
+.monitor-reading--down .monitor-reading__value {
+  color: var(--danger);
+}
+
+.monitor-reading--flat .monitor-reading__value {
+  color: var(--accent);
+}
+
 .monitor-note {
   margin: 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1.35;
   color: var(--text-faint);
 }
@@ -7525,7 +7551,7 @@ html.translucent .titlebar {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   min-width: 0;
 }
 
@@ -7554,7 +7580,7 @@ html.translucent .titlebar {
    Quieter than the line above because it is the slow-moving half — the rates
    change every sample and none of this changes in a year. */
 .monitor-disk__facts {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
   opacity: 0.85;
 }
@@ -7611,7 +7637,7 @@ html.translucent .titlebar {
     minmax(max-content, 1fr);
   align-items: baseline;
   gap: 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   min-width: 0;
 }
 
@@ -7758,7 +7784,7 @@ html.translucent .titlebar {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -7774,7 +7800,7 @@ html.translucent .titlebar {
   background: none;
   color: var(--text-faint);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1;
   cursor: pointer;
 }
@@ -7897,7 +7923,7 @@ html.translucent .titlebar {
   background: var(--bg-raised);
   color: var(--text-faint);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   line-height: 1;
   cursor: pointer;
   opacity: 0.55;
@@ -7999,7 +8025,7 @@ body.monitor-dragging .monitor-dock__body {
   /* A step above the labels around them and a step below the body's own size:
      the readings are what the panel is for, so they stay the largest thing in
      a block, but three of them have to fit across a 168px column. */
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-text, 1));
   /* Hard against the graph below it. The readings and the picture of those
      readings are one thing, and a six-pixel gutter made them read as two. */
   margin: 0;
@@ -8081,7 +8107,7 @@ body.monitor-dragging .monitor-dock__body {
 
 /* Only where the number is genuinely ambiguous alone — ram, vram. */
 .monitor-figure__label {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-text, 1));
   color: var(--text-faint);
 }
 
@@ -8274,7 +8300,7 @@ body.monitor-dragging .monitor-dock__body {
 
 .monitor-drive__name {
   min-width: 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   color: var(--text-dim);
   overflow: hidden;
   white-space: nowrap;
@@ -8309,7 +8335,7 @@ body.monitor-dragging .monitor-dock__body {
     minmax(0, var(--vol-value, max-content));
   align-items: baseline;
   gap: 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   margin-left: 3px;
   padding-left: 5px;
   border-left: 1px solid var(--border);
@@ -8407,7 +8433,7 @@ body.monitor-dragging .monitor-dock__body {
   background: none;
   color: var(--text-faint);
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-text, 1));
   line-height: 1;
   cursor: pointer;
   opacity: 0;

@@ -20,6 +20,10 @@ import {
   duplicateInterfaceTheme,
   duplicateTerminalTheme,
   isValidHex,
+  UI_FONT_FALLBACK,
+  UI_FONT_SIZE,
+  clampFontSize,
+  clampScale,
   type InterfaceTheme,
   type TerminalTheme,
 } from '../../shared/themes'
@@ -397,6 +401,46 @@ function shapeGroup(theme: InterfaceTheme): HTMLElement {
     )
   )
 
+  // A text field rather than a list of installed fonts. Enumerating them needs
+  // a permission prompt in Chromium and returns hundreds of names nobody wants
+  // to scroll, and the useful answer is usually one word typed from memory --
+  // with the rest of the stack after it for the machine that does not have it.
+  section.appendChild(
+    textField(
+      'Interface font',
+      'Everything except the terminals, which keep their own font in Settings. ' +
+        'A CSS font stack, so a comma-separated list falls back left to right: ' +
+        '“Inter, Segoe UI, sans-serif”. Blank uses the system font.',
+      theme.fontFamily ?? '',
+      UI_FONT_FALLBACK,
+      (value) => patch({ fontFamily: value.trim() || undefined })
+    )
+  )
+
+  section.appendChild(
+    numberField(
+      'Interface text size',
+      'Pixels. Terminals keep their own size in Settings.',
+      theme.fontSize ?? UI_FONT_SIZE,
+      9,
+      24,
+      0.5,
+      (value) => patch({ fontSize: clampFontSize(value) })
+    )
+  )
+
+  section.appendChild(
+    numberField(
+      'Interface size',
+      'Percent. Scales text, padding and controls together; terminals are left alone.',
+      Math.round((theme.uiScale ?? 1) * 100),
+      50,
+      200,
+      5,
+      (value) => patch({ uiScale: clampScale(value / 100) })
+    )
+  )
+
   // Its own control, not a consequence of the rounding above: see `workspaceDots`.
   section.appendChild(
     selectField(
@@ -412,6 +456,85 @@ function shapeGroup(theme: InterfaceTheme): HTMLElement {
   )
 
   return section
+}
+
+function numberField(
+  name: string,
+  hint: string,
+  value: number,
+  min: number,
+  max: number,
+  step: number,
+  onSet: (value: number) => void
+): HTMLElement {
+  const row = document.createElement('div')
+  row.className = 'field'
+
+  const label = document.createElement('div')
+  label.className = 'field-label'
+  const title = document.createElement('span')
+  title.className = 'name'
+  title.textContent = name
+  const note = document.createElement('span')
+  note.className = 'hint'
+  note.textContent = hint
+  label.append(title, note)
+
+  const input = document.createElement('input')
+  input.type = 'number'
+  input.value = String(value)
+  input.min = String(min)
+  input.max = String(max)
+  input.step = String(step)
+  // On `change`: repainting the app at every digit of "125" walks it through
+  // 1%, 12% and back.
+  input.addEventListener('change', () => {
+    const next = Number(input.value)
+    if (Number.isFinite(next)) onSet(next)
+  })
+
+  const control = document.createElement('div')
+  control.className = 'field-control'
+  control.appendChild(input)
+  row.append(label, control)
+  return row
+}
+
+function textField(
+  name: string,
+  hint: string,
+  value: string,
+  placeholder: string,
+  onSet: (value: string) => void
+): HTMLElement {
+  const row = document.createElement('div')
+  row.className = 'field'
+
+  const label = document.createElement('div')
+  label.className = 'field-label'
+  const title = document.createElement('span')
+  title.className = 'name'
+  title.textContent = name
+  const note = document.createElement('span')
+  note.className = 'hint'
+  note.textContent = hint
+  label.append(title, note)
+
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.value = value
+  input.placeholder = placeholder
+  input.spellcheck = false
+  // On `change`, not on every keystroke: a theme is saved on each patch, and
+  // half a font name applied letter by letter repaints the whole app into
+  // fonts nobody asked for on the way to the one they did.
+  input.addEventListener('change', () => onSet(input.value))
+
+  const control = document.createElement('div')
+  control.className = 'field-control'
+  control.appendChild(input)
+  row.append(label, control)
+  return row
 }
 
 function selectField(

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "ia_workspaces",
+  "outputfilename": "ia_workspaces",
+  "frontend:dir": "frontend",
+  "frontend:build": "node ../build.mjs",
+  "info": {
+    "productName": "ia_workspaces",
+    "productVersion": "1.1.0"
+  }
+}

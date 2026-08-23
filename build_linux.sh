@@ -18,9 +18,13 @@ set -uo pipefail
 cd "$(dirname "$0")"
 
 DO_CLEAN=0
+ASSUME_YES=0
+WANT_HOSTS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --clean)   DO_CLEAN=1; shift ;;
+    --yes|-y)  ASSUME_YES=1; shift ;;
+    --hosts)   WANT_HOSTS=1; shift ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1"; exit 1 ;;
   esac
@@ -33,6 +37,37 @@ echo
 fail() { echo "[x] $1"; exit 1; }
 
 command -v npm >/dev/null 2>&1 || fail "npm not found on PATH. Nothing can be built without it."
+
+# ---------------------------------------------------------------- which hosts
+# Three runtimes now: Electron, the Tauri host (Rust) and the Wails host (Go).
+# Enter takes the default, which is yes. --yes skips the asking, and so does a
+# run with no terminal attached, so CI builds everything without being told.
+DO_ELECTRON=1
+# The parked hosts are off unless --hosts asks for them: they are kept in the
+# tree and not developed. See src-tauri/README.md.
+DO_TAURI=0
+DO_WAILS=0
+
+ask() {
+  local reply=""
+  if [[ $ASSUME_YES -eq 0 && -t 0 ]]; then
+    read -r -p "$1 [Y/n] " reply
+  fi
+  case "$reply" in
+    [nN]*) printf -v "$2" '%s' 0 ;;
+    *) printf -v "$2" '%s' 1 ;;
+  esac
+}
+
+if [[ $WANT_HOSTS -eq 1 ]]; then
+  DO_TAURI=1
+  DO_WAILS=1
+  ask "Build the Electron host?" DO_ELECTRON
+  ask "Build the Tauri host (Rust, parked)?" DO_TAURI
+  ask "Build the Wails host (Go, parked)?" DO_WAILS
+fi
+[[ $DO_ELECTRON -eq 1 || $DO_TAURI -eq 1 || $DO_WAILS -eq 1 ]] || fail "nothing selected — nothing to build"
+
 
 if [[ $DO_CLEAN -eq 1 ]]; then
   echo "[*] cleaning out/"
@@ -50,8 +85,32 @@ npm test || fail "tests failed — fix them before building a release"
 echo "[*] bundling"
 node build.mjs || fail "bundle failed"
 
-echo "[*] packaging (AppImage + unpacked tree)"
-npx electron-builder --linux || fail "packaging failed"
+if [[ $DO_ELECTRON -eq 1 ]]; then
+  echo "[*] packaging (AppImage + unpacked tree)"
+  npx electron-builder --linux || fail "packaging failed"
+fi
+
+# The Rust host, then the Go one. Each builds the renderer itself through its
+# own config, so there is nothing to bundle first, and a missing toolchain is a
+# skip rather than a failure — the Electron artifact is the one people download.
+if [[ $DO_TAURI -eq 1 ]]; then
+  if command -v cargo >/dev/null 2>&1; then
+    echo "[*] packaging Tauri"
+    node build.mjs --hosts && npx --yes @tauri-apps/cli@2 build || fail "the Tauri build failed"
+  else
+    echo "[!] cargo not found — skipping the Tauri host"
+  fi
+fi
+
+if [[ $DO_WAILS -eq 1 ]]; then
+  if command -v wails3 >/dev/null 2>&1; then
+    echo "[*] packaging Wails"
+    wails3 build || fail "the Wails build failed"
+  else
+    echo "[!] wails3 not found — go install github.com/wailsapp/wails/v3/cmd/wails3@latest"
+  fi
+fi
+
 
 # ---------------------------------------------------------------- installer
 # An archive with an install script beside the AppImage, and they answer

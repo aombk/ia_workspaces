@@ -11,6 +11,9 @@ const launchElectron = args.includes('--electron')
 
 // Everything intermediate lives under out/; only finished artifacts reach build/.
 const electronOut = path.join(root, 'out', 'electron')
+// Where the Rust host's copy of the renderer lands. `src-tauri/tauri.conf.json`
+// points its `frontendDist` here.
+const tauriOut = path.join(root, 'out', 'tauri')
 
 const common = {
   bundle: true,
@@ -87,10 +90,28 @@ const electronTargets = [
   },
 ]
 
+// The same renderer, bundled for the parked hosts. Only with `--hosts`: they
+// are kept, not developed, and a second copy of a 1.6 MB bundle on every build
+// is a cost the host that ships should not pay. See src-tauri/README.md.
+if (process.argv.includes('--hosts')) {
+  electronTargets.push({
+    ...common,
+    entryPoints: [path.join(root, 'src/renderer/entry.tauri.ts')],
+    outfile: path.join(tauriOut, 'renderer/renderer.js'),
+    platform: 'browser',
+    format: 'iife',
+    target: 'chrome130',
+    loader: { '.ttf': 'dataurl', '.woff2': 'dataurl' },
+  })
+}
+
 async function copyStatic() {
   const html = await readFile(path.join(root, 'src/renderer/index.html'), 'utf8')
-  await mkdir(path.join(electronOut, 'renderer'), { recursive: true })
-  await writeFile(path.join(electronOut, 'renderer/index.html'), html)
+  const outputs = process.argv.includes('--hosts') ? [electronOut, tauriOut] : [electronOut]
+  for (const out of outputs) {
+    await mkdir(path.join(out, 'renderer'), { recursive: true })
+    await writeFile(path.join(out, 'renderer/index.html'), html)
+  }
 }
 
 /**

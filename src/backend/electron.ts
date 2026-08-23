@@ -105,6 +105,7 @@ export function createElectronBackend(): Backend {
     timeSpans: () => api.timeSpans(),
     systemStats: (opts) => api.systemStats(opts),
     weather: (req) => api.weather(req),
+    crypto: (req) => api.crypto(req),
     gitStatus: (cwd) => api.gitStatus(cwd),
     isDirectory: (dir) => api.isDirectory(dir),
     files: {

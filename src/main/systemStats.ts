@@ -49,7 +49,7 @@ import { existsSync } from 'node:fs'
 import { readFile, readdir, statfs } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { readLhm, type LhmBattery, type LhmDisk } from './lhm'
+import { readLhm, type LhmBattery, type LhmDisk, type LhmGpuMemory } from './lhm'
 import type {
   AppFootprint,
   AppProcessGroup,
@@ -465,6 +465,8 @@ interface SlowProbe {
   memory: MemoryDetail
   /** Battery detail from a sensor source, which the platform probe has no way to get. */
   battery: LhmBattery | null
+  /** What a sensor source says the graphics card's memory is doing. */
+  gpuMemory: LhmGpuMemory | null
   sources: { diskIo: string | null; health: string | null; temperature: string | null; temperatureNote: string | null }
 }
 
@@ -483,6 +485,7 @@ const EMPTY_SLOW: SlowProbe = {
   temperatures: [],
   memory: NO_MEMORY_DETAIL,
   battery: null,
+  gpuMemory: null,
   sources: {
     diskIo: null,
     health: null,
@@ -582,6 +585,7 @@ async function windowsSlow(): Promise<SlowProbe> {
   // publishes the drive sensors that WMI omits, and having both would list
   // every processor twice.
   probe.battery = lhm.battery
+  probe.gpuMemory = lhm.gpuMemory
 
   if (lhm.temperatures.length) {
     probe.temperatures = lhm.temperatures
@@ -716,6 +720,9 @@ export function parseWindowsSlow(stdout: string): SlowProbe {
     temperatures,
     memory,
     battery: null,
+    // Only Windows has a sensor source for this; elsewhere the card speaks
+    // for itself or not at all.
+    gpuMemory: null,
     sources: {
       diskIo: io.length ? 'Windows performance counters' : null,
       health: health.length ? 'Windows storage stack' : null,
@@ -770,6 +777,9 @@ async function linuxSlow(): Promise<SlowProbe> {
     temperatures: temps,
     memory: await linuxMemory(),
     battery: null,
+    // Only Windows has a sensor source for this; elsewhere the card speaks
+    // for itself or not at all.
+    gpuMemory: null,
     sources: {
       diskIo: io.length ? '/proc/diskstats' : null,
       health: health.length ? '/sys/block' : null,
@@ -990,6 +1000,9 @@ async function macSlow(): Promise<SlowProbe> {
     temperatures,
     memory,
     battery,
+    // Only Windows has a sensor source for this; elsewhere the card speaks
+    // for itself or not at all.
+    gpuMemory: null,
     sources: {
       diskIo: io.length ? 'ioreg' : null,
       health: health.length ? 'diskutil' : null,
@@ -1830,6 +1843,20 @@ export async function readSystemStats(opts: { drives?: boolean } = {}): Promise<
           }))),
   ]
 
+  // `nvidia-smi` reports `memory.used` as 0 MiB on a laptop whose card is
+  // parked — which is not zero bytes in use, it is the tool declining to look.
+  // Where a sensor source asked the driver a different way and got an answer,
+  // that answer fills the gap rather than the panel showing 0 B of 8 GB.
+  const gpus = gpu.gpus.map((card, index) =>
+    index === 0 && slow.gpuMemory
+      ? {
+          ...card,
+          memoryUsed: card.memoryUsed || slow.gpuMemory.usedBytes,
+          memoryTotal: card.memoryTotal || slow.gpuMemory.totalBytes,
+        }
+      : card
+  )
+
   return {
     at,
     cpu,
@@ -1841,7 +1868,7 @@ export async function readSystemStats(opts: { drives?: boolean } = {}): Promise<
     health: slow.health,
     temperatures,
     networks: rates(probe.networks, at),
-    gpus: gpu.gpus,
+    gpus,
     thermalPressure: thermalPressure(),
     // The platform knows the percentage and the estimate; the sensor source
     // knows what the pack has lost to age and what it is drawing. Merged rather

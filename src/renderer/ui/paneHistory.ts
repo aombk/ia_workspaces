@@ -32,6 +32,7 @@
  * terminal rather than a preference about the app.
  */
 import { backend } from '../../backend'
+import { store } from '../state'
 import { commandsElsewhere, setCommandSource, watchRelay } from './relayMonitor'
 import type { HistoryEntry, ShellKind } from '../../shared/types'
 
@@ -89,14 +90,34 @@ let entries: HistoryEntry[] = []
 let fetched = 0
 let inFlight = false
 
-/** The scope this pane's Up arrow uses. Every pane starts on this machine. */
+/**
+ * The rings a pane can actually be set to.
+ *
+ * "Everywhere" is only a place commands can come from while the machines are
+ * sharing them, which is one setting and its passphrase. With sharing off that
+ * ring is not empty, it does not exist -- so the switch stops offering it,
+ * rather than offering a setting that shows nothing and never says why.
+ */
+export function availableScopes(): readonly HistoryScope[] {
+  return store.settings.shareCommands ? SCOPES : SCOPES.filter((s) => s !== 'everywhere')
+}
+
+/**
+ * The scope this pane's Up arrow uses. Every pane starts on this machine.
+ *
+ * A pane left on "everywhere" when sharing is switched off comes back to this
+ * machine rather than sitting on a ring with nothing in it.
+ */
 export function paneScope(paneId: string): HistoryScope {
-  return scopes.get(paneId) ?? 'machine'
+  const held = scopes.get(paneId) ?? 'machine'
+  return availableScopes().includes(held) ? held : 'machine'
 }
 
 /** The next ring out, wrapping. What the corner control does when clicked. */
 export function nextScope(scope: HistoryScope): HistoryScope {
-  return SCOPES[(SCOPES.indexOf(scope) + 1) % SCOPES.length]
+  const rings = availableScopes()
+  const at = rings.indexOf(scope)
+  return rings[(at + 1) % rings.length]
 }
 
 export function setPaneScope(paneId: string, scope: HistoryScope): void {

@@ -35,6 +35,7 @@ import type {
   NetworkStats,
   SystemStats,
   TemperatureStats,
+  CryptoReading,
   WeatherReading,
 } from '../shared/types'
 import { backend } from '../backend'
@@ -47,6 +48,7 @@ import {
   band,
   bytes,
   duration,
+  money,
   percent,
   rate,
   watchSystem,
@@ -104,6 +106,9 @@ export class MonitorPane implements AuxPane {
   /** The last weather answer, or null before the first. */
   private weather: WeatherReading | null = null
   private weatherTimer: ReturnType<typeof setInterval> | null = null
+  /** The last coin prices, or null before the first. */
+  private crypto: CryptoReading | null = null
+  private cryptoTimer: ReturnType<typeof setInterval> | null = null
   private disposed = false
 
   constructor(readonly paneId: string) {
@@ -144,7 +149,13 @@ export class MonitorPane implements AuxPane {
     refreshUsageNow(true)
 
     void this.refreshWeather()
+
+    void this.refreshCrypto()
     this.weatherTimer = setInterval(() => void this.refreshWeather(), 60_000)
+    // Slower than the weather, and slower still than the panel: the cache in
+    // the main process is two minutes deep, so asking more often only spends
+    // the round trip to find that out.
+    this.cryptoTimer = setInterval(() => void this.refreshCrypto(), 120_000)
   }
 
   private render(stats: SystemStats | null, history: SystemHistory): void {
@@ -178,6 +189,7 @@ export class MonitorPane implements AuxPane {
       temperatures: () => this.sensorsCard(stats),
       claude: () => this.claudeCard(),
       app: () => this.appCard(stats),
+      crypto: () => this.cryptoCard(),
       system: () => this.systemCard(stats),
       weather: () => this.weatherCard(),
       air: () => this.airCard(),
@@ -222,7 +234,14 @@ export class MonitorPane implements AuxPane {
       store.monitorBlocks.map((block) => ({
         label: block.label,
         checked: store.monitorShows(block.id),
-        onClick: () => store.setMonitorBlock(block.id, !store.monitorShows(block.id)),
+        onClick: () => {
+          const on = !store.monitorShows(block.id)
+          store.setMonitorBlock(block.id, on)
+          // Switching a block on is the moment it may ask for something: the
+          // two that leave this machine do nothing until then, so the first
+          // request is here rather than on a timer nobody started.
+          if (on && block.id === 'crypto') void this.refreshCrypto(true)
+        },
       }))
     )
   }
@@ -500,13 +519,24 @@ export class MonitorPane implements AuxPane {
         series: 'temp',
         title: 'Graphics temperature',
       },
+      // A percentage, like the machine's own memory beside it on the card
+      // above. `4.2 GB` says nothing without the card's size, which is the one
+      // number nobody carries in their head — and it is the figure the graph
+      // under this row has always drawn. The bytes are in the tooltip, where a
+      // number you look up once belongs.
       {
-        value: gpu.memoryUsed === null ? null : bytes(gpu.memoryUsed, 1),
-        empty: '-- GB',
+        value:
+          gpu.memoryUsed !== null && gpu.memoryTotal
+            ? `${percent(gpu.memoryUsed, gpu.memoryTotal).toFixed(0)}%`
+            : null,
+        empty: '--%',
         label: 'vram',
         series: 'memory',
         tone: gpu.memoryUsed !== null && gpu.memoryTotal ? band(percent(gpu.memoryUsed, gpu.memoryTotal)) : 'idle',
-        title: gpu.memoryTotal ? `of ${bytes(gpu.memoryTotal)}` : 'Graphics memory in use',
+        title:
+          gpu.memoryUsed !== null && gpu.memoryTotal
+            ? `${bytes(gpu.memoryUsed, 1)} of ${bytes(gpu.memoryTotal)} in use`
+            : 'Graphics memory in use',
       },
       { value: gpu.power === null ? null : `${gpu.power.toFixed(0)} W`, empty: '-- W', tone: 'idle', title: 'Power draw' },
     ])
@@ -1122,6 +1152,75 @@ export class MonitorPane implements AuxPane {
   }
 
   /**
+   * What the coins are doing.
+   *
+   * The other block that leaves this machine, and the same rules apply: it asks
+   * for nothing until it is switched on, and one request covers every coin.
+   *
+   * Each price is coloured by where it has been rather than by what it is,
+   * because a number of euros means nothing on its own and a direction means
+   * something at a glance: **green up, red down, and the accent colour for a
+   * price that has not moved.** Flat gets its own colour rather than the plain
+   * text one, so "unchanged" reads as a state somebody measured instead of a
+   * row the block forgot to colour.
+   */
+  private cryptoCard(): HTMLElement {
+    const reading = this.crypto
+    const coins = reading?.coins ?? []
+    const card = this.card('crypto', coins.length ? reading!.currency.toUpperCase() : 'nothing set')
+
+    if (!coins.length) {
+      card.appendChild(
+        this.note(
+          reading?.error === 'no-coins' || !store.settings.cryptoCoins.trim()
+            ? 'No coins listed. Settings -> Behaviour names which ones this shows.'
+            : reading?.error
+              ? `Prices could not be fetched: ${reading.error}`
+              : 'Asking...'
+        )
+      )
+      return card
+    }
+
+    for (const coin of coins) {
+      const change = coin.change24h
+      const tone = change === null ? 'idle' : change > 0 ? 'up' : change < 0 ? 'down' : 'flat'
+      const row = this.reading(coin.symbol.toLowerCase(), money(coin.price, reading!.currency), tone)
+      // The move itself in the tooltip rather than in a second column: the
+      // colour is the thing worth seeing from across the room, and the number
+      // behind it is what you look at once you have.
+      row.title =
+        change === null
+          ? 'No 24-hour change was reported'
+          : `${change > 0 ? '+' : ''}${change.toFixed(2)}% over 24 hours`
+      card.appendChild(row)
+    }
+
+    if (reading?.error) {
+      card.appendChild(this.note(`Last prices kept: ${reading.error}`))
+    }
+    return card
+  }
+
+  /**
+   * Asks for the prices, and only while the block is on.
+   */
+  private async refreshCrypto(force = false): Promise<void> {
+    if (this.disposed) return
+    if (!store.monitorShows('crypto')) return
+    try {
+      this.crypto = await backend().crypto({
+        coins: store.settings.cryptoCoins,
+        currency: store.settings.cryptoCurrency,
+      })
+    } catch {
+      // Leave the last answer up, the same way the weather does.
+      return
+    }
+    if (force && !this.disposed) this.render(latestSystem(), systemHistory())
+  }
+
+  /**
    * The weather where you said you are.
    *
    * One of the two blocks that leave this machine, so it does nothing at all
@@ -1382,7 +1481,7 @@ export class MonitorPane implements AuxPane {
   private reading(
     label: string,
     value: string | null,
-    tone: 'idle' | 'warn' | 'high' = 'idle',
+    tone: 'idle' | 'warn' | 'high' | 'up' | 'down' | 'flat' = 'idle',
     absent = 'Not available on this machine.'
   ): HTMLElement {
     const row = document.createElement('div')
@@ -1501,6 +1600,8 @@ export class MonitorPane implements AuxPane {
     this.unsubscribe = null
     if (this.weatherTimer) clearInterval(this.weatherTimer)
     this.weatherTimer = null
+    if (this.cryptoTimer) clearInterval(this.cryptoTimer)
+    this.cryptoTimer = null
   }
 }
 

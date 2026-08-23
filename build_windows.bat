@@ -35,13 +35,11 @@ rem  the two steps you would least want to skip. See tools\packWindows.mjs for
 rem  the measurements and for why the portable exe and the installer are now
 rem  built at the same time rather than one after the other.
 rem
-rem  This used to ask which runtimes to build, back when there were two. There
-rem  is one now: Tauri was dropped, because its browser pane was a native view
-rem  composited over the window with no z-order — it hid whenever a menu or a
-rem  toast was up — and keeping a second host meant maintaining twelve
-rem  subsystems twice, in two languages, for a four-megabyte binary nobody was
-rem  downloading. Nothing signs anything here; see build_macos.sh, where
-rem  Gatekeeper leaves no such choice.
+rem  Electron only, unless --hosts is passed. The Tauri and Wails hosts are kept
+rem  in the tree and not developed — see src-tauri\README.md — so a release build
+rem  should not spend minutes on them by default. With --hosts it asks about each
+rem  in turn, Enter for yes. Nothing signs anything here; see build_macos.sh,
+rem  where Gatekeeper leaves no such choice.
 rem ============================================================================
 
 cd /d "%~dp0"
@@ -57,8 +55,13 @@ where npm >nul 2>&1 || (
 
 set "FASTFLAG="
 set "PACKFLAGS="
+set "ASSUMEYES="
+set "WANTHOSTS="
 for %%a in (%*) do (
   if /i "%%~a"=="--fast" set "FASTFLAG=--fast"
+  if /i "%%~a"=="--yes" set "ASSUMEYES=1"
+  if /i "%%~a"=="-y" set "ASSUMEYES=1"
+  if /i "%%~a"=="--hosts" set "WANTHOSTS=1"
   rem The middle gear: skip the portable exe, which is eighty-five of the
   rem hundred seconds, and still get the installer most people actually use.
   if /i "%%~a"=="--no-portable" set "PACKFLAGS=--no-portable"
@@ -66,6 +69,29 @@ for %%a in (%*) do (
     echo [*] cleaning out\
     call node tools\clean.mjs
   )
+)
+
+rem Which hosts. Electron alone unless --hosts asks about the parked ones.
+set "DO_ELECTRON=y"
+set "DO_TAURI="
+set "DO_WAILS="
+if defined WANTHOSTS if not defined ASSUMEYES (
+  set "DO_TAURI=y"
+  set "DO_WAILS=y"
+  set /p "DO_ELECTRON=Build the Electron host? [Y/n] "
+  set /p "DO_TAURI=Build the Tauri host ^(Rust, parked^)? [Y/n] "
+  set /p "DO_WAILS=Build the Wails host ^(Go, parked^)? [Y/n] "
+)
+if defined WANTHOSTS if defined ASSUMEYES (
+  set "DO_TAURI=y"
+  set "DO_WAILS=y"
+)
+if /i "%DO_ELECTRON%"=="n" set "DO_ELECTRON="
+if /i "%DO_TAURI%"=="n" set "DO_TAURI="
+if /i "%DO_WAILS%"=="n" set "DO_WAILS="
+if not defined DO_ELECTRON if not defined DO_TAURI if not defined DO_WAILS (
+  echo [x] nothing selected — nothing to build
+  exit /b 1
 )
 
 if not exist "node_modules\" (
@@ -93,8 +119,27 @@ rem the rest of the range ships with, so one wizard, one publisher folder, one
 rem uninstall entry style across ia glitch, ia pixelCam and this. ISCC is not a
 rem dependency of the portable build, so a machine without it still produces the
 rem exe and is told what it did not produce, rather than failing the run.
-echo [*] packaging  (%TIME%)
-call node tools\packWindows.mjs %FASTFLAG% %PACKFLAGS% || goto :fail_build
+if defined DO_ELECTRON (
+  echo [*] packaging Electron  ^(%TIME%^)
+  call node tools\packWindows.mjs %FASTFLAG% %PACKFLAGS% || goto :fail_build
+)
+
+rem The Rust host. cargo builds the renderer through beforeBuildCommand, so
+rem there is nothing to bundle here first. Absent toolchain is a skip and not a
+rem failure: the Electron artifacts above are the ones people download.
+if defined DO_TAURI (
+  where cargo >nul 2>&1 && (
+    echo [*] packaging Tauri  ^(%TIME%^)
+    call node build.mjs --hosts && call npx --yes @tauri-apps/cli@2 build || goto :fail_build
+  ) || echo [!] cargo not found — skipping the Tauri host
+)
+
+if defined DO_WAILS (
+  where wails3 >nul 2>&1 && (
+    echo [*] packaging Wails  ^(%TIME%^)
+    call wails3 build || goto :fail_build
+  ) || echo [!] wails3 not found — go install github.com/wailsapp/wails/v3/cmd/wails3@latest
+)
 
 rem `^(` and `^)`, not `(` and `)`. Everything in a parenthesised block is
 rem expanded when the block is *parsed*, so an unescaped `(%TIME%)` becomes

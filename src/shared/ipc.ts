@@ -80,6 +80,7 @@ export const IPC = {
   timeSpans: 'time:spans',
   systemStats: 'app:systemStats',
   weather: 'app:weather',
+  crypto: 'app:crypto',
   gitStatus: 'git:status',
   isDirectory: 'files:isDirectory',
   createDirectory: 'files:createDirectory',

@@ -35,6 +35,7 @@ import type {
   GitProgress,
   HistoryFilter,
   HostTool,
+  CryptoReading,
   WeatherReading,
   WeatherRequest,
   LatestReleaseResult,
@@ -208,6 +209,8 @@ const api = {
   systemStats: (opts?: { drives?: boolean }): Promise<SystemStats> =>
     ipcRenderer.invoke(IPC.systemStats, opts),
   weather: (req: WeatherRequest): Promise<WeatherReading> => ipcRenderer.invoke(IPC.weather, req),
+  crypto: (req: { coins: string; currency: string }): Promise<CryptoReading> =>
+    ipcRenderer.invoke(IPC.crypto, req),
   gitStatus: (cwd: string): Promise<GitStatusMap> => ipcRenderer.invoke(IPC.gitStatus, cwd),
   isDirectory: (dir: string): Promise<boolean> => ipcRenderer.invoke(IPC.isDirectory, dir),
   files: {

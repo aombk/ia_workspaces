@@ -14,7 +14,7 @@ import { store, tabLabel } from '../state'
 import type { HistoryEntry, VaultEntry } from '../../shared/types'
 import { showGlossary } from './gitWord'
 import { commandsElsewhere } from './relayMonitor'
-import { SCOPES, nextScope, type HistoryScope } from './paneHistory'
+import { SCOPES, availableScopes, nextScope, type HistoryScope } from './paneHistory'
 import type { UiActions } from './actions'
 
 interface Command {
@@ -201,6 +201,9 @@ export async function showHistory(): Promise<void> {
   // also what "this pane" means, for the same reason.
   historyPane = store.activePane
   if (!historyPane) historyScope = 'machine'
+  // The sticky scope can outlive the setting that made it possible: sharing
+  // switched off between two openings leaves this on a slice with nothing in it.
+  if (!availableScopes().includes(historyScope)) historyScope = 'machine'
 
   // Every count, before anything is dropped, so each button says how much is
   // behind it. The useful question when a list looks short is "is that all of
@@ -309,9 +312,16 @@ function renderScope(counts: Record<HistoryScope, number>): void {
     el.type = 'button'
     el.className = 'palette-scope__btn' + (historyScope === scope ? ' on' : '')
     el.textContent = `${SCOPE_LABELS[scope]} (${counts[scope]})`
-    // Greyed rather than removed when there is no pane to mean, which says why
-    // it cannot be picked instead of leaving somebody to wonder where it went.
-    el.disabled = scope === 'terminal' && !historyPane
+    // Greyed and struck through rather than removed, in both cases, which says
+    // why a slice cannot be picked instead of leaving somebody to wonder where
+    // it went: no pane to mean, or the machines are not sharing commands.
+    const shared = availableScopes().includes(scope)
+    el.disabled = (scope === 'terminal' && !historyPane) || !shared
+    if (!shared) {
+      el.title = 'Switch on “Share the commands you run between machines” in Settings first.'
+    } else if (el.disabled) {
+      el.title = 'No terminal was focused when this opened.'
+    }
     el.addEventListener('click', () => {
       if (historyScope === scope) return
       historyScope = scope

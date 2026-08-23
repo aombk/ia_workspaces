@@ -8,6 +8,8 @@ import {
   findInterfaceTheme,
   findTerminalTheme,
   roundnessOf,
+  UI_FONT_FALLBACK,
+  UI_FONT_SIZE,
   DEFAULT_MONITOR,
   type InterfaceTheme,
   type TerminalTheme,
@@ -135,6 +137,14 @@ export function applyChrome(theme: InterfaceTheme): void {
   root.style.setProperty('--mon-load', monitor.load)
   root.style.setProperty('--mon-memory', monitor.memory)
   root.style.setProperty('--mon-temp', monitor.temp)
+
+  // The interface's own lettering. Terminals are untouched by this: their font
+  // is a setting of its own, for a reason — see `InterfaceTheme.fontFamily`.
+  root.style.setProperty('--ui-font', theme.fontFamily?.trim() || UI_FONT_FALLBACK)
+  // A multiplier, not a size: every rule in the stylesheet is `calc(Npx * this)`
+  // so the hints stay smaller than the labels at any setting.
+  root.style.setProperty('--ui-text', String((theme.fontSize ?? UI_FONT_SIZE) / UI_FONT_SIZE))
+  root.style.setProperty('--ui-scale', String(theme.uiScale ?? 1))
 
   root.style.setProperty('--opacity', String(opacity))
   // The page itself must stop painting, or there is nothing for the terminal's

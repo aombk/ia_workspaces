@@ -271,6 +271,26 @@ export function rate(value: number | null | undefined): string {
   return `${bytes(value, value >= 1024 * 1024 ? 1 : 0)}/s`
 }
 
+/**
+ * A price, with the currency's own symbol where it has one.
+ *
+ * Two decimals under a thousand and none above it: `44.36` matters on a coin
+ * worth forty euros and `65,549` is what matters on one worth sixty-five
+ * thousand, where the cents are noise wider than the daily move.
+ */
+export function money(value: number, currency: string): string {
+  const symbol = SYMBOLS[currency.toLowerCase()] ?? ''
+  const digits = Math.abs(value) >= 1000 ? 0 : 2
+  const shown = value.toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+  return symbol ? `${shown} ${symbol}` : `${shown} ${currency.toUpperCase()}`
+}
+
+/** The few worth a glyph. Anything else is shown as its three letters. */
+const SYMBOLS: Record<string, string> = { eur: '€', usd: '$', gbp: '£', jpy: '¥' }
+
 export function duration(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '—'
   const days = Math.floor(seconds / 86400)

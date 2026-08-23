@@ -1217,6 +1217,26 @@ export interface AirQuality {
 }
 
 /** What to ask, and of whom. */
+/** One coin's price, and how it has moved. */
+export interface CoinPrice {
+  /** CoinGecko's id, which is what was asked for. */
+  id: string
+  /** The ticker, which is what goes on screen. */
+  symbol: string
+  price: number
+  /** Percent over 24 hours, or null where the source did not say. */
+  change24h: number | null
+}
+
+export interface CryptoReading {
+  coins: CoinPrice[]
+  /** The currency the prices are in, lower case as the API wants it. */
+  currency: string
+  at: number
+  /** Why there is nothing, when there is nothing. */
+  error?: string
+}
+
 export interface WeatherRequest {
   provider: WeatherProvider
   lat: number
@@ -1445,6 +1465,16 @@ export interface Settings {
    * Electron accepts it. Changing it needs a restart, and the setting says so.
    */
   useSoftwareRendering: boolean
+  /**
+   * Which coins the crypto block shows, and in what.
+   *
+   * Written the way people talk — `btc, eth, ltc` — and turned into the ids the
+   * API wants in `parseCoins`, which also passes anything it does not recognise
+   * straight through so an unusual coin still works.
+   */
+  cryptoCoins: string
+  /** Three letters: `eur`, `usd`, `gbp`. Whatever CoinGecko will quote in. */
+  cryptoCurrency: string
   /** Folder a workspace created from the + button starts in. Blank = home. */
   newWorkspaceDir: string
   /**
@@ -1827,6 +1857,7 @@ export const MONITOR_BLOCKS = [
   // is always "how much of that is you", and answering it anywhere else would
   // be this panel declining to measure the one process it is inside.
   { id: 'app', label: 'this app’s own processes' },
+  { id: 'crypto', label: 'crypto prices' },
   { id: 'system', label: 'battery and uptime' },
   { id: 'weather', label: 'weather' },
   { id: 'air', label: 'air quality' },
@@ -2358,6 +2389,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // user chose — the setting explains the trade and the memory it gives back.
   idleAgentRelease: 0,
   useSoftwareRendering: false,
+  cryptoCoins: 'btc, eth, ltc',
+  cryptoCurrency: 'eur',
   // Blank means the home folder, which is the only sensible default on a
   // machine we know nothing about.
   newWorkspaceDir: '',

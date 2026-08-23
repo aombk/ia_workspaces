@@ -28,6 +28,7 @@ await build({
     sparkline: 'src/renderer/ui/sparkline.ts',
     lhm: 'src/main/lhm.ts',
     sensors: 'src/shared/sensors.ts',
+    crypto: 'src/main/crypto.ts',
     weather: 'src/main/weather.ts',
   },
   bundle: true,
@@ -54,6 +55,7 @@ const {
 } = await import(`file://${out}/systemStats.js`)
 const { parseLhm, parseValue, parseBytes } = await import(`file://${out}/lhm.js`)
 const { cpuTemperature } = await import(`file://${out}/sensors.js`)
+const { parseCoins } = await import(`file://${out}/crypto.js`)
 const { parseOpenMeteo, parseOpenMeteoAir, parseOwm, parseOwmAir, readWeather } = await import(
   `file://${out}/weather.js`
 )
@@ -927,6 +929,17 @@ test('Intel headroom is not mistaken for a temperature', () => {
   const temps = parseLhm(tree).temperatures
   assert.deepEqual(temps.map((t) => t.name), ['CPU Package'])
   assert.equal(cpuTemperature(temps).celsius, 45)
+})
+
+test('coins are written the way people say them, and unknown ones still work', () => {
+  // The setting is a sentence, not an API payload: "btc, eth" has to reach
+  // CoinGecko as ids it recognises, and a coin nobody thought to list has to
+  // keep working for whoever knows what it is called.
+  assert.deepEqual(parseCoins('btc, eth, ltc').map((c) => c.id), ['bitcoin', 'ethereum', 'litecoin'])
+  assert.deepEqual(parseCoins('BTC ETH').map((c) => c.symbol), ['BTC', 'ETH'])
+  assert.deepEqual(parseCoins('bitcoin, btc').map((c) => c.id), ['bitcoin'], 'the same coin twice is once')
+  assert.deepEqual(parseCoins('pepe').map((c) => c), [{ id: 'pepe', symbol: 'PEPE' }])
+  assert.deepEqual(parseCoins('   '), [])
 })
 
 test('a comma decimal separator is read as a decimal, not truncated', () => {

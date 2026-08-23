@@ -60,10 +60,14 @@ NOTARY_PROFILE="${NOTARYTOOL_PROFILE:-notar}"
 
 DO_SIGN=1
 DO_CLEAN=0
+ASSUME_YES=0
+WANT_HOSTS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-sign|--test) DO_SIGN=0; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    --hosts)  WANT_HOSTS=1; shift ;;
     --clean)          DO_CLEAN=1; shift ;;
     -h|--help)        sed -n '2,43p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1"; exit 1 ;;
@@ -78,6 +82,38 @@ fail() { echo "[x] $1"; exit 1; }
 
 [[ "$(uname)" == "Darwin" ]] || fail "this script is for macOS; use build_linux.sh or build_windows.bat"
 command -v npm >/dev/null 2>&1 || fail "npm not found on PATH. Nothing can be built without it."
+
+# ---------------------------------------------------------------- which hosts
+# Three runtimes now: Electron, the Tauri host (Rust) and the Wails host (Go).
+# Enter takes the default, which is yes. --yes skips the asking, as does a run
+# with no terminal attached. Only the Electron artifacts are signed and
+# notarized below; the other two are unsigned and Gatekeeper will say so.
+DO_ELECTRON=1
+# The parked hosts are off unless --hosts asks for them: they are kept in the
+# tree and not developed. See src-tauri/README.md.
+DO_TAURI=0
+DO_WAILS=0
+
+ask() {
+  local reply=""
+  if [[ $ASSUME_YES -eq 0 && -t 0 ]]; then
+    read -r -p "$1 [Y/n] " reply
+  fi
+  case "$reply" in
+    [nN]*) printf -v "$2" '%s' 0 ;;
+    *) printf -v "$2" '%s' 1 ;;
+  esac
+}
+
+if [[ $WANT_HOSTS -eq 1 ]]; then
+  DO_TAURI=1
+  DO_WAILS=1
+  ask "Build the Electron host?" DO_ELECTRON
+  ask "Build the Tauri host (Rust, parked)?" DO_TAURI
+  ask "Build the Wails host (Go, parked)?" DO_WAILS
+fi
+[[ $DO_ELECTRON -eq 1 || $DO_TAURI -eq 1 || $DO_WAILS -eq 1 ]] || fail "nothing selected — nothing to build"
+
 
 # ------------------------------------------------------------------ preflight
 # Two ways the packaging step dies an hour in, with a message that names neither
@@ -183,7 +219,28 @@ echo "[*] node-pty prebuilds (universal needs both architectures)"
 node tools/ensurePtyArches.mjs || fail "could not assemble the node-pty prebuilds"
 
 echo "[*] packaging (universal dmg — runs on Apple Silicon and Intel)"
-npx electron-builder --mac || fail "packaging failed"
+if [[ $DO_ELECTRON -eq 1 ]]; then
+  npx electron-builder --mac || fail "packaging failed"
+fi
+
+# The other two hosts, unsigned. A missing toolchain is a skip, not a failure.
+if [[ $DO_TAURI -eq 1 ]]; then
+  if command -v cargo >/dev/null 2>&1; then
+    echo "[*] packaging Tauri"
+    node build.mjs --hosts && npx --yes @tauri-apps/cli@2 build || fail "the Tauri build failed"
+  else
+    echo "[!] cargo not found — skipping the Tauri host"
+  fi
+fi
+
+if [[ $DO_WAILS -eq 1 ]]; then
+  if command -v wails3 >/dev/null 2>&1; then
+    echo "[*] packaging Wails"
+    wails3 build || fail "the Wails build failed"
+  else
+    echo "[!] wails3 not found — go install github.com/wailsapp/wails/v3/cmd/wails3@latest"
+  fi
+fi
 
 # Before the .pkg is cut and long before anything is notarized, because both of
 # those would happily wrap a bundle that only runs on this machine's

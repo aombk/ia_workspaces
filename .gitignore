@@ -41,3 +41,12 @@ Thumbs.db
 *.AppImage
 *.blockmap
 ia_workspaces-linux.tar.gz
+
+# The parked hosts. Their source is kept — see src-tauri/README and
+# src-wails/README — but not what compiling them produces: cargo's target/ alone
+# is 1.2 GB, and the renderer copy under src-wails/frontend is built output that
+# already exists in out/.
+src-tauri/target/
+src-tauri/gen/
+src-wails/build/
+src-wails/frontend/

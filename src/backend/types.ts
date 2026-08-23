@@ -33,6 +33,7 @@ import type {
   GitProgress,
   HistoryFilter,
   HostTool,
+  CryptoReading,
   WeatherReading,
   WeatherRequest,
   LatestReleaseResult,
@@ -66,6 +67,8 @@ export interface Capabilities {
    *   laid out, clipped, hidden and stacked by the same CSS as everything else,
    *   so a browser pane needs no special handling anywhere.
    * - `null` — no second webview exists here, and the pane kind is not offered.
+   *   The Rust host reports this until a child webview window can be positioned
+   *   over the layout, which is a different problem from an element in it.
    */
   browser: 'dom' | null
 
@@ -100,7 +103,8 @@ export interface FileFilter {
 }
 
 export interface Backend {
-  readonly name: 'electron'
+  /** Which runtime answered. One per entry point — see `src/renderer/entry.*`. */
+  readonly name: 'electron' | 'tauri' | 'wails'
   readonly capabilities: Capabilities
 
   loadState(): Promise<unknown>
@@ -483,6 +487,13 @@ export interface Backend {
    * place is set, which is the only third-party call this app makes.
    */
   weather(req: WeatherRequest): Promise<WeatherReading>
+  /**
+   * Coin prices, for the block that shows them.
+   *
+   * Asked for only while that block is drawn: like the weather, this reaches a
+   * third party, and a panel nobody switched on should reach nobody.
+   */
+  crypto(req: { coins: string; currency: string }): Promise<CryptoReading>
   /** Working-tree status for the file tree's change markers. */
   gitStatus(cwd: string): Promise<GitStatusMap>
   /** True when the path exists and is a directory — validates the path bar. */
