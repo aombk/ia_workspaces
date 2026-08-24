@@ -921,15 +921,24 @@ const actions: UiActions = {
   },
 
   openReader(path) {
-    const tab = store.activeTab
-    if (!tab) return
-    // Beside what you were looking at, not instead of it: you opened this from
-    // a tree that is probably in the same tab, and replacing it would take away
-    // the thing you were reading from.
-    const pane = store.splitPane(tab.id, 'row', 'reader')
-    if (!pane) return
-    store.setPaneFile(pane.id, path)
-    void remount()
+    const workspace = store.activeWorkspace
+    if (!workspace) return
+    // A tab of its own, like the canvas and the editor, and never a split of
+    // whatever you happened to be in. A document is read whole — pages, a
+    // viewer's own toolbar, a video's picture — and half a pane is the wrong
+    // shape for all of it. Splitting also spent the space of the thing you
+    // opened it *from*, which is usually the file tree you are still walking.
+    //
+    // Never reused, unlike the editor: opening a second PDF is not two views of
+    // one file that could disagree, it is two documents, and folding the second
+    // into the first would close the one you were reading. Each gets a tab; the
+    // tab strip is where you go back.
+    //
+    // The file is on the pane from birth for the reason `addTabWith` exists —
+    // set it a line later and the reader has already decided what it is
+    // showing.
+    store.addTabWith(workspace.id, 'reader', { file: path })
+    void syncMountedTab()
   },
 
   openInbox() {
