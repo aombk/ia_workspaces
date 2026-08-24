@@ -46,9 +46,10 @@ export interface UiActions {
   /**
    * A canvas of connected notes, as a tab.
    *
-   * With no file it is the project's own `notes.canvas`; with one it is that
-   * canvas, and a workspace may hold as many as it has files. One pane per
-   * file either way — two panes on one canvas would save over each other.
+   * With no file it is a new untitled canvas, which asks for a name the first
+   * time it is saved rather than inventing one; with a file it is that canvas,
+   * and a workspace may hold as many as it has files. One pane per *named*
+   * file — two panes on one canvas would save over each other.
    */
   openCanvas(workspaceId: string, file?: string): void
   /** Focus the machine monitor, opening it if none is open. */

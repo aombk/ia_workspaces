@@ -23,6 +23,12 @@ export const IPC = {
   readBytes: 'files:readBytes',
   patchBytes: 'files:patchBytes',
   writeText: 'files:writeText',
+  // The untitled buffers. A group of their own rather than more `files:` verbs,
+  // because these never touch a path the user chose — see `main/scratchBuffer.ts`.
+  scratchRead: 'scratch:read',
+  scratchWrite: 'scratch:write',
+  scratchDrop: 'scratch:drop',
+  powerLock: 'power:lock',
   createFile: 'files:createFile',
   openWith: 'files:openWith',
   gitDiff: 'files:gitDiff',

@@ -221,7 +221,7 @@ release. It turned out to solve problems other people have too, so here it is.
   counts — no keystrokes required.
 
   The same tab holds the project's **to-do list**, which is the checkboxes in its
-  own `NOTES.md`: write `- [ ] fix the parser` there and it appears here, and
+  own `TODO.md`: write `- [ ] fix the parser` there and it appears here, and
   ticking it rewrites that one line. Beside it, a 25/5 **pomodoro**, which time
   counting does not depend on.
 
@@ -248,8 +248,9 @@ release. It turned out to solve problems other people have too, so here it is.
   open.
 
   Saved in the project folder as **[JSON Canvas][jsoncanvas]**, Obsidian's
-  format, so the file opens there too and versions with the code. `notes.canvas`
-  is only the default name. Node types this pane does not create are kept and
+  format, so the file opens there too and versions with the code. A new canvas
+  is untitled and asks for a name the first time you save it — no file appears
+  in the project until you have said what it should be called. Node types this pane does not create are kept and
   written back untouched, and note text is markdown — headings, lists,
   `[[links]]`, mermaid.
 
@@ -286,6 +287,25 @@ release. It turned out to solve problems other people have too, so here it is.
   keeping, since a link written in March is only useful in June if the thing
   linked to knows about it. A link that matches nothing says so rather than
   creating a file nobody meant to make.
+
+- **PDFs, read where the notes are read.** Right-click one in the file tree —
+  *Open PDF* — and it opens in the reader beside what you were looking at: a
+  datasheet, a spec, a drawing set, the things you read next to the code rather
+  than edit, which is what that pane was already for. The engine owns a PDF
+  viewer, so the pane's whole job is to point it at the file and get out of the
+  way — the pages, the toolbar and the find bar in it are Chromium's, not a
+  second set of ours. **Reload** genuinely re-fetches, which matters for a file
+  that is generated rather than written: a drawing set rebuilt ten seconds ago
+  comes back as the new one rather than as this morning's draft. *Edit*, on the
+  same menu, still opens a `.pdf` in the hex view, because reading the header of
+  a file that will not open is a real thing to want from a file tree.
+
+  The file is streamed to the pane rather than read into it, so a
+  hundred-megabyte drawing set costs the renderer no more than a note does. It
+  travels over a scheme of its own; [Images](#images) explains why a scheme has
+  to exist at all, and why this is a second one.
+
+  <!-- screenshot wanted: docs/screenshots/reader-pdf.png — a PDF open in the reader, split beside the file tree it was opened from -->
 
 - **Knowing what your other machines are up to** (**Relay**). Working on one
   project from a laptop, a desktop and another machine through the same day, the
@@ -726,8 +746,18 @@ blocked. Reading the bytes over IPC into a `data:` URL is the other obvious
 route and does not survive real images — it would cap at a megabyte, cost a
 third again in base64, and hold a whole folder in the JS heap as strings. The
 scheme streams the file instead, so decoding and caching are Chromium's and a
-60 MB panorama costs no more renderer memory than a thumbnail. The CSP gains
+60 MB panorama costs no more renderer memory than a thumbnail. `img-src` gains
 that one scheme and nothing else.
+
+The reader's PDFs arrive the same way and over a second scheme, `iaw-doc:`,
+rather than a wider first one. The two are granted by different CSP directives —
+an image by `img-src`, an embedded document by `object-src` — so carrying both
+on `iaw-img:` would mean naming that scheme in both, and every `<img>` on the
+page would then be one injected tag away from being an embedded plugin document.
+Two schemes keep the two grants apart. Streaming matters more here than it does
+for images, not less: a drawing set is routinely a hundred megabytes, and the
+`data:` route would base64 the lot through IPC into the JS heap before the first
+page appeared.
 
 ## Git, in plain words
 
@@ -1238,7 +1268,6 @@ resources/     shells.json and the integration scripts — read by the host,
 packaging/     icons and macOS entitlements
 tools/         icon generator, artifact collector
 tests/         run with `npm test`; bundles the real TypeScript and exercises it
-testfiles/     fixtures the editor, viewer and file tree are exercised against
 docs/          screenshots
 ```
 
@@ -1261,6 +1290,11 @@ went.
 A host that cannot provide some capability says so through
 `Backend.capabilities`, and the feature is absent rather than broken: that is how
 the browser pane would simply not be offered somewhere it could not work.
+Absence is not the only honest answer, either. A workspace file is shared
+between hosts, so a reader pane saved on one is opened again on another: a host
+with no PDF viewer of its own keeps that pane and has it say what it cannot do,
+with **Open in editor** and the machine's own reader a click away. The file
+still opens, just not in here.
 
 Persisted state crosses the backend boundary as opaque JSON: the renderer owns
 the schema and normalises on load, so neither host process can truncate a

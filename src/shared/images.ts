@@ -27,6 +27,7 @@
  * markup, and nothing here ever does that.
  */
 import { extensionOf } from './editorModes'
+import { decodePathUrl, encodePathUrl } from './pathUrl'
 
 export const IMAGE_EXTENSIONS = [
   'png',
@@ -56,39 +57,19 @@ export function isImagePath(path: string): boolean {
  */
 export const IMAGE_SCHEME = 'iaw-img'
 
-const URL_PREFIX = `${IMAGE_SCHEME}://f/`
-
 /**
  * Encodes a path into an image URL.
  *
- * base64url, and a single path segment, because the alternative is a decade of
- * escaping bugs: Windows paths carry backslashes, drive letters look like URL
- * schemes, and real filenames contain `#`, `?`, `%` and every kind of unicode.
- * Encoding the whole path once means the URL parser never sees any of it.
- *
- * `btoa` is not used — it throws on any code point above U+00FF, which is most
- * of the filenames this has to survive.
+ * The codec itself is in `pathUrl.ts` — documents are served the same way over
+ * a scheme of their own, and the escaping rules are not worth having twice.
  */
 export function encodeImagePath(target: string): string {
-  const bytes = new TextEncoder().encode(target)
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  const b64 = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-  return URL_PREFIX + b64
+  return encodePathUrl(IMAGE_SCHEME, target)
 }
 
 /** The inverse, for the handler. Null for anything that is not one of ours. */
 export function decodeImagePath(url: string): string | null {
-  if (!url.startsWith(URL_PREFIX)) return null
-  const b64 = url.slice(URL_PREFIX.length).replace(/-/g, '+').replace(/_/g, '/')
-  try {
-    const binary = atob(b64)
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-    return new TextDecoder().decode(bytes) || null
-  } catch {
-    return null
-  }
+  return decodePathUrl(IMAGE_SCHEME, url)
 }
 
 /**

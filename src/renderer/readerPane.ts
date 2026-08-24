@@ -6,10 +6,27 @@
  * conflicts, undo and eventually a language server, which is how a terminal
  * quietly becomes a bad editor. The **Open in editor** button hands the file to
  * the one you already use.
+ *
+ * A PDF is the one file this pane does not read at all. The engine already owns
+ * a viewer for it — pages, toolbar, search, the lot — so the pane's whole job
+ * there is to point that viewer at the file and get out of the way. Which means
+ * a third branch rather than a second: text we mark up, markdown we mark up
+ * more, and a document we simply hand over. `shared/docs.ts` says which files
+ * qualify and how they reach the page.
+ *
+ * Sound and video are a fourth branch on the same principle, and the principle
+ * is the one worth holding on to as formats get asked for: **ship what the
+ * engine already renders, and stop where a parser would have to be written.**
+ * A PDF, an MP3 and an MP4 cost a tag apiece and are maintained by Chromium; a
+ * DXF or an FBX would be a format library with our name on it, for good. The
+ * line is not about how many things this pane can show — it is about how much
+ * of what it shows we would have to keep working ourselves.
  */
 import { backend } from '../backend'
 import { store } from './state'
 import { renderMarkdown, folderOf } from './markdown'
+import { encodeDocumentPath, isDocumentPath } from '../shared/docs'
+import { encodeMediaPath, isMediaPath, mediaKind } from '../shared/media'
 import { joinPath } from '../shared/platform'
 import { showToast } from './ui/toast'
 import type { AuxPane } from './auxPane'
@@ -40,6 +57,12 @@ export class ReaderPane implements AuxPane {
   private readonly body: HTMLDivElement
   private readonly pathLabel: HTMLSpanElement
   private disposed = false
+  /** The live PDF viewer, when this file is one. See `teardownDocument`. */
+  private embed: HTMLEmbedElement | null = null
+  /** Bumped per load, to keep every generation's URL its own. See `showDocument`. */
+  private documentLoads = 0
+  /** The live player, when this file is sound or video. See `teardownMedia`. */
+  private media: HTMLMediaElement | null = null
 
   constructor(
     readonly paneId: string,
@@ -183,6 +206,25 @@ export class ReaderPane implements AuxPane {
   }
 
   private async load(): Promise<void> {
+    // Before the read rather than after it, and that ordering is the whole
+    // point: `readText` decodes what it finds as UTF-8 and gives up past a
+    // size, so asking it for a drawing set returns a truncated page of
+    // mojibake — no error, no empty string, just a document that looks
+    // corrupt. A PDF's bytes have no business in our heap in the first place.
+    if (isDocumentPath(this.path)) {
+      this.showDocument()
+      return
+    }
+
+    // Same reasoning one format along: the engine plays these itself, and
+    // reading them into a string would be worse here than for a PDF rather than
+    // better — a video is the one thing on disk guaranteed not to fit in a
+    // renderer's heap.
+    if (isMediaPath(this.path)) {
+      this.showMedia()
+      return
+    }
+
     try {
       const text = await backend().readText(this.path)
       if (this.disposed) return
@@ -211,8 +253,202 @@ export class ReaderPane implements AuxPane {
     }
   }
 
+  /**
+   * A PDF, handed to the engine's viewer.
+   *
+   * `<embed>` and not `<iframe>`, because the CSP in `index.html` grants the
+   * document scheme under `object-src` — the directive that governs embedded
+   * plugin documents. An iframe would need `frame-src`, and widening the policy
+   * so this pane can show a PDF would widen it for the markdown we render and
+   * for every page the browser pane visits as well. One reader is not worth
+   * that trade, and `object-src` costs nothing else.
+   *
+   * Nothing here is awaited and nothing here can fail our way: the fetch, the
+   * decode and the "this file is not really a PDF" case all belong to the
+   * viewer, which reports them in its own furniture. There are no backlinks to
+   * look for either — a PDF has no `[[wikilinks]]` for the folder search to
+   * find, and running it anyway would put an empty card under a viewer that
+   * fills the pane.
+   */
+  private showDocument(): void {
+    this.teardownDocument()
+    this.teardownMedia()
+    this.body.replaceChildren()
+    // The markdown class is a measured column with generous padding, which is
+    // exactly right for a README and exactly wrong for a viewer that wants the
+    // pane edge to edge.
+    this.body.classList.remove('markdown')
+    this.body.classList.remove('document')
+
+    if (!backend().capabilities.documents) {
+      this.body.appendChild(this.documentUnavailable())
+      return
+    }
+
+    this.body.classList.add('document')
+    const embed = document.createElement('embed')
+    embed.className = 'reader-document'
+    // Stated rather than left to the handler's `content-type`, because the
+    // viewer only appears for exactly this type and an element that guesses
+    // wrong is a grey rectangle with no explanation attached.
+    embed.type = 'application/pdf'
+    embed.title = this.path
+
+    // Reload is why this element is built from scratch on every load instead of
+    // being kept and re-pointed. An `<embed>` already showing a document does
+    // not re-fetch when its `src` is assigned the string it already holds:
+    // Chromium sees no navigation, the viewer keeps the pages it has, and a PDF
+    // you regenerated ten seconds ago still shows this morning's draft. Pulling
+    // the old element out of the tree and appending a new one is a genuine new
+    // load, and that is the part doing the work.
+    //
+    // The fragment then makes each generation's URL its own, and it is a
+    // fragment rather than the usual `?v=` for a reason worth writing down. The
+    // handler treats everything after `iaw-doc://f/` as the encoded path, so a
+    // query string puts characters in it that are not in the base64url
+    // alphabet; `decodePathUrl` rejects the lot and the pane gets a 400 where a
+    // document should be. It is the one cache-buster guaranteed to break this
+    // scheme. A fragment normally never leaves the renderer at all — it is
+    // stripped before the request is made, and read only by the viewer, which
+    // ignores keys it does not know the way it ignores everything that is not
+    // `page` or `zoom`. And on a host that did pass the `#` through, the
+    // decoder drops it explicitly rather than failing on it, so this is safe by
+    // construction rather than by luck.
+    embed.src = `${encodeDocumentPath(this.path)}#iaw-load=${++this.documentLoads}`
+
+    this.body.appendChild(embed)
+    this.embed = embed
+  }
+
+  /**
+   * The hosts with no viewer to hand it to.
+   *
+   * `capabilities.documents` is false on the Tauri build, where there is no
+   * plugin PDF viewer behind the webview and no document scheme feeding one.
+   * The three builds share one workspace file, so a reader pane on a PDF is
+   * something somebody legitimately saved on one host and reopened on another —
+   * a state to explain, not a mistake to throw about, which is the same reading
+   * `UnavailablePane` takes of a browser pane opened where there is no browser.
+   *
+   * The header stays, and with it **Open in editor**, because that button is
+   * the answer: every host can hand a file to the system, and the system has a
+   * PDF reader on it.
+   */
+  private documentUnavailable(): HTMLElement {
+    const card = document.createElement('div')
+    card.className = 'reader-notice'
+
+    const title = document.createElement('div')
+    title.className = 'reader-notice-title'
+    title.textContent = 'No PDF viewer in this build'
+    card.appendChild(title)
+
+    const body = document.createElement('div')
+    body.className = 'reader-notice-body'
+    body.textContent =
+      'This host cannot show a PDF inside a pane. Open in editor hands the file ' +
+      'to whatever this machine already opens PDFs with.'
+    card.appendChild(body)
+
+    return card
+  }
+
+  /**
+   * Unhook the viewer rather than dropping the element on the floor.
+   *
+   * An `<embed>` is not a picture. Behind it is a live plugin document with its
+   * own frame, its own renderer state and an open handle on a file that may be
+   * a hundred megabytes. Chromium tears all of that down when the element
+   * leaves the tree, so the removal is the part that matters; clearing the
+   * source first is belt and braces for the case where something still holds a
+   * reference to the node after we have let go of it, and costs one attribute
+   * write. The field is cleared before either, so a teardown that runs twice —
+   * a reload racing a pane close — is a no-op the second time.
+   */
+  private teardownDocument(): void {
+    const embed = this.embed
+    if (!embed) return
+    this.embed = null
+    embed.removeAttribute('src')
+    embed.remove()
+  }
+
+  /**
+   * Sound and video, played by the engine.
+   *
+   * An `<audio>` or a `<video>` rather than anything of ours, for exactly the
+   * reason the PDF is an `<embed>`: Chromium already has the decoder, the
+   * transport bar, the keyboard shortcuts and the scrubber, and none of that is
+   * worth reimplementing badly.
+   *
+   * `preload="metadata"` is the setting that matters. The default, `auto`, has
+   * the element start pulling the whole file the moment it is in the tree — so
+   * opening a pane on a 4 GB capture would read 4 GB before anybody pressed
+   * play. `metadata` fetches the header, which is what the duration and the
+   * scrubber need, and leaves the rest to the range requests `mediaProtocol.ts`
+   * answers.
+   */
+  private showMedia(): void {
+    this.teardownMedia()
+    this.teardownDocument()
+    this.body.replaceChildren()
+    this.body.classList.remove('markdown')
+    this.body.classList.remove('document')
+    this.body.classList.add('media')
+
+    const kind = mediaKind(this.path)
+    if (!kind) return
+
+    const el = document.createElement(kind) as HTMLMediaElement
+    el.className = `reader-media reader-media--${kind}`
+    el.controls = true
+    el.preload = 'metadata'
+    el.src = encodeMediaPath(this.path)
+
+    // A codec the engine does not have fails silently otherwise: the element
+    // sits there with a dead transport bar and says nothing about why. The
+    // extension lists in `shared/media.ts` are meant to keep this unreachable,
+    // so anything landing here is a format that got past them.
+    el.addEventListener('error', () => {
+      if (this.disposed) return
+      this.body.replaceChildren()
+      const problem = document.createElement('div')
+      problem.className = 'reader-error'
+      problem.textContent =
+        `This ${kind} file could not be played — the format is one this engine has no ` +
+        'decoder for. “Open in editor” hands it to the system player.'
+      this.body.appendChild(problem)
+    })
+
+    this.body.appendChild(el)
+    this.media = el
+  }
+
+  /**
+   * Stopping playback, not merely detaching the element.
+   *
+   * A detached `<video>` keeps playing. You close the tab, the picture goes,
+   * and the sound carries on with nothing on screen to pause — so the source is
+   * dropped and `load()` called to make the element let go of it.
+   */
+  private teardownMedia(): void {
+    const el = this.media
+    if (!el) return
+    this.media = null
+    el.pause()
+    el.removeAttribute('src')
+    el.load()
+    el.remove()
+  }
+
   dispose(): void {
     this.disposed = true
+    // Whoever mounted the pane drops its element, and for ordinary DOM that is
+    // the end of it. The viewer is the exception, and the reason it is worth a
+    // line here: an element merely detached still owns everything described in
+    // `teardownDocument`.
+    this.teardownDocument()
+    this.teardownMedia()
   }
 }
 

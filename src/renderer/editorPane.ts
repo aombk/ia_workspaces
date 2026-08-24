@@ -2,10 +2,16 @@
  * The editor tab: one file, several ways of looking at it.
  *
  * It began as a notes pane — one markdown file per workspace, `NOTES.md`, on a
- * button. That file is still what a new editor tab opens, because a note about
- * the project you are in is the commonest thing to want and it should stay one
- * click away. But the pane is no longer *about* that file: it opens any file
- * you point it at, one per tab, as many tabs as you like.
+ * button. It is no longer *about* that file, or about any file: it opens
+ * whatever you point it at, one per tab, as many tabs as you like, and a new
+ * tab opens untitled. `NOTES.md` survives only as what a pane saved before any
+ * of that still resolves to, so a tab somebody kept notes in for months does
+ * not come back blank.
+ *
+ * An untitled tab is not a tab with nothing in it. Its text is kept in the
+ * app's own data directory until it is given a name — see `main/scratchBuffer.ts`
+ * — because the alternative is to invent a filename, and a file nobody chose
+ * appearing in somebody's project is a worse answer than it first looks.
  *
  * Three things it deliberately does not have:
  *
@@ -78,6 +84,17 @@ export interface EditorPaneHooks {
 const AUTOSAVE_MS = 400
 
 /**
+ * The shape of what an untitled tab holds, for the buffer it holds it in.
+ *
+ * One file per pane in the app's own data directory rather than anything in
+ * the user's project — `main/scratchBuffer.ts` argues that out at length. The
+ * extension is how a restored pane reads back the same kind of thing it wrote:
+ * this pane's text is markdown, the canvas pane's is a `canvas`, and neither
+ * should ever be handed the other's file.
+ */
+const SCRATCH_EXT = 'md'
+
+/**
  * The column the guide is drawn at.
  *
  * 80 because that is what the files this editor opens are written to — a README
@@ -127,6 +144,19 @@ export class EditorPane implements AuxPane {
   private holdingFocus = false
   /** The text last read from or written to disk, to tell edits from no-ops. */
   private saved = ''
+  /**
+   * What an untitled tab is holding, and what its buffer was last told.
+   *
+   * `saved` cannot answer this. There is nothing on disk for a tab with no
+   * file, so `saved` stays the empty string the tab opened with — which is
+   * also what keeps such a tab permanently dirty, correctly, because text
+   * nobody has named a file for is not anywhere yet. This is the document
+   * until the tab has a name: what the buffer holds, and what one view hands
+   * to the next when the mode changes.
+   */
+  private held = ''
+  /** Whether the buffer has already been read back into this pane. */
+  private restored = false
   /**
    * The line ending this file uses on disk.
    *
@@ -364,7 +394,6 @@ export class EditorPane implements AuxPane {
     if (recorded === '') return ''
     const workspace = store.workspaces.find((w) => w.id === this.workspaceId)
     if (!workspace) return ''
-    if (workspace.notesFile) return workspace.notesFile
     // `joinPath` rather than a literal separator: this used to append a
     // backslash unconditionally, which on macOS and Linux built the single
     // file `/home/you/project\NOTES.md` — one name with a backslash in it,
@@ -426,13 +455,17 @@ export class EditorPane implements AuxPane {
    */
   async setMode(mode: EditorMode): Promise<void> {
     if (mode === this.mode) return
+    // For a tab with a file, `saved` below is the text and the flush has just
+    // put it there. For an untitled one there is no disk copy to come back
+    // from, so what the outgoing view is holding is the whole document — read
+    // out of the flush, which is where `held` is kept up to date.
     await this.flush()
     this.mode = mode
     store.setEditorMode(this.paneId, mode)
     this.applyMode()
     // Hex reads bytes rather than text, so it needs its own trip to disk.
     if (mode === 'hex') void this.load(true)
-    else this.showText(this.saved)
+    else this.showText(this.path ? this.saved : this.held)
     this.syncChrome()
     if (!this.readOnly) queueMicrotask(() => this.focusEditor())
   }
@@ -830,10 +863,12 @@ export class EditorPane implements AuxPane {
       ? `${this.path} — click to open another file`
       : 'Untitled — click to open a file, or just type and Ctrl+S'
     if (!this.path) {
-      // Untitled: an empty editor, ready to type into. Nothing to read.
+      // Untitled: nothing on disk to read, and possibly something to read
+      // back — the text this tab was holding when the app last went away.
       this.clearBlock()
       this.stamp = null
       this.syncChrome()
+      await this.restoreScratch()
       return
     }
 
@@ -914,7 +949,14 @@ export class EditorPane implements AuxPane {
   private onEdit(): void {
     this.failed = false
     this.syncChrome()
-    if (!this.autosaves) return
+    // Autosave off stops the timer for a tab with a file, and deliberately not
+    // for one without. The switch is a promise about *the file* — leave what
+    // is in my project alone until I say so — and an untitled tab has no file
+    // to leave alone. The only thing the promise could protect there is the
+    // text itself, from being kept at all, and nobody turns autosave off to
+    // make sure their unnamed notes are thrown away by a crash. So the buffer
+    // is written either way; what still waits for Ctrl+S is the file.
+    if (!this.autosaves && this.path) return
     if (this.timer) clearTimeout(this.timer)
     this.timer = setTimeout(() => {
       this.timer = null
@@ -953,10 +995,24 @@ export class EditorPane implements AuxPane {
    * written by the save the edit handler has already queued.
    */
   private async save(explicit = false): Promise<boolean> {
-    if (this.blocked || this.saving || !this.dirty) return !this.dirty
-    // An untitled tab has nowhere to write yet. Autosave leaves it alone and
-    // says so; asking mid-sentence would be worse than not saving.
-    if (!this.path) return false
+    if (this.blocked || this.saving) return !this.dirty
+    // An untitled tab still has nowhere on disk to write, and this is still
+    // not the moment to ask: an autosave that stopped mid-sentence to demand a
+    // filename would be a worse interruption than not saving. What has changed
+    // is that the text no longer evaporates while it waits — it goes to this
+    // pane's own buffer in the app's data directory, and the tab stays
+    // untitled until the writer knows what they have written.
+    //
+    // Above the `dirty` check rather than below it, because `dirty` is a
+    // question about disk and there is no disk here: a tab restored from its
+    // buffer is dirty from the moment it opens, and a tab somebody has just
+    // emptied is not — and the emptying is the one edit the buffer most needs
+    // to be told about, or the deleted text is back tomorrow.
+    if (!this.path) {
+      await this.keepScratch()
+      return false
+    }
+    if (!this.dirty) return true
     // With autosave off, nothing but the button and Ctrl+S writes: losing
     // focus, switching tabs and closing the window all leave the file as it was.
     if (!this.autosaves && !explicit) return false
@@ -1002,6 +1058,14 @@ export class EditorPane implements AuxPane {
     }
     this.saving = false
     this.failed = false
+    // The tab has a name and the write went through, so the buffer is not
+    // standing in for anything any more. After the write and never before it:
+    // a save that fails leaves the text with nowhere else to be, and dropping
+    // first is how you would find that out one moment too late.
+    if (this.held) {
+      this.held = ''
+      void backend().scratch.drop(this.paneId, SCRATCH_EXT).catch(() => {})
+    }
     // Our own write is not an external change. Stamped before the event below,
     // or this pane would hear its own save and ask about it.
     this.stamp = await backend().fileStamp(this.path)
@@ -1011,6 +1075,73 @@ export class EditorPane implements AuxPane {
     // this and re-reads.
     window.dispatchEvent(new CustomEvent('notes-changed'))
     return true
+  }
+
+  // ------------------------------------------------------ the untitled buffer
+
+  /**
+   * Writes an untitled tab's text where it can be found again.
+   *
+   * Not into the user's project, and not under a name the app picked for them
+   * — `main/scratchBuffer.ts` says at length why both of those are worse than
+   * they look. One file per pane in the app's own data directory, dropped the
+   * moment the tab has a real name or is closed for good.
+   */
+  private async keepScratch(): Promise<void> {
+    // Only from a view that is actually holding the text. In the rendered and
+    // hex views the `text` getter answers with `saved`, which for an untitled
+    // tab is the empty string it opened with — writing that would overwrite
+    // the buffer with something that was never anybody's edit.
+    if (!this.isText && this.mode !== 'csv') return
+    const text = this.text
+    // Nothing typed and nothing ever kept: a tab opened and not used should
+    // not leave a file behind. An empty string over a buffer that has
+    // something in it is the opposite case and does get written — that one is
+    // a deletion somebody made on purpose.
+    if (!text && !this.held) return
+    this.held = text
+    try {
+      await backend().scratch.write(this.paneId, SCRATCH_EXT, text)
+    } catch {
+      // Nowhere to escalate to that would help. The text is still on screen,
+      // which is where it was a moment ago, and a toast on every debounce
+      // about a file the user never asked for would be noise, not a warning.
+    }
+  }
+
+  /**
+   * Puts back what this tab was holding the last time it was open.
+   *
+   * Only for a tab with no file — one with a file reads the file, which is a
+   * better copy of the same text — and only once per pane, because after that
+   * the newest version of the text is the one on screen and a second read
+   * could only put an older one over it.
+   */
+  private async restoreScratch(): Promise<void> {
+    if (this.restored) return
+    this.restored = true
+    let kept: string | null = null
+    try {
+      kept = await backend().scratch.read(this.paneId, SCRATCH_EXT)
+    } catch {
+      // A host with no buffer store answers null rather than throwing; one
+      // that failed to read comes to the same thing here, which is a tab that
+      // opens empty exactly as it used to.
+      return
+    }
+    if (!kept || this.disposed || this.path) return
+    // Whatever is on screen wins. The only way anything is on screen this
+    // early is that somebody typed it between the pane being built and the
+    // read coming back, and text a person is looking at is not something to
+    // replace with text they last saw a week ago.
+    if (this.dirty) return
+    this.held = kept
+    this.showText(kept)
+    // Deliberately not `adopt`. That would set `saved`, and `saved` means
+    // "this is what is on disk" — nothing is. Leaving it empty is what keeps
+    // the tab dirty, keeps Save live, and makes Ctrl+S ask where the file
+    // should go, which is the whole point of the tab still being untitled.
+    this.syncChrome()
   }
 
   // --------------------------------------------------------------- the chrome
@@ -1258,11 +1389,17 @@ export class EditorPane implements AuxPane {
         ? 'failed'
         : this.readOnly && this.mode !== 'hex'
           ? 'readonly'
-          : waiting
-            ? 'unsaved'
-            : this.saving || this.dirty
-              ? 'saving'
-              : 'saved'
+          : // An untitled tab with something in it used to sit on "Saving…"
+            // forever, waiting for a save that could never happen. Now
+            // something does happen, and the status says which: the text is
+            // being kept, and there is still no file.
+            !this.path && this.dirty
+            ? 'untitled'
+            : waiting
+              ? 'unsaved'
+              : this.saving || this.dirty
+                ? 'saving'
+                : 'saved'
 
     this.status.dataset.state = state
     const bytes = this.hex.changedCount
@@ -1270,6 +1407,9 @@ export class EditorPane implements AuxPane {
       blocked: 'Cannot open',
       failed: 'Not saved',
       readonly: 'Read-only',
+      // Both halves matter: the tab has no file, and the text is not lost for
+      // want of one.
+      untitled: 'Kept — no file yet',
       // In hex the unit that changed is the interesting number; in text it is
       // just "there is something unwritten".
       unsaved:
@@ -1295,7 +1435,11 @@ export class EditorPane implements AuxPane {
         ? 'Always off in hex: a byte written by accident can break a file silently'
         : auto
           ? 'On — the file is written a moment after you stop typing. Click to turn off.'
-          : 'Off — nothing is written until you press Save. Click to turn on.'
+          : this.path
+            ? 'Off — nothing is written until you press Save. Click to turn on.'
+            : // Said out loud rather than left for somebody to discover, because
+              // it is the one place this switch does not mean quite what it says.
+              'Off — nothing goes to a file until you press Save. Until this tab has one, what you type is kept in the app anyway. Click to turn on.'
   }
 
   /** A file we could not read, and therefore will not write over. */
@@ -1340,6 +1484,26 @@ export class EditorPane implements AuxPane {
       void backend()
         .files.writeText(this.path, this.eol === '\r\n' ? toCrlf(text) : text)
         .catch(() => {})
+    }
+    // An untitled tab's text has no file to be written to, so what happens to
+    // its buffer turns on *why* this is being called — and this method is
+    // called both when a pane is closed and when it is merely taken down.
+    //
+    // `Terminals.close` is the one caller, and every route into it goes
+    // through a store mutation first: `closePane`, `removeTab`,
+    // `removeWorkspace` and `mergePanes` all take the pane out of the document
+    // before the pane is told. So a pane the store can still find is one being
+    // torn down for some other reason — a remount, a layout rebuilt — and its
+    // buffer is text somebody still has open.
+    //
+    // The two mistakes are not the same size. A buffer left behind is a few
+    // kilobytes that `sweepScratch` clears after a month; a buffer dropped by
+    // mistake is writing that is gone. So the drop happens only where the pane
+    // is unambiguously gone, and everything else — including any future caller
+    // that has not read this — leaks instead.
+    if (!this.path) {
+      if (store.pane(this.paneId)) void this.keepScratch()
+      else void backend().scratch.drop(this.paneId, SCRATCH_EXT).catch(() => {})
     }
     this.disposed = true
     if (this.watchTimer) clearInterval(this.watchTimer)

@@ -2,6 +2,25 @@
 
 All notable changes to this project.
 
+## [Unreleased]
+
+### Added
+
+- **A PDF opens in the reader.** Right-click one in the file tree — *Open PDF* —
+  and it appears in a pane beside what you were looking at, rather than in a
+  window the system drops on top of everything you had arranged. A datasheet, a
+  spec, a drawing set: reading, which is what that pane is already for.
+
+  The pages, the toolbar and the find bar in it belong to the engine's own PDF
+  viewer — the pane points it at the file and gets out of the way. **Reload**
+  re-fetches for real, which is what a set of drawings that gets regenerated
+  wants, and **Open in editor** does what it always did.
+
+  The file is streamed to the pane rather than read into it, so a
+  hundred-megabyte drawing set costs the renderer no more than a note does.
+  Electron only for now: a host with no viewer of its own keeps the pane, says
+  so, and points at the PDF reader the machine already has.
+
 ## [1.1.0] — 2026-08-20
 
 ### Added

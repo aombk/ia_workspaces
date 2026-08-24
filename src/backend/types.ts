@@ -1,3 +1,4 @@
+import type { PowerLockState } from '../shared/powerLock'
 import type { BackdropMaterial } from '../shared/themes'
 import type { PlatformKind } from '../shared/platform'
 import type { SshHost } from '../shared/ssh'
@@ -71,6 +72,17 @@ export interface Capabilities {
    *   over the layout, which is a different problem from an element in it.
    */
   browser: 'dom' | null
+
+  /**
+   * Whether this host can render a document — a PDF — inside a pane.
+   *
+   * Same shape of fact as `browser`, and true for the same kind of reason: the
+   * Electron host has an engine with a PDF viewer in it and a scheme to feed
+   * it (`main/docProtocol.ts`), and the Rust host does not yet. The reader pane
+   * still opens a PDF either way; where this is false it says so and offers the
+   * system viewer, rather than the tab not existing.
+   */
+  documents: boolean
 
   /**
    * Which OS the host is running on.
@@ -498,6 +510,31 @@ export interface Backend {
   gitStatus(cwd: string): Promise<GitStatusMap>
   /** True when the path exists and is a directory — validates the path bar. */
   isDirectory(dir: string): Promise<boolean>
+  /**
+   * The text of a pane that has no file yet.
+   *
+   * Kept in the app's own data directory, one file per pane, never in the
+   * user's project — `main/scratchBuffer.ts` says why at length. `ext` is the
+   * shape of what is being held, `md` or `canvas`, so a restored pane reads
+   * back the same kind of thing it wrote.
+   */
+  scratch: {
+    read(paneId: string, ext: string): Promise<string | null>
+    write(paneId: string, ext: string, text: string): Promise<void>
+    /** Saved under a real name, or closed for good. */
+    drop(paneId: string, ext: string): Promise<void>
+  }
+
+  /**
+   * Whether an agent is currently holding this machine awake, and why not when
+   * it is not.
+   *
+   * Asked for rather than pushed because the answer changes rarely and matters
+   * only while somebody is looking at it. `main/powerLock.ts` owns the state;
+   * `shared/powerLock.ts` explains what each reason means.
+   */
+  powerLock(): Promise<PowerLockState>
+
   files: {
     createDirectory(parent: string, name: string): Promise<string>
     /** An empty file. Refuses to overwrite one that already exists. */

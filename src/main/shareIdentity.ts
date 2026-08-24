@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { originUrl, repoRoot } from './git'
+import { originUrl, checkoutRoot } from './git'
 
 /** Where each machine's identity is kept, so it survives a rename. */
 const IDENTITY_NAME = 'machine.json'
@@ -108,7 +108,7 @@ export function normaliseRemote(url: string): string {
  */
 export async function projectKey(cwd: string): Promise<string> {
   try {
-    const root = await repoRoot(cwd)
+    const root = await checkoutRoot(cwd)
     if (root) {
       const url = await originUrl(root)
       if (url) return `git-${createHash('sha256').update(normaliseRemote(url)).digest('hex').slice(0, 16)}`

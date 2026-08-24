@@ -2,9 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!--
+      `frame-src iaw-doc:` is not redundant beside `object-src`, and leaving it
+      out is why the reader showed a grey rectangle instead of a PDF.
+
+      Chromium does not render a PDF inside the `<embed>` element itself. It
+      hands the stream to its own viewer, which is a plugin *document* loaded in
+      an internal frame — so the load is governed by `frame-src`, falls back to
+      `default-src 'none'` when that is absent, and is blocked before our
+      protocol handler is ever asked for the bytes. The only visible symptom is
+      an empty pane; the only evidence is a console line about "Framing
+      'iaw-doc://f/'".
+
+      `media-src` is the same story for `<audio>` and `<video>`: their own
+      directive, and one no other element grants.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: iaw-img:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: iaw-img:; media-src iaw-media:; object-src iaw-doc:; frame-src iaw-doc:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     />
     <title>ia_workspaces</title>
     <link rel="stylesheet" href="renderer.css" />
@@ -97,6 +112,14 @@
               <span class="label">Waiting for you</span>
               <span id="inbox-count" class="inbox-count" hidden></span>
             </button>
+
+            <!--
+              Under the usage rows: whether an agent is holding the machine
+              awake. Hidden unless there is something surprising to say — see
+              `ui/awakeStrip.ts`, which argues that a lock nobody can see is a
+              lock nobody can trust.
+            -->
+            <div id="sidebar-awake" class="sidebar-awake" hidden></div>
 
             <div id="sidebar-usage" class="sidebar-usage" hidden></div>
             <!--

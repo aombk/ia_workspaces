@@ -291,7 +291,15 @@ export function money(value: number, currency: string): string {
 /** The few worth a glyph. Anything else is shown as its three letters. */
 const SYMBOLS: Record<string, string> = { eur: '€', usd: '$', gbp: '£', jpy: '¥' }
 
-export function duration(seconds: number | null | undefined): string {
+/**
+ * A span of seconds — an uptime, a battery estimate — in the coarsest units
+ * that still say something.
+ *
+ * The unit is in the name because `timeMonitor.ts` has the same formatter for
+ * *milliseconds*. See the note there: both were called `duration`, and nothing
+ * in the type system separated them.
+ */
+export function durationSeconds(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '—'
   const days = Math.floor(seconds / 86400)
   const hours = Math.floor((seconds % 86400) / 3600)

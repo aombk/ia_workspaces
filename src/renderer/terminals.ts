@@ -414,9 +414,10 @@ export class TerminalManager {
       { passive: false, capture: true }
     )
 
-    // macOS is the platform that accelerates a wheel without saying so, which
-    // is the thing the driver has to undo. See `classifyWheel`.
-    term.attachCustomWheelEventHandler(programWheelDriver(term, element, isMac()))
+    // No platform argument: what the driver corrects for is the shape of the
+    // gesture, not the make of the device. See the note at the top of
+    // `programWheel.ts` for why guessing at the hardware was abandoned.
+    term.attachCustomWheelEventHandler(programWheelDriver(term, element))
 
     // Absolutely positioned, so it never enters xterm's size measurement.
     const blockedBar = document.createElement('div')

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'ele
 import { IPC } from '../shared/ipc'
 import { platformKind } from '../shared/platform'
 import { encodeImagePath } from '../shared/images'
+import type { PowerLockState } from '../shared/powerLock'
 import type { SshHost } from '../shared/ssh'
 import type { WslAction } from '../shared/wsl'
 import type {
@@ -213,6 +214,17 @@ const api = {
     ipcRenderer.invoke(IPC.crypto, req),
   gitStatus: (cwd: string): Promise<GitStatusMap> => ipcRenderer.invoke(IPC.gitStatus, cwd),
   isDirectory: (dir: string): Promise<boolean> => ipcRenderer.invoke(IPC.isDirectory, dir),
+  powerLock: (): Promise<PowerLockState> => ipcRenderer.invoke(IPC.powerLock),
+
+  scratch: {
+    read: (paneId: string, ext: string): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.scratchRead, paneId, ext),
+    write: (paneId: string, ext: string, text: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.scratchWrite, paneId, ext, text),
+    drop: (paneId: string, ext: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.scratchDrop, paneId, ext),
+  },
+
   files: {
     createDirectory: (parent: string, name: string): Promise<string> =>
       ipcRenderer.invoke(IPC.createDirectory, parent, name),

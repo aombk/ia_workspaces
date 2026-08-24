@@ -18,7 +18,15 @@ export function createElectronBackend(): Backend {
     name: 'electron',
     // `<webview>` is a DOM element, so a browser pane joins the split layout
     // like any other pane rather than floating over it.
-    capabilities: { browser: 'dom', platform: api.platform },
+    capabilities: { browser: 'dom', documents: true, platform: api.platform },
+
+    powerLock: () => api.powerLock(),
+
+    scratch: {
+      read: (paneId, ext) => api.scratch.read(paneId, ext),
+      write: (paneId, ext, text) => api.scratch.write(paneId, ext, text),
+      drop: (paneId, ext) => api.scratch.drop(paneId, ext),
+    },
 
     loadState: () => api.loadState(),
     saveState: (state) => api.saveState(state),

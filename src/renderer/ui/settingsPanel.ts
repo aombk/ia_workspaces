@@ -619,6 +619,29 @@ async function render(): Promise<void> {
         number(s.idleAgentRelease, 0, 1440, (v) => patch({ idleAgentRelease: v }))
       ),
       field(
+        'Keep the machine awake while an agent works',
+        'A long job the machine suspends ten minutes into has not failed — it simply has not ' +
+          'happened, and you find that out in the morning. So while an agent reports itself ' +
+          'working, this stops the machine suspending. The hold goes the moment it finishes, and ' +
+          'also the moment it parks on a permission prompt: an agent waiting on you is waiting for ' +
+          'somebody who has left the room, and a laptop should not be held open for that. The ' +
+          'screen sleeps as it always does either way — only the machine is kept up. On mains is ' +
+          'the default because it needs no thought: a desktop is always plugged in, and a laptop ' +
+          'is never held open on its own battery.',
+        // Ordered by how much they hold rather than alphabetically or by
+        // likelihood, so the default sits visibly between the two extremes it
+        // splits the difference between.
+        select(
+          [
+            { value: 'off' as const, label: 'Never' },
+            { value: 'ac' as const, label: 'Only on mains power' },
+            { value: 'on' as const, label: 'Always' },
+          ],
+          s.keepAwake,
+          (v) => patch({ keepAwake: v })
+        )
+      ),
+      field(
         'Coins in the monitor’s crypto block',
         'Written as you would say them: btc, eth, ltc. Prices come from CoinGecko every couple ' +
           'of minutes, and only while the block is on — right-click the monitor to show it.',

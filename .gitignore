@@ -11,6 +11,19 @@ resources/bin/
 
 borf/
 
+# The private half of this project.
+#
+# Its own git repository, with its own remote and its own .gitignore — not a
+# submodule, deliberately. A submodule would record its URL and a commit SHA in
+# *this* repo, which announces a private repository's existence to everyone who
+# clones the public one and breaks `clone --recursive` for anybody without
+# access. Ignored, it is invisible from this side: no pointer, no path, nothing
+# to leak.
+#
+# The rule for what goes in it is not "secret" but "not the app": anything that
+# is about shipping the app rather than being it.
+private/
+
 # Working notes, not published
 changelog.d/
 NOTES.md
@@ -51,5 +64,3 @@ src-tauri/gen/
 src-wails/build/
 src-wails/frontend/
 
-# Promo drafts, not published
-promo/

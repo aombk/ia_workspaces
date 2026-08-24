@@ -67,9 +67,7 @@ const { SessionVault } = await import(`file://${out}/vault.js`)
 const { bufferWhileHidden, drainPending, clearPending } = await import(
   `file://${out}/paneBuffer.js`
 )
-const { wheelTicks, classifyWheel, NO_WHEEL_MEMORY } = await import(
-  `file://${out}/programWheel.js`
-)
+const { wheelTicks } = await import(`file://${out}/programWheel.js`)
 const { acceptSession, resumeCommand, RECORD_REFRESH_MS } = await import(
   `file://${out}/agentSessions.js`
 )
@@ -958,108 +956,111 @@ console.log('Browser zoom steps')
   const CELL = 15
   const ROWS = 24
   const px = (deltaY) => ({ deltaY, deltaMode: 0 })
+  // Whether the event opens a gesture. Most of these are mid-stroke.
+  const MID = false
+  const START = true
 
-  check('a Mac wheel notch reaches the program as three lines, not one', () => {
-    // The bug: xterm sends exactly one report per wheel event however far the
-    // wheel turned, and on macOS a notch is ~40px where Windows sends 100. So
-    // Claude Code moved a line where Terminal.app and iTerm2 move three.
-    assert.equal(wheelTicks(px(40), CELL, ROWS, 0).ticks, 3)
-    assert.equal(wheelTicks(px(-40), CELL, ROWS, 0).ticks, -3)
+  check('a wheel notch reaches the program as the lines it turned, not one', () => {
+    // The bug this file exists for, and it is xterm's rather than ours:
+    // `CoreMouseService.consumeWheelEvent` works out how many lines the wheel
+    // came to and then `CoreBrowserTerminal` uses that number only to decide
+    // whether to report *anything*. One notch in, one report out, however far
+    // it turned — so Claude Code moved a line where a real terminal moves three.
+    assert.equal(wheelTicks(px(40), CELL, ROWS, 0, MID).ticks, 3)
+    assert.equal(wheelTicks(px(-40), CELL, ROWS, 0, MID).ticks, -3)
   })
 
   check('a notch covers the ground the pane itself would have covered', () => {
     // 100px of wheel scrolls the pane's own scrollback 125px, which is 8 lines
-    // of a 15px cell. The program gets the same 8.
-    assert.equal(wheelTicks(px(100), CELL, ROWS, 0).ticks, 8)
+    // of a 15px cell. The program gets the same 8, so one pane does not behave
+    // as two depending on which half of it is reading the wheel.
+    assert.equal(wheelTicks(px(100), CELL, ROWS, 0, MID).ticks, 8)
   })
 
   check('a trackpad accumulates instead of rounding away to nothing', () => {
     // Half a line each. Two of them are a line; on its own, one is nothing yet.
-    const first = wheelTicks(px(6), CELL, ROWS, 0)
+    const first = wheelTicks(px(6), CELL, ROWS, 0, MID)
     assert.equal(first.ticks, 0)
-    assert.equal(wheelTicks(px(6), CELL, ROWS, first.carry).ticks, 1)
+    assert.equal(wheelTicks(px(6), CELL, ROWS, first.carry, MID).ticks, 1)
   })
 
-  check('the carry does not survive a change of direction as a jump', () => {
-    const down = wheelTicks(px(6), CELL, ROWS, 0)
-    assert.equal(wheelTicks(px(-6), CELL, ROWS, down.carry).ticks, 0)
+  check('a reversal drops the carry rather than paying it the wrong way', () => {
+    // The regression this replaced: carry from a downward stroke was applied to
+    // the upward one, which cost the first line of travel and left a whole line
+    // of debt behind. Reverse a few times and the pane sticks against you.
+    const down = wheelTicks(px(6), CELL, ROWS, 0, MID)
+    assert.equal(down.carry, 0.5)
+    const up = wheelTicks(px(-6), CELL, ROWS, down.carry, MID)
+    // The stroke back is worth exactly what the stroke out was: half a line
+    // held, not half a line cancelled.
+    assert.equal(up.ticks, 0)
+    assert.equal(up.carry, -0.5)
+  })
+
+  check('the same stroke travels the same distance in both directions', () => {
+    const stroke = [1, 3, 8, 14, 18, 14, 8, 3]
+    const travel = (sign) => {
+      let carry = 0
+      let total = 0
+      stroke.forEach((dy, i) => {
+        const r = wheelTicks(px(dy * sign), CELL, ROWS, carry, i === 0)
+        carry = r.carry
+        total += r.ticks
+      })
+      return Math.abs(total)
+    }
+    assert.equal(travel(1), travel(-1))
+  })
+
+  check('the first event of a gesture always moves at least one line', () => {
+    // macOS reports a mouse detent as about four pixels turned slowly — a
+    // third of a line here, so three detents in a row would move nothing at all
+    // while the carry filled up. That is "the mouse wheel never worked".
+    assert.equal(wheelTicks(px(4), CELL, ROWS, 0, MID).ticks, 0)
+    assert.equal(wheelTicks(px(4), CELL, ROWS, 0, START).ticks, 1)
+    assert.equal(wheelTicks(px(-4), CELL, ROWS, 0, START).ticks, -1)
+  })
+
+  check('a floored event carries nothing into the next', () => {
+    // It has been paid a line it did not earn; letting the remainder ride as
+    // well would hand the next event a stray one on top.
+    assert.equal(wheelTicks(px(4), CELL, ROWS, 0, START).carry, 0)
+  })
+
+  check('the floor does not fire when the gesture already came to a line', () => {
+    // Only the too-small first event is topped up. A real flick is untouched,
+    // so opening a stroke fast is not quietly rounded down to one line.
+    assert.equal(wheelTicks(px(100), CELL, ROWS, 0, START).ticks, 8)
   })
 
   check('a stuck device cannot fire a thousand lines at a program', () => {
     // A screen at a time is the ceiling, so a real page-mode wheel still gets
     // its whole page and nothing gets a hundred of them.
-    assert.equal(wheelTicks(px(100_000), CELL, ROWS, 0).ticks, ROWS)
-    assert.equal(wheelTicks(px(-100_000), CELL, ROWS, 0).ticks, -ROWS)
+    assert.equal(wheelTicks(px(100_000), CELL, ROWS, 0, MID).ticks, ROWS)
+    assert.equal(wheelTicks(px(-100_000), CELL, ROWS, 0, MID).ticks, -ROWS)
   })
 
   check('line and page deltas are read in their own units', () => {
     // Firefox reports lines; nothing Chromium does reports pages, but the
     // conversion is one line each way and cheaper than being wrong.
-    assert.equal(wheelTicks({ deltaY: 3, deltaMode: 1 }, CELL, ROWS, 0).ticks, 3)
-    assert.equal(wheelTicks({ deltaY: 1, deltaMode: 2 }, CELL, ROWS, 0).ticks, ROWS)
+    assert.equal(wheelTicks({ deltaY: 3, deltaMode: 1 }, CELL, ROWS, 0, MID).ticks, 3)
+    assert.equal(wheelTicks({ deltaY: 1, deltaMode: 2 }, CELL, ROWS, 0, MID).ticks, ROWS)
   })
 
-  check('a detent is counted, not measured', () => {
-    // The bug this exists for: macOS accelerates a mouse wheel silently, so the
-    // same notch arrives as four pixels turned slowly and a hundred and twenty
-    // turned fast. Measured, that is a notch which moves nothing followed by
-    // one which moves half a screen. Counted, every notch is three lines.
-    assert.equal(wheelTicks(px(4), CELL, ROWS, 0, 3).ticks, 3)
-    assert.equal(wheelTicks(px(120), CELL, ROWS, 0, 3).ticks, 3)
-    assert.equal(wheelTicks(px(-4), CELL, ROWS, 0, 3).ticks, -3)
-    // And nothing is carried out of one, or the next would arrive long.
-    assert.equal(wheelTicks(px(4), CELL, ROWS, 0.9, 3).carry, 0)
-  })
-}
-
-// -------------------------------------------------------- wheel classifier
-console.log('Telling a wheel from a trackpad')
-{
-  // Both platforms send pixels; the difference is in the shape of the numbers.
-  const feed = (events) => {
-    let memory = NO_WHEEL_MEMORY
-    let last
-    events.forEach((e, i) => {
-      last = classifyWheel(e, 1000 + i * 30, memory)
-      memory = last.memory
+  check('a trackpad stroke is not chunked into notches', () => {
+    // The trackpad regression, stated as a test: a finger moving straight down
+    // the pad with whole-number deltas used to be judged a mouse and moved
+    // three lines an event. Measured, this stroke is worth five lines in total
+    // and arrives smoothly rather than in threes.
+    let carry = 0
+    const ticks = []
+    ;[1, 3, 8, 14, 18, 14, 8, 3].forEach((dy, i) => {
+      const r = wheelTicks(px(dy), CELL, ROWS, carry, i === 0)
+      carry = r.carry
+      ticks.push(r.ticks)
     })
-    return last
-  }
-  const y = (deltaY) => ({ deltaX: 0, deltaY })
-
-  check('repeated whole deltas on one axis are a wheel', () => {
-    // A detent, four times. Same size, no fractions, one axis.
-    assert.equal(feed([y(40), y(40), y(40), y(40)]).physical, true)
-  })
-
-  check('an accelerating wheel is still a wheel', () => {
-    // macOS ramps a held-down scroll, and each is a multiple of the last —
-    // which is the signal that this has notches at all.
-    assert.equal(feed([y(4), y(8), y(16), y(32)]).physical, true)
-  })
-
-  check('fractional deltas are a trackpad', () => {
-    assert.equal(feed([y(1.5), y(3.25), y(7.75), y(11.5)]).physical, false)
-  })
-
-  check('two axes at once is a trackpad, whole numbers or not', () => {
-    // A finger drifts sideways. A wheel cannot.
-    assert.equal(feed([{ deltaX: 2, deltaY: 9 }, { deltaX: 3, deltaY: 14 }]).physical, false)
-  })
-
-  check('putting the mouse down and picking up the trackpad is judged afresh', () => {
-    // Without the gap the four clean notches would outvote the first strokes of
-    // the trackpad, and a flick would arrive as a page.
-    let memory = NO_WHEEL_MEMORY
-    for (const e of [y(40), y(40), y(40), y(40)]) memory = classifyWheel(e, 1000, memory).memory
-    const after = classifyWheel(y(1.5), 1000 + 900, memory)
-    assert.equal(after.physical, false)
-  })
-
-  check('nothing remembered is nothing decided against', () => {
-    // The very first event of a session has no history to weigh, and a lone
-    // whole delta on one axis is a wheel until something says otherwise.
-    assert.equal(classifyWheel(y(40), 1000, NO_WHEEL_MEMORY).physical, true)
+    assert.ok(Math.max(...ticks) <= 2, `no event should jump: ${ticks.join(' ')}`)
+    assert.equal(ticks.reduce((a, b) => a + b, 0), 6)
   })
 }
 

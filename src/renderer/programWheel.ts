@@ -6,6 +6,28 @@
  * event are the whole of its world — and because what it is compensating for
  * is a detail of xterm's that wants stating in one place rather than in the
  * middle of pane bookkeeping.
+ *
+ * ## Why there is no longer a device classifier here
+ *
+ * There was one, and it is worth saying plainly why it went, because the idea
+ * is tempting enough to be reinvented.
+ *
+ * It tried to tell a mouse from a trackpad by the arithmetic of the deltas —
+ * whole numbers and even division meaning notches, fractions and two-axis
+ * movement meaning a finger. The signal is not there. A finger moved *straight*
+ * down the pad produces `deltaX === 0`, which makes the divisibility test
+ * vacuously true on the X axis, and a smooth acceleration ramp (1, 2, 4, 8)
+ * divides evenly on the Y axis — so an ordinary trackpad stroke was judged a
+ * mouse whenever macOS happened to emit integers, and judged a finger when the
+ * same stroke landed on fractions. The two verdicts moved the screen by three
+ * lines and by a twentieth of a line respectively, which is why scrolling felt
+ * like two different devices sharing one pane.
+ *
+ * So: no guessing at the hardware. What this measures instead is the *shape of
+ * the gesture*, which is a thing the events actually carry — a continuous
+ * stroke arrives as an unbroken stream, and a detent arrives as a burst with
+ * silence on either side. That distinction needs no knowledge of what is under
+ * the user's hand, and it is the same on every platform.
  */
 import type { Terminal } from '@xterm/xterm'
 
@@ -13,8 +35,9 @@ import type { Terminal } from '@xterm/xterm'
  * How far a wheel moves the pane's own scrollback, per pixel of wheel.
  *
  * Not ours: it is what xterm's viewport does, 50 pixels of scroll per 40
- * pixels of wheel. Written down because `programWheelDriver` has to match it —
- * the point of the whole file is that the two agree.
+ * pixels of wheel. Written down because the program path has to match it — a
+ * flick should cover the same ground whether Claude Code or the scrollback
+ * above it is the thing reading the wheel.
  */
 const VIEWPORT_PIXELS_PER_WHEEL_PIXEL = 50 / 40
 
@@ -29,6 +52,23 @@ const VIEWPORT_PIXELS_PER_WHEEL_PIXEL = 50 / 40
 const SYNTHETIC_WHEEL_DELTA = 100
 
 /**
+ * The silence that separates one gesture from the next, in milliseconds.
+ *
+ * The one number in this file that decides anything, so it is worth being
+ * precise about what it is measuring. A finger on a trackpad produces events
+ * continuously while it moves — every 8ms or so, the display's own cadence —
+ * and so counts as a single gesture from the moment it lands to the moment the
+ * momentum dies. A mouse detent produces a short burst and then nothing until
+ * the wheel is turned again, which even at a fast ten notches a second leaves
+ * gaps far wider than this.
+ *
+ * 120ms is comfortably above the frame-to-frame gap of a continuous stroke and
+ * comfortably below the notch-to-notch gap of a wheel being turned, so nothing
+ * has to know which one it is looking at.
+ */
+const BURST_GAP_MS = 120
+
+/**
  * The most one wheel event may move: a screen.
  *
  * A ceiling in case a device reports something absurd, and the pane's own
@@ -38,110 +78,6 @@ const SYNTHETIC_WHEEL_DELTA = 100
  */
 function maxLines(rows: number): number {
   return Math.max(1, rows)
-}
-
-/**
- * Lines one detent of a physical wheel moves.
- *
- * Three, which is what Terminal.app and iTerm2 settled on and what the TUIs
- * were written against. A constant rather than a measurement, and that is the
- * entire point of it — see `classifyWheel`.
- */
-const LINES_PER_NOTCH = 3
-
-/**
- * How long a gap ends a gesture, in milliseconds.
- *
- * Long enough to span the pause between two deliberate notches, short enough
- * that putting the mouse down and picking the trackpad up is judged afresh
- * rather than against what the other device was doing.
- */
-const GESTURE_GAP_MS = 400
-
-/**
- * What the classifier remembers between events.
- *
- * Passed in and handed back rather than kept in a closure, so the judgement is
- * a pure function of the events and can be tested as one.
- */
-export interface WheelMemory {
-  /** Recent verdicts, newest last. 0 is certainly a wheel, 1 certainly a surface. */
-  readonly scores: readonly number[]
-  readonly lastX: number
-  readonly lastY: number
-  readonly at: number
-}
-
-export const NO_WHEEL_MEMORY: WheelMemory = { scores: [], lastX: 0, lastY: 0, at: 0 }
-
-/** Within a hundredth, which is as near an integer as a real delta ever lands. */
-function isAlmostInt(value: number): boolean {
-  return Math.abs(Math.round(value) - value) < 0.01
-}
-
-/**
- * Whether the wheel being turned is a wheel, or a surface being stroked.
- *
- * The distinction matters because macOS accelerates a mouse wheel and does not
- * tell anybody it has: the same detent arrives as four pixels when you turn it
- * slowly and as a hundred and twenty when you keep turning. Measuring that
- * faithfully — which is what this file did, and what makes a trackpad feel
- * right — reproduces the acceleration on top of a wheel that already has
- * detents, so the first few notches move nothing and the ones after move half
- * a screen. Measure a surface; count a wheel.
- *
- * The test is the one from VS Code's scrollable element, which xterm vendors a
- * copy of and uses for the same question. Three signals, scored rather than
- * decided, because any one of them is wrong sometimes:
- *
- * - Both axes moving at once is a surface. A wheel has one axis.
- * - Fractional deltas are a surface. A wheel's are whole numbers.
- * - Deltas that divide into one another are a wheel: two detents of the same
- *   size, or one exactly twice another, is a thing with notches. A finger
- *   produces no such arithmetic.
- *
- * The verdict weights recent events most, so a device that has just been
- * picked up is believed over one put down five events ago.
- */
-export function classifyWheel(
-  e: { deltaX: number; deltaY: number },
-  now: number,
-  memory: WheelMemory
-): { physical: boolean; memory: WheelMemory } {
-  const fresh = now - memory.at > GESTURE_GAP_MS
-  const previous = fresh ? null : memory
-
-  let score: number
-  if (Math.abs(e.deltaX) > 0 && Math.abs(e.deltaY) > 0) {
-    score = 1
-  } else {
-    score = 0.5
-    if (!isAlmostInt(e.deltaX) || !isAlmostInt(e.deltaY)) score += 0.25
-    if (previous) {
-      // Min 1 so nothing divides by zero; a zero axis leaves no remainder
-      // either way, which is the right answer for a wheel turned straight.
-      const minX = Math.max(Math.min(Math.abs(e.deltaX), Math.abs(previous.lastX)), 1)
-      const minY = Math.max(Math.min(Math.abs(e.deltaY), Math.abs(previous.lastY)), 1)
-      const maxX = Math.max(Math.abs(e.deltaX), Math.abs(previous.lastX))
-      const maxY = Math.max(Math.abs(e.deltaY), Math.abs(previous.lastY))
-      if (maxX % minX === 0 && maxY % minY === 0) score -= 0.5
-    }
-    score = Math.min(Math.max(score, 0), 1)
-  }
-
-  const scores = [...(fresh ? [] : memory.scores), score].slice(-5)
-
-  // 0.5 of the newest, 0.25 of the one before, and so on, with whatever
-  // influence is left over going to the oldest so the weights come to one.
-  let remaining = 1
-  let verdict = 0
-  for (let i = scores.length - 1; i >= 0; i--) {
-    const influence = i === 0 ? remaining : Math.pow(2, -(scores.length - i))
-    remaining -= influence
-    verdict += scores[i] * influence
-  }
-
-  return { physical: verdict <= 0.5, memory: { scores, lastX: e.deltaX, lastY: e.deltaY, at: now } }
 }
 
 /** Wheel events this file made up, so the handler can tell them from real ones. */
@@ -157,41 +93,41 @@ const SYNTHETIC_WHEEL = new WeakSet<WheelEvent>()
  * and then uses that number only to decide whether to send anything at all.
  * One notch in, one wheel report out, and the program moves its one line.
  *
- * That is the whole of the "scrolling is slow in Claude Code" bug, and it is
- * worse on a Mac for a second reason on top: xterm damps any wheel delta under
- * 50 pixels to 30% before that zero check, and on macOS *every* wheel event is
- * under 50 — not just trackpads but mice, because Chromium reports macOS
- * wheels in real scroll units where a Windows notch is a flat 100. So a Mac
- * mouse spent two notches in three below the threshold and sent nothing.
+ * That is the original "scrolling is slow in Claude Code" bug. This measures
+ * the gesture the way the pane's own viewport would, in pixels, divides by the
+ * cell to get lines, and dispatches that many wheel events at xterm. They are
+ * ordinary events as far as xterm is concerned: it encodes and reports each
+ * one, in whichever mouse protocol the program asked for, and this file never
+ * has to know what that protocol was.
  *
- * Every real terminal sends several reports per notch — three is the number
- * Terminal.app and iTerm2 settled on, and it is what TUIs are written
- * expecting. So this measures the gesture the way the pane's own viewport
- * would, in pixels, divides by the cell to get lines, and dispatches that many
- * wheel events at xterm. They are ordinary events as far as xterm is
- * concerned: it encodes and reports each one, in whichever mouse protocol the
- * program asked for, and this file never has to know what that protocol was.
+ * Three rules, and between them they cover every device without identifying
+ * any of them:
  *
- * Measuring rather than picking a constant is what keeps a pane consistent
- * with itself — the same flick covers the same ground whether Claude Code or
- * the scrollback is reading it, at any font size, on any pointing device. The
- * fraction left over is carried, so a trackpad's stream of tiny deltas adds up
- * instead of rounding away to nothing.
+ * 1. **Measure, and carry the remainder.** Six pixels is a third of a line, and
+ *    three of those should move the screen once rather than never. This is what
+ *    makes a trackpad feel like a trackpad.
+ *
+ * 2. **A reversal is a new gesture, not a debt.** Carry left over from scrolling
+ *    down is meaningless to a stroke going up, and applying it there costs the
+ *    first line of travel and leaves the pane feeling stuck against the
+ *    direction you just came from. Sign change drops it.
+ *
+ * 3. **The first event of a burst always moves at least one line.** macOS
+ *    reports a mouse detent as about four pixels when the wheel is turned
+ *    slowly — a quarter of a line, so three detents in a row would move nothing
+ *    at all while the carry filled up. A stroke is one long burst, so this fires
+ *    once at the start of it and is invisible; a wheel is a burst per detent, so
+ *    every detent lands. This is the whole of the mouse fix, and it needs to
+ *    know nothing about mice.
  */
 export function wheelTicks(
   e: { deltaY: number; deltaMode: number },
   cell: number,
   rows: number,
   carry: number,
-  notch = 0
+  /** Whether this event opens a gesture — see rule 3 and `BURST_GAP_MS`. */
+  startOfBurst = false
 ): { ticks: number; carry: number } {
-  // A detent, counted rather than measured. Nothing is carried: a notch is a
-  // whole event on its own, and a remainder from one could only arrive as a
-  // stray extra line during the next.
-  if (notch > 0 && e.deltaY !== 0) {
-    return { ticks: e.deltaY < 0 ? -notch : notch, carry: 0 }
-  }
-
   const lines =
     e.deltaMode === 2 /* page */
       ? e.deltaY * rows
@@ -199,44 +135,53 @@ export function wheelTicks(
         ? e.deltaY
         : (e.deltaY * VIEWPORT_PIXELS_PER_WHEEL_PIXEL) / cell
 
-  const total = lines + carry
-  const whole = Math.trunc(total)
-  // The remainder rides along to the next event, which is the whole reason a
-  // trackpad works at all: six pixels is a third of a line, and three of them
-  // should move the screen once rather than never.
-  const rest = total - whole
+  if (lines === 0) return { ticks: 0, carry }
+
+  // Rule 2. `Math.sign(0)` is 0 and never matches, which is the right answer
+  // for an empty carry as well as for an opposing one.
+  const held = Math.sign(carry) === Math.sign(lines) ? carry : 0
+
+  const total = lines + held
+  let whole = Math.trunc(total)
+  let rest = total - whole
+
+  // Rule 3. Nothing is carried out of a floored event: the gesture has been
+  // paid a line it did not quite earn, and letting the remainder ride would
+  // hand the next event a stray one on top.
+  if (whole === 0 && startOfBurst) {
+    whole = lines < 0 ? -1 : 1
+    rest = 0
+  }
+
   const max = maxLines(rows)
-  if (Math.abs(whole) <= max) return { ticks: whole, carry: rest }
-  return { ticks: whole < 0 ? -max : max, carry: rest }
+  const capped = Math.abs(whole) > max ? (whole < 0 ? -max : max) : whole
+  // `Math.trunc` of a small negative is `-0`, which is a different value from
+  // `0` to anything using `Object.is` — a test, a `Map` key, a strict compare.
+  // It never means anything different here, so it never leaves here.
+  return { ticks: capped === 0 ? 0 : capped, carry: rest }
 }
 
 /** Wires `wheelTicks` to one pane's terminal. See the note above. */
 export function programWheelDriver(
   term: Terminal,
   element: HTMLElement,
-  /**
-   * Whether this platform accelerates a mouse wheel behind the app's back.
-   *
-   * macOS does and nothing else does, which is why this is a parameter rather
-   * than a check: on Windows a detent is a flat hundred pixels every time, so
-   * measuring it is already right and counting it instead would throw away a
-   * calibration that works.
-   */
-  accelerates = false,
   now: () => number = () => Date.now()
 ): (e: WheelEvent) => boolean {
   let carry = 0
-  let memory = NO_WHEEL_MEMORY
+  let lastAt = 0
 
   return (e) => {
     // Ours, coming back around. This is the one that xterm should handle.
     if (SYNTHETIC_WHEEL.has(e)) return true
 
-    const judged = classifyWheel(e, now(), memory)
-    memory = judged.memory
-    // Zero unless this is a wheel with detents on a platform that accelerates
-    // it, in which case it is how many lines one detent means.
-    const notch = accelerates && judged.physical ? LINES_PER_NOTCH : 0
+    const at = now()
+    const startOfBurst = at - lastAt > BURST_GAP_MS
+    lastAt = at
+
+    if (e.deltaY === 0) {
+      carry = 0
+      return true
+    }
 
     // Exactly the two states where xterm reports rather than scrolls. `x10` is
     // excluded because it reports button presses only — a wheel under x10
@@ -245,23 +190,13 @@ export function programWheelDriver(
     const toProgram =
       (tracking !== 'none' && tracking !== 'x10') || term.buffer.active.type === 'alternate'
 
-    if (e.deltaY === 0) {
+    // The viewport is xterm's own to scroll, and it does it in pixels against
+    // the same deltas — so it is already smooth and already consistent with
+    // what a program gets here. Nothing to correct, and the carry belongs to
+    // the gesture that was going to a program rather than to this one.
+    if (!toProgram) {
       carry = 0
       return true
-    }
-
-    // The scrollback has the same problem for the same reason — xterm measures
-    // the wheel in pixels too — and it is the same pane. A notch covering three
-    // lines of Claude Code and eleven of the scrollback above it would be one
-    // pane behaving as two.
-    if (!toProgram) {
-      if (notch === 0) {
-        carry = 0
-        return true
-      }
-      e.preventDefault()
-      term.scrollLines(e.deltaY < 0 ? -notch : notch)
-      return false
     }
 
     // Measured per event, not remembered: it moves with the font size, the
@@ -271,7 +206,7 @@ export function programWheelDriver(
     const cell = screen instanceof HTMLElement && term.rows > 0 ? screen.clientHeight / term.rows : 0
     if (cell <= 0) return true
 
-    const { ticks, carry: rest } = wheelTicks(e, cell, term.rows, carry, notch)
+    const { ticks, carry: rest } = wheelTicks(e, cell, term.rows, carry, startOfBurst)
     carry = rest
 
     // Swallowed rather than passed on: the wheel has not come to a line yet,

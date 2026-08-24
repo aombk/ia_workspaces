@@ -63,6 +63,25 @@ export function isOurHook(command: unknown): boolean {
   return typeof command === 'string' && /(^|[\s"/\\])iaw(\.cmd)?"? (notify|session)\b/.test(command)
 }
 
+/** Every verb our hooks invoke. `isOurHook` is looser; this has to be exact. */
+const VERBS = 'notify|session|report-agent'
+
+/**
+ * A hook command with the shim's path reduced to a placeholder, so two spellings
+ * of the same instruction compare equal.
+ *
+ * Needed because staleness is decided by comparing an installed command against
+ * the one we would write now, and the two legitimately disagree about the path:
+ * `commands()` is documented as taking an empty path when only the event names
+ * matter, builds have written a bare `iaw`, an absolute POSIX path and a `.cmd`,
+ * and a user who moved the app has a valid install naming the old location.
+ * None of those is a reason to rewrite their config; a changed *verb or flag*
+ * is.
+ */
+export function hookShape(command: string): string {
+  return command.replace(new RegExp(String.raw`(?:"[^"]*"|\S+)(?= (?:${VERBS})\b)`, 'g'), 'iaw')
+}
+
 /**
  * Adds our handler to each event, leaving any hooks the user already has in
  * place — this is their config, and these agents run every matching handler.
@@ -78,14 +97,43 @@ export function mergeHooks(
 
   for (const [event, command] of Object.entries(spec.commands(iawPath))) {
     const groups = Array.isArray(hooks[event]) ? [...(hooks[event] as unknown[])] : []
+    const wanted = hookShape(command)
 
-    const alreadyThere = groups.some((group) => {
+    // An earlier version of this app may already have written a handler here.
+    // Finding one is not the end of the question: if what it runs has since
+    // changed — a flag added to `report-agent`, a verb renamed — leaving it be
+    // means the upgrade silently never reaches anybody who installed before it,
+    // and `hooksInstalled` goes on reporting that everything is current. So a
+    // handler of ours whose instruction no longer matches is rewritten in
+    // place, keeping its position among whatever else the user has on the
+    // event.
+    let found = false
+    let stale = false
+    const refreshed = groups.map((group) => {
       const handlers = (group as { hooks?: unknown[] })?.hooks
-      return (
-        Array.isArray(handlers) && handlers.some((h) => isOurHook((h as { command?: unknown })?.command))
-      )
+      if (!Array.isArray(handlers)) return group
+      let touched = false
+      const next = handlers.map((h) => {
+        const current = (h as { command?: unknown })?.command
+        if (!isOurHook(current)) return h
+        found = true
+        if (hookShape(current as string) === wanted) return h
+        stale = true
+        touched = true
+        return { ...(h as object), command }
+      })
+      return touched ? { ...(group as object), hooks: next } : group
     })
-    if (alreadyThere) continue
+
+    if (found) {
+      if (!stale) continue
+      // Rewriting one counts the same as adding one: both mean the file on disk
+      // is not yet what this version installs, which is exactly what `added`
+      // is read for.
+      hooks[event] = refreshed
+      added++
+      continue
+    }
 
     groups.push(
       spec.matcherGroups
@@ -150,7 +198,10 @@ export function readAgentHooks(spec: AgentHookSpec): AgentConfigInfo {
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
     const { added } = mergeHooks(spec, parsed.hooks, '')
-    // Nothing left to add means every hook we install is already there.
+    // Nothing left to add *or refresh* means every hook we install is already
+    // there and still says what this version says. An install from an older
+    // build whose commands have since changed reports false, so Settings offers
+    // to bring it up to date rather than calling it done.
     return { ...base, exists: true, hooksInstalled: added === 0 }
   } catch {
     return { ...base, exists: true, hooksInstalled: false }

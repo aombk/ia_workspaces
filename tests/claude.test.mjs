@@ -106,6 +106,70 @@ check('installing twice adds nothing further', () => {
   assert.equal(ours.length, 1)
 })
 
+// Submitting a prompt is the only answer we can read without guessing, so it
+// clears `blocked` — a pane must not sit on "waiting for you" through the whole
+// turn that prompt kicked off. Focus deliberately does not do this; see
+// `agentState.ts`.
+check('submitting a prompt reports the pane unblocked', () => {
+  const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  const commands = config.hooks.UserPromptSubmit.flatMap((g) => g.hooks.map((h) => h.command))
+  assert.ok(
+    commands.some((c) => c.includes('report-agent --run-start --unblocked')),
+    'UserPromptSubmit does not clear the blocked flag'
+  )
+})
+
+// An install from an older build is not "already there": if what our handler
+// runs has changed since, leaving it alone means the upgrade never reaches
+// anyone who installed before it.
+check('an outdated handler of ours is reported as not installed', () => {
+  const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  const groups = config.hooks.UserPromptSubmit
+  for (const group of groups) {
+    for (const handler of group.hooks) {
+      if (handler.command.includes('report-agent')) {
+        // Exactly what the previous version wrote.
+        handler.command = handler.command.replace(' --run-start --unblocked', ' --run-start')
+      }
+    }
+  }
+  fs.writeFileSync(settingsFile, JSON.stringify(config, null, 2) + '\n')
+  assert.equal(readClaudeSettings().hooksInstalled, false)
+})
+
+check('installing over it rewrites the stale handler in place', () => {
+  setClaudeIntegration(true, stateDir, IAW)
+  const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  const commands = config.hooks.UserPromptSubmit.flatMap((g) => g.hooks.map((h) => h.command))
+  // Updated, not duplicated: one handler of ours on the event, and it is current.
+  const ours = commands.filter((c) => c.includes('report-agent'))
+  assert.equal(ours.length, 1)
+  assert.ok(ours[0].includes('--run-start --unblocked'))
+  assert.equal(readClaudeSettings().hooksInstalled, true)
+})
+
+// The path is not part of the instruction. A user who moved the app, or an
+// install from a build that wrote the bare word, is still current — rewriting
+// their config over a spelling difference is churn, not an upgrade.
+check('a handler naming a different path is left alone', () => {
+  const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  const groups = config.hooks.UserPromptSubmit
+  let rewritten = ''
+  for (const group of groups) {
+    for (const handler of group.hooks) {
+      if (handler.command.includes('report-agent')) {
+        handler.command = handler.command.replaceAll(`"${IAW.replaceAll('\\', '/')}"`, 'iaw')
+        rewritten = handler.command
+      }
+    }
+  }
+  assert.ok(rewritten.includes('iaw report-agent'), 'the fixture did not rewrite the path')
+  fs.writeFileSync(settingsFile, JSON.stringify(config, null, 2) + '\n')
+  assert.equal(readClaudeSettings().hooksInstalled, true)
+  // Restore the absolute-path spelling for the removal checks below.
+  setClaudeIntegration(true, stateDir, IAW)
+})
+
 check('a backup of the original is kept', () => {
   assert.ok(fs.existsSync(settingsFile + '.iaw-backup'))
 })

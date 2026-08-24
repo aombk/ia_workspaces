@@ -11,9 +11,9 @@
  *
  * - **Time** is observed. No start button to forget — see `timeLog.ts` for why
  *   that is the whole difference between this and every tracker people abandon.
- * - **To do** is the project's own `NOTES.md`, which already exists and which
- *   the editor pane already opens. Markdown checkboxes, so the list is the
- *   notes, versions in git with the code, and is readable in anything.
+ * - **To do** is the project's own `TODO.md`, whose name says what it holds.
+ *   Markdown checkboxes, so the list versions in git with the code and is
+ *   readable in anything.
  * - **The timer** is a timer. It is here because it is the one part that has to
  *   be started deliberately, and because it belongs beside the thing it times.
  */
@@ -24,7 +24,7 @@ import { joinPath } from '../shared/platform'
 import {
   byDay,
   dayKey,
-  duration,
+  durationMs,
   refreshTimeNow,
   timeSpans,
   watchTime,
@@ -53,10 +53,10 @@ export class FocusPane implements AuxPane {
   private unwatch: (() => void) | null = null
   private disposed = false
 
-  /** The notes file's lines, held so a toggle can rewrite exactly one of them. */
+  /** The task file's lines, held so a toggle can rewrite exactly one of them. */
   private lines: string[] = []
   private tasks: Task[] = []
-  private notesError = ''
+  private taskError = ''
 
   private endsAt = 0
   private onBreak = false
@@ -73,7 +73,7 @@ export class FocusPane implements AuxPane {
     about.className = 'pane-about'
     about.textContent =
       'Time on this project, counted while its window is in front of you — nothing to start or ' +
-      'stop. Tasks are the checkboxes in the project’s own NOTES.md, so the list lives with the code.'
+      'stop. Tasks are the checkboxes in the project’s own TODO.md, so the list lives with the code.'
     this.element.appendChild(about)
 
     this.body = document.createElement('div')
@@ -139,9 +139,9 @@ export class FocusPane implements AuxPane {
     const row = document.createElement('div')
     row.className = 'focus-figures'
     row.append(
-      figure(duration(today), 'today'),
-      figure(duration(week), 'last 7 days'),
-      figure(duration(total), 'all time')
+      figure(durationMs(today), 'today'),
+      figure(durationMs(week), 'last 7 days'),
+      figure(durationMs(total), 'all time')
     )
     card.appendChild(row)
 
@@ -187,7 +187,7 @@ export class FocusPane implements AuxPane {
       // nothing at all, which is the comparison the chart is actually for.
       const height = bar.ms ? Math.max(6, Math.round((bar.ms / most) * 100)) : 0
       cell.style.setProperty('--h', `${height}%`)
-      cell.title = `${bar.key} — ${bar.ms ? duration(bar.ms) : 'nothing'}`
+      cell.title = `${bar.key} — ${bar.ms ? durationMs(bar.ms) : 'nothing'}`
       if (!bar.ms) cell.classList.add('empty')
       wrap.appendChild(cell)
     }
@@ -196,24 +196,24 @@ export class FocusPane implements AuxPane {
 
   // ------------------------------------------------------------------ tasks
 
-  private notesPath(): string {
+  private todoPath(): string {
     const workspace = this.workspace()
     if (!workspace) return ''
-    return joinPath(backend().capabilities.platform, workspace.cwd, 'NOTES.md')
+    return joinPath(backend().capabilities.platform, workspace.cwd, 'TODO.md')
   }
 
   private async loadTasks(): Promise<void> {
-    const file = this.notesPath()
+    const file = this.todoPath()
     if (!file) return
     try {
       const text = await backend().readText(file)
       this.lines = text.split('\n')
-      this.notesError = ''
+      this.taskError = ''
     } catch {
-      // No NOTES.md yet is the ordinary case for a project nobody has written
+      // No TODO.md yet is the ordinary case for a project nobody has written
       // one for, and is not an error worth showing as one.
       this.lines = []
-      this.notesError = ''
+      this.taskError = ''
     }
     this.tasks = readTasks(this.lines)
     this.render()
@@ -227,16 +227,16 @@ export class FocusPane implements AuxPane {
     const done = this.tasks.filter((t) => t.done)
     card.appendChild(heading(`to do${this.tasks.length ? ` — ${open.length} left` : ''}`))
 
-    if (this.notesError) {
-      card.appendChild(note(this.notesError))
+    if (this.taskError) {
+      card.appendChild(note(this.taskError))
       return card
     }
 
     if (!this.tasks.length) {
       card.appendChild(
         note(
-          'No checkboxes in this project’s NOTES.md. Add a line like “- [ ] fix the parser” and it ' +
-            'appears here — the list is the notes file, so it travels with the project.'
+          'No checkboxes in this project’s TODO.md. Add a line like “- [ ] fix the parser” and it ' +
+            'appears here — the list is a plain file beside the code, so it travels with the project.'
         )
       )
       return card
@@ -270,11 +270,11 @@ export class FocusPane implements AuxPane {
    * Flips one checkbox, by rewriting one line.
    *
    * The whole file is written back, but only the one character that changed is
-   * different — anything else in `NOTES.md` is somebody's prose and must come
+   * different — anything else in `TODO.md` is somebody's prose and must come
    * through untouched, including whatever they did with indentation.
    */
   private async toggle(task: Task): Promise<void> {
-    const file = this.notesPath()
+    const file = this.todoPath()
     if (!file) return
     const line = this.lines[task.line]
     const match = line?.match(TASK)
@@ -292,7 +292,7 @@ export class FocusPane implements AuxPane {
     try {
       await backend().files.writeText(file, this.lines.join('\n'))
     } catch {
-      this.notesError = 'That could not be saved to NOTES.md.'
+      this.taskError = 'That could not be saved to TODO.md.'
       await this.loadTasks()
     }
   }

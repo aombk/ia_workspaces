@@ -440,7 +440,7 @@ function reopenAsEntries(pane: PaneState | undefined, workspaceId: string): Menu
  * looking at, the way "reopen as PowerShell" is, and putting it here keeps the
  * editor itself free of chrome that would only be in the way of the text.
  */
-function editorModeEntries(pane: PaneState | undefined, notesFile?: string): MenuEntry[] {
+function editorModeEntries(pane: PaneState | undefined): MenuEntry[] {
   if (pane?.kind !== 'editor') return []
   // What the pane is *showing*, which is not the same as what it has been told
   // to show: a `.json` opened without a choice being made is in the JSON view
@@ -450,9 +450,8 @@ function editorModeEntries(pane: PaneState | undefined, notesFile?: string): Men
   // had not been one of the modes for some time, so it could never tick either.
   //
   // The same rule the pane itself uses, down to the fallback: no file recorded
-  // means the workspace's notes file, and no notes file means `NOTES.md`, which
-  // `modeForFile('')` reads as markdown.
-  const current = pane.editorMode ?? modeForFile(pane.file || notesFile || '')
+  // means the workspace's `NOTES.md`, which `modeForFile('')` reads as markdown.
+  const current = pane.editorMode ?? modeForFile(pane.file || '')
   return [
     'separator',
     ...EDITOR_MODES.map((mode) => ({
@@ -491,7 +490,7 @@ function openTabMenu(x: number, y: number, workspaceId: string, tabId: string): 
     { label: 'Duplicate', onClick: () => actions.newTab(workspaceId, activePane?.cwd) },
     // Everything else a workspace can open lives on the `+`, not here.
     ...reopenAsEntries(activePane, workspaceId),
-    ...editorModeEntries(activePane, workspace?.notesFile),
+    ...editorModeEntries(activePane),
     'separator',
     { label: 'Split right', shortcut: 'Ctrl+\\', onClick: () => actions.splitPane('row') },
     { label: 'Split down', shortcut: 'Ctrl+Shift+\\', onClick: () => actions.splitPane('column') },

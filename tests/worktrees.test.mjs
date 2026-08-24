@@ -132,8 +132,8 @@ console.log('Against a real repository')
     assert.equal(list[0].branch, 'main')
   })
 
-  await checkAsync('repoRoot finds the checkout from inside it', async () => {
-    const root = await W.repoRoot(repo)
+  await checkAsync('mainCheckoutRoot finds the checkout from inside it', async () => {
+    const root = await W.mainCheckoutRoot(repo)
     assert.equal(path.resolve(root), path.resolve(repo))
   })
 

@@ -442,7 +442,7 @@ export function hintFor(text: string): string | undefined {
  *
  * Staleness is handled per caller rather than by this deadline alone, because a
  * deadline is the wrong tool for anything the user can change under your hand:
- * `repoRoot` re-checks a remembered "not a repository" against the filesystem,
+ * `checkoutRoot` re-checks a remembered "not a repository" against the filesystem,
  * and `originUrl` puts the config file's mtime in its key. This value is the
  * floor under the ones that have no cheaper signal, and short enough that being
  * wrong costs a few seconds rather than a session.
@@ -474,8 +474,16 @@ async function shaped<T>(key: string, compute: () => Promise<T>, ttlMs = SHAPE_T
   return value
 }
 
-/** The root of the checkout this folder is in, or null when it is not in one. */
-export async function repoRoot(cwd: string): Promise<string | null> {
+/**
+ * The root of the checkout this folder is in, or null when it is not in one.
+ *
+ * Inside a linked worktree that is the *worktree*, not the repository it came
+ * from — which is what every caller here wants, since a diff or a commit
+ * belongs to the checkout you are standing in. `worktrees.ts` has the other
+ * one, `mainCheckoutRoot`, for the commands that must run from the main
+ * checkout instead. Both used to be called `repoRoot`.
+ */
+export async function checkoutRoot(cwd: string): Promise<string | null> {
   const key = `root:${cwd}`
 
   // A remembered "not a repository" is the one answer here that goes false
@@ -665,7 +673,7 @@ export async function originUrl(root: string): Promise<string> {
  * says "2 changed files" above three of them.
  */
 export async function repoStatus(cwd: string): Promise<RepoStatus> {
-  const root = await repoRoot(cwd)
+  const root = await checkoutRoot(cwd)
   if (!root) {
     return { root: '', detached: false, ahead: 0, behind: 0, hasRemote: false, files: [], unsent: [] }
   }
@@ -825,7 +833,7 @@ async function remoteNames(cwd: string): Promise<string[]> {
  * which is the ordering `layoutGraph` is written against.
  */
 export async function history(cwd: string, limit = 400, filter?: HistoryFilter): Promise<Commit[]> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const remotes = await remoteNames(root)
   const args = ['log', '--date-order', `--max-count=${Math.max(1, Math.min(2000, limit))}`, `--format=${LOG_FORMAT}`, '--all']
 
@@ -876,7 +884,7 @@ export async function history(cwd: string, limit = 400, filter?: HistoryFilter):
  * is not "nothing unsent" and must not be shown as it — see `RepoStatus.upstream`.
  */
 export async function unsentSubjects(cwd: string, limit: number): Promise<string[]> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const res = await run(root, ['log', `--max-count=${Math.max(1, limit)}`, '--format=%s', '@{upstream}..HEAD'])
   if (!res.ok) return []
   return res.out.split('\n').map((line) => line.trim()).filter(Boolean)
@@ -896,7 +904,7 @@ const BRANCH_FORMAT = [
 
 /** Every line of saves, here and on the copy elsewhere. */
 export async function branches(cwd: string): Promise<Branch[]> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const res = await run(root, ['for-each-ref', `--format=${BRANCH_FORMAT}`, '--sort=-committerdate', 'refs/heads', 'refs/remotes'])
   if (!res.ok) return []
   return parseBranches(res.out)
@@ -955,7 +963,7 @@ export async function fileDiff(
   repoPath: string,
   opts: { picked?: boolean; untracked?: boolean } = {}
 ): Promise<string> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const args = opts.untracked
     ? ['diff', '--no-index', '--no-color', '--', '/dev/null', repoPath]
     : opts.picked
@@ -969,14 +977,14 @@ export async function fileDiff(
 
 /** Everything picked, as one patch — what the next save will actually contain. */
 export async function pickedDiff(cwd: string): Promise<string> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const res = await run(root, ['diff', '--cached', '--no-color'])
   return capped(res.out)
 }
 
 /** One save's changed lines, with the files it touched. */
 export async function commitDiff(cwd: string, sha: string, repoPath?: string): Promise<string> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const args = ['show', '--no-color', '--format=', '--patch', sha]
   if (repoPath) args.push('--', repoPath)
   const res = await run(root, args)
@@ -985,7 +993,7 @@ export async function commitDiff(cwd: string, sha: string, repoPath?: string): P
 
 /** The files one save touched, as `status<tab>path` lines. */
 export async function commitFiles(cwd: string, sha: string): Promise<ChangedFile[]> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const res = await run(root, ['show', '--name-status', '--format=', '-z', sha])
   if (!res.ok) return []
   const out: ChangedFile[] = []
@@ -1022,7 +1030,7 @@ export async function commitFiles(cwd: string, sha: string): Promise<ChangedFile
  * operations can offer.
  */
 export async function pick(cwd: string, paths: string[]): Promise<GitResult> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const args = paths.length ? ['add', '--verbose', '--', ...paths] : ['add', '--verbose', '--all']
   let count = 0
   return asResult(
@@ -1050,7 +1058,7 @@ export async function pick(cwd: string, paths: string[]): Promise<GitResult> {
  * their mind. Neither form touches a file on disk.
  */
 export async function unpick(cwd: string, paths: string[]): Promise<GitResult> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const args = paths.length ? ['reset', '--quiet', '--', ...paths] : ['reset', '--quiet']
   return asResult(await run(root, args))
 }
@@ -1059,7 +1067,7 @@ export async function unpick(cwd: string, paths: string[]): Promise<GitResult> {
 export async function save(cwd: string, message: string): Promise<GitResult> {
   const text = message.trim()
   if (!text) return { ok: false, error: 'a message is required', hint: 'A save needs a line saying what it is, so the list of saves is readable later.' }
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   return asResult(await run(root, ['commit', '-m', text]))
 }
 
@@ -1073,7 +1081,7 @@ export async function save(cwd: string, message: string): Promise<GitResult> {
  * flag would be theatre.
  */
 export async function send(cwd: string): Promise<GitResult> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const status = await repoStatus(root)
   if (status.detached || !status.branch) {
     return {
@@ -1096,7 +1104,7 @@ export async function send(cwd: string): Promise<GitResult> {
  * from. Nothing is printed to a user either way — the output goes to the pane.
  */
 export async function peek(cwd: string): Promise<GitResult> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   return asResult(await runProgress(root, ['fetch', '--progress'], { op: 'peek', network: true }))
 }
 
@@ -1110,7 +1118,7 @@ export async function peek(cwd: string): Promise<GitResult> {
  * git asking a question rather than anything going wrong.
  */
 export async function bringIn(cwd: string): Promise<GitResult> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   return asResult(await runProgress(root, ['pull', '--rebase', '--progress'], { op: 'bring-in', network: true }))
 }
 
@@ -1124,7 +1132,7 @@ export async function bringIn(cwd: string): Promise<GitResult> {
  * them up, which is what someone clicking `origin/thing` in a list means.
  */
 export async function goTo(cwd: string, name: string): Promise<GitResult> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const remotes = await remoteNames(root)
   const prefix = remotes.find((r) => name.startsWith(`${r}/`))
   const local = prefix ? name.slice(prefix.length + 1) : name
@@ -1135,7 +1143,7 @@ export async function goTo(cwd: string, name: string): Promise<GitResult> {
 export async function startBranch(cwd: string, name: string): Promise<GitResult> {
   const clean = name.trim()
   if (!clean) return { ok: false, error: 'a name is required' }
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   return asResult(await run(root, ['switch', '--create', clean]))
 }
 
@@ -1156,7 +1164,7 @@ export async function startBranch(cwd: string, name: string): Promise<GitResult>
  */
 export async function applyLines(cwd: string, patch: string, direction: 'pick' | 'unpick'): Promise<GitResult> {
   if (!patch.trim()) return { ok: false, error: 'nothing selected', hint: 'Tick at least one changed line first.' }
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const args = ['apply', '--cached', '--whitespace=nowarn']
   if (direction === 'unpick') args.push('--reverse')
   return asResult(await runInput(root, args, patch))
@@ -1178,7 +1186,7 @@ export async function applyLines(cwd: string, patch: string, direction: 'pick' |
  * exactly the class of operation this pane leaves to the terminal.
  */
 export async function undoLastSave(cwd: string): Promise<GitResult> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const status = await statusOf(root)
   if (!status.lastSave) {
     return { ok: false, error: 'no saves yet', hint: 'There is no save to undo — this project has not had one made yet.' }
@@ -1208,7 +1216,7 @@ export async function undoLastSave(cwd: string): Promise<GitResult> {
  * alone and a rewrite once it is not.
  */
 export async function amend(cwd: string, message: string): Promise<GitResult> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const status = await statusOf(root)
   if (!status.lastSave) {
     return { ok: false, error: 'no saves yet', hint: 'There is no save to add to yet. Make the first one.' }
@@ -1236,7 +1244,7 @@ export async function amend(cwd: string, message: string): Promise<GitResult> {
  */
 export async function revertSave(cwd: string, sha: string): Promise<GitResult> {
   if (!sha.trim()) return { ok: false, error: 'no save given' }
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   // A merge has two sides, and reverting one needs to be told which to keep.
   // `-m 1` means "keep the line you were on", the only answer a button can
   // give honestly — and git refuses outright without it.
@@ -1252,7 +1260,7 @@ export async function revertSave(cwd: string, sha: string): Promise<GitResult> {
 export async function addTag(cwd: string, sha: string, name: string): Promise<GitResult> {
   const clean = name.trim()
   if (!clean) return { ok: false, error: 'a name is required' }
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   // Not `--force`: a name that already points at another save is a question,
   // and moving it silently is how a release tag comes to mean something else.
   return asResult(await run(root, ['tag', clean, sha || 'HEAD']))
@@ -1271,7 +1279,7 @@ export async function addTag(cwd: string, sha: string, name: string): Promise<Gi
  * is used and the branch is called whatever that git calls it.
  */
 export async function initRepo(cwd: string): Promise<GitResult> {
-  const already = await repoRoot(cwd)
+  const already = await checkoutRoot(cwd)
   if (already) {
     return { ok: false, error: 'already tracked', hint: `This folder is already part of a project git is watching (${already}).` }
   }
@@ -1294,7 +1302,7 @@ export async function initRepo(cwd: string): Promise<GitResult> {
 export async function setOrigin(cwd: string, url: string): Promise<GitResult> {
   const clean = url.trim()
   if (!clean) return { ok: false, error: 'an address is required' }
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const existing = await run(root, ['remote', 'get-url', 'origin'])
   if (existing.ok && existing.out.trim()) {
     return {
@@ -1388,7 +1396,7 @@ export async function createOnline(
   cwd: string,
   opts: { command: string; name: string; private: boolean; description?: string }
 ): Promise<GitResult> {
-  const root = (await repoRoot(cwd)) ?? cwd
+  const root = (await checkoutRoot(cwd)) ?? cwd
   const name = opts.name.trim()
   if (!name) return { ok: false, error: 'a name is required' }
   const visibility = opts.private ? '--private' : '--public'

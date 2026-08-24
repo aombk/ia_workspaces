@@ -17,7 +17,7 @@
 import type { AuxPane } from './auxPane'
 import { backend } from '../backend'
 import { allHistory, refreshPaneHistory, watchHistory } from './ui/paneHistory'
-import { byDay, dayKey, duration, refreshTimeNow, timeSpans, watchTime } from './ui/timeMonitor'
+import { byDay, dayKey, durationMs, refreshTimeNow, timeSpans, watchTime } from './ui/timeMonitor'
 import type { Commit, HistoryEntry } from '../shared/types'
 
 /** Commits are fetched per project, so only for the ones you actually touched. */
@@ -181,7 +181,7 @@ export class DayPane implements AuxPane {
     const figures = document.createElement('div')
     figures.className = 'day-figures'
     figures.append(
-      figure(duration(total), 'at the keyboard'),
+      figure(durationMs(total), 'at the keyboard'),
       figure(String(lines.length), lines.length === 1 ? 'project' : 'projects'),
       figure(String(commands), commands === 1 ? 'command' : 'commands'),
       figure(String(commits), commits === 1 ? 'save' : 'saves')
@@ -236,7 +236,7 @@ export class DayPane implements AuxPane {
     head.textContent = line.name || line.cwd
     const time = document.createElement('span')
     time.className = 'day-card__time'
-    time.textContent = duration(line.ms)
+    time.textContent = durationMs(line.ms)
     head.appendChild(time)
     card.appendChild(head)
 

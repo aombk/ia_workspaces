@@ -153,8 +153,13 @@ function samePath(a: string, b: string): boolean {
  * No seconds above a minute and no decimals above an hour: this is read at a
  * glance to answer "roughly how long", and `2h 14m 33s` answers it worse than
  * `2h 14m` does.
+ *
+ * The unit is in the name because `systemMonitor.ts` has the same formatter for
+ * *seconds*, and while both were called `duration` the two were one careless
+ * import away from being wrong by a factor of a thousand — silently, since
+ * `number` matches `number`.
  */
-export function duration(ms: number): string {
+export function durationMs(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`
   const minutes = Math.round(ms / 60_000)
   if (minutes < 60) return `${minutes}m`

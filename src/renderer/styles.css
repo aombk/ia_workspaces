@@ -2962,6 +2962,89 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+/* A PDF, drawn by the engine's own viewer.
+
+   The body gives up its padding and its scrolling for this one. The viewer
+   arrives with a toolbar, a page gutter and a scrollbar of its own, and a pane
+   that scrolls it from the outside as well ends up with two scrollbars where
+   only the inner one moves the pages. Flex rather than `height: 100%`, because
+   a percentage height wants a parent with a stated one and this parent gets
+   its height from flex layout — the stretch does the same job with nothing to
+   go wrong. */
+.reader-body.document {
+  display: flex;
+  padding: 0;
+  overflow: hidden;
+}
+
+.reader-document {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  /* The viewer paints its own surround once it has the file. This is what
+     shows before then, and the app background makes that moment a pause rather
+     than a white flash. */
+  background: var(--bg);
+}
+
+/* Sound and video. Centred rather than stretched: a video scaled past its own
+   pixels is worse than one sitting in the middle of the pane, and an audio
+   element has a fixed height whatever you tell it. */
+.reader-body.media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.reader-media {
+  max-width: 100%;
+  max-height: 100%;
+  outline: none;
+}
+
+/* `object-fit: contain` keeps the aspect ratio when the pane is a different
+   shape from the picture — without it a split pane stretches faces sideways. */
+.reader-media--video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+/* An audio element will not grow past its natural height, so the only useful
+   direction is wide: a scrubber the width of the pane is a scrubber you can
+   actually land on. */
+.reader-media--audio {
+  width: 100%;
+  max-width: 640px;
+}
+
+/* Said inside the pane rather than instead of it — the header, and with it the
+   Open in editor button, is the way out of this state. Left at the top rather
+   than centred like `.unavailable-pane`: that one owns a whole pane, this one
+   sits under a toolbar that is still doing its job. */
+.reader-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 42ch;
+  color: var(--text-faint);
+}
+
+.reader-notice-title {
+  font-size: calc(13px * var(--ui-text, 1));
+  color: var(--text-dim);
+}
+
+.reader-notice-body {
+  font-size: calc(11px * var(--ui-text, 1));
+  line-height: 1.5;
+}
+
 /* Rendered markdown. Measured column, because a README across a 1400px pane is
    unreadable however good the typography is. */
 .reader-body.markdown {
@@ -5189,6 +5272,34 @@ thead .csv-cell {
    They are neighbouring halves of one question — how much of your Claude limit
    is left, and how much of your machine — and two visual languages for that
    would hide the relationship. */
+
+/*
+  Whether an agent is holding the machine awake. Sits with the usage and system
+  rows because it is the same kind of fact — a thing about this machine rather
+  than about any one workspace — and is hidden entirely unless it has something
+  surprising to say.
+*/
+.sidebar-awake {
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  font-size: calc(11px * var(--ui-text, 1));
+  color: var(--text-faint);
+  /* One line. The full sentence is in the title attribute, where it can be as
+     long as it needs to be without pushing the sidebar around. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+  The states somebody switched this on and would not expect: on battery under
+  mains-only, an agent that went quiet, a host that cannot block at all. Warmer
+  than the resting colour without being an error — nothing has gone wrong, the
+  machine is simply free to sleep when the user may be assuming otherwise.
+*/
+.sidebar-awake.warn {
+  color: var(--warn, #d08b3c);
+}
 
 .sidebar-system {
   display: flex;

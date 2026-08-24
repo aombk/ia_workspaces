@@ -11,8 +11,17 @@
  * thing this has to a standard. That is the whole reason to use somebody else's
  * schema rather than inventing one: the file opens in Obsidian, so a canvas
  * started here is not trapped here, and one started there is not a file this
- * pane has to refuse. It sits in the project folder, so it versions with the
- * code and travels with the repository like `NOTES.md` does.
+ * pane has to refuse. A canvas that has a name sits in the project folder, so
+ * it versions with the code and travels with the repository.
+ *
+ * **A canvas nobody has named has no file yet**, and that is the point. This
+ * pane used to open `notes.canvas` in the project folder whenever nobody said
+ * which canvas, which meant every glance at the surface left a file in
+ * somebody's repository that they had not asked for and would have to explain
+ * to `git status`. So an unnamed canvas holds its notes in the app's own
+ * scratch buffer — `main/scratchBuffer.ts` argues the case at length — and the
+ * name is chosen at the one moment it can be chosen well, which is when there
+ * is something on the canvas worth naming.
  *
  * **What it is not.** Not a diagram editor — there are no shapes, no styling,
  * no arrow decorations, and there is not going to be a palette of them.
@@ -49,14 +58,28 @@ import { findAll, type FindOptions } from './ui/textOps'
 import type { UiActions } from './ui/actions'
 
 /**
- * What a canvas pane opens when nobody said which canvas.
+ * The name this pane used to give a canvas without being asked for one.
  *
- * The project's own, in its own folder, under a name Obsidian opens without
- * being told anything — the same bargain `NOTES.md` makes for the editor. A
- * pane saved before canvases had names has no file recorded and still resolves
- * to this one, so those tabs come back as they were.
+ * It survives as two things, and only one of them is a file on disk. A pane
+ * recorded before canvases had names has no file against it at all, and that
+ * still means this file in the project folder: those tabs come back on the
+ * canvas they have always been on, holding what they have always held, and the
+ * `notes.canvas` sitting in a project is never touched by any of this.
+ *
+ * The other is the name the save dialog puts in its box for a canvas that has
+ * never been named. A suggestion offered while somebody is deciding is a
+ * different thing from a decision taken on their behalf — they can type over
+ * this one, and until they do, nothing is written to their project.
  */
-const DEFAULT_FILE = 'notes.canvas'
+const PROJECT_FILE = 'notes.canvas'
+
+/**
+ * What the scratch buffer calls the shape of what this pane holds.
+ *
+ * A canvas is JSON and an editor tab is markdown, so a restored pane reads back
+ * the kind of thing it wrote rather than whatever was last under its id.
+ */
+const SCRATCH_EXT = 'canvas'
 
 /**
  * The app's commands, handed in once.
@@ -177,7 +200,7 @@ export class CanvasPane implements AuxPane {
   private saveTimer: ReturnType<typeof setTimeout> | null = null
 
   /**
-   * The canvas this pane is showing, absolute, or '' for "the project's own".
+   * The canvas this pane is showing, absolute, or '' for one with no name yet.
    *
    * Held rather than read from the store on every use because it is the one
    * thing about a canvas pane that must not change under it: a pane that saved
@@ -191,7 +214,14 @@ export class CanvasPane implements AuxPane {
     private readonly workspaceId: string,
     file?: string
   ) {
-    this.path = file ?? ''
+    // Three cases, and the difference between the last two is the whole change.
+    // A path is a path. An **empty string** is a decision — a canvas somebody
+    // opened and has not named, which writes to the scratch buffer until they
+    // do. **Absent** is a pane from before canvases had names, and it still
+    // means the project's own `notes.canvas`: a tab somebody has been drawing
+    // on for months must not come back empty because the pane learned to be
+    // untitled.
+    this.path = file ?? projectCanvas(workspaceId)
     this.element = document.createElement('div')
     this.element.className = 'canvas-pane'
     this.element.tabIndex = 0
@@ -258,6 +288,12 @@ export class CanvasPane implements AuxPane {
     // The delay is for the disk's sake, not a reason to drop the last edit —
     // and `save` clears the timer itself, so this cannot write twice.
     if (this.saveTimer) void this.save()
+    // An unnamed canvas's buffer is deliberately *not* dropped here. Closing a
+    // tab is one click away from every other click in this app, and for a
+    // canvas nobody has named the buffer is the only copy there is — so it
+    // outlives the pane, and `scratchBuffer`'s sweep is what eventually
+    // collects it. A month of a few kilobytes against somebody's thinking is
+    // not a close call.
   }
 
   // ------------------------------------------------------------------- chrome
@@ -316,18 +352,31 @@ export class CanvasPane implements AuxPane {
     return bar
   }
 
-  /** The canvas being edited, absolute. Falls back to the project's own. */
+  /** The canvas being edited, absolute, or '' while it has no name. */
   private file(): string {
-    if (this.path) return this.path
-    const workspace = store.workspaces.find((w) => w.id === this.workspaceId)
-    if (!workspace) return ''
-    return joinPath(backend().capabilities.platform, workspace.cwd, DEFAULT_FILE)
+    return this.path
   }
 
-  /** The name shown on the tab and in the bar. */
+  /**
+   * The folder this canvas's relative paths are read against.
+   *
+   * A canvas with a name answers this itself. One without has no folder of its
+   * own yet, and the project's is the honest guess: it is where the file nodes
+   * dropped on it came from, and where it will land when it is saved.
+   */
+  private folder(): string {
+    const here = folderOf(this.file())
+    if (here) return here
+    return store.workspaces.find((w) => w.id === this.workspaceId)?.cwd ?? ''
+  }
+
+  /** The name shown in the bar. */
   private title(): string {
     const file = this.file()
-    return file.split(/[\\/]/).pop() ?? DEFAULT_FILE
+    // Named for what it is rather than left blank: a bar with nothing in it
+    // reads as a pane that has lost its file, which is the opposite of true.
+    if (!file) return 'Untitled canvas'
+    return file.split(/[\\/]/).pop() ?? file
   }
 
   // -------------------------------------------------------------------- load
@@ -337,11 +386,16 @@ export class CanvasPane implements AuxPane {
     // ready before the first click on it rather than after.
     void this.loadSiblings()
     const file = this.file()
-    if (!file) return
     try {
+      // A canvas with no name has nothing to read from the project — what it
+      // was holding when the app last closed is in the scratch buffer, under
+      // this pane's own id, and comes back with it.
+      const text = file
+        ? await backend().readText(file)
+        : ((await backend().scratch.read(this.paneId, SCRATCH_EXT)) ?? '')
       // Everything in the file survives, including what this app has no use
       // for — see `readCanvas`, and the spec it follows.
-      const parsed = readCanvas(await backend().readText(file))
+      const parsed = readCanvas(text)
       this.nodes = parsed.nodes
       this.edges = parsed.edges
     } catch {
@@ -460,7 +514,9 @@ export class CanvasPane implements AuxPane {
     return [
       'separator',
       { label: 'New canvas…', onClick: () => void this.newCanvas() },
-      { label: 'Save as…', onClick: () => void this.saveAs() },
+      // "Save as…" means this document already is somewhere. Until it is, the
+      // entry is the plain thing it does: give this canvas a name and a home.
+      { label: this.path ? 'Save as…' : 'Save…', onClick: () => void this.saveAs() },
       { label: 'Browse…', onClick: () => void this.browse() },
       ...(others.length ? (['separator'] as MenuEntry[]) : []),
       ...others,
@@ -496,9 +552,10 @@ export class CanvasPane implements AuxPane {
    * is what `Browse…` is for, and it is the rarer half.
    */
   private async askName(title: string, initial: string): Promise<string | null> {
+    const folder = this.folder()
     const name = await promptDialog({
       title,
-      body: `Saved in ${folderOf(this.file()) || 'the project folder'}. A name, or a path inside it.`,
+      body: `Saved in ${folder || 'the project folder'}. A name, or a path inside it.`,
       placeholder: 'plans.canvas',
       initial,
     })
@@ -506,8 +563,30 @@ export class CanvasPane implements AuxPane {
     const trimmed = name.trim()
     if (!trimmed) return null
     const withExt = isCanvasPath(trimmed) ? trimmed : `${trimmed}${CANVAS_EXT}`
-    const folder = folderOf(this.file())
     return folder ? joinPath(backend().capabilities.platform, folder, withExt) : withExt
+  }
+
+  /**
+   * Where a canvas that has never been named should go.
+   *
+   * The system's own Save dialog rather than the name prompt above, for the
+   * same reason the editor asks this way: the prompt asks for a name inside a
+   * folder this canvas has already chosen, and this canvas has not chosen one —
+   * the whole question is where it belongs, and answering it needs somewhere to
+   * browse. `PROJECT_FILE` is offered in the box, which is a suggestion rather
+   * than the file this pane used to make on its own.
+   */
+  private async chooseDestination(): Promise<string | null> {
+    const chosen = await backend().pickSaveFile({
+      title: 'Save this canvas',
+      defaultName: PROJECT_FILE,
+      filters: CANVAS_FILTERS,
+    })
+    if (!chosen) return null
+    // A typed name without the extension is still meant to be a canvas — the
+    // dialog appends it on some platforms and not on others, and a `.canvas`
+    // file is the thing that opens again in this pane and in Obsidian.
+    return isCanvasPath(chosen) ? chosen : `${chosen}${CANVAS_EXT}`
   }
 
   /**
@@ -542,17 +621,43 @@ export class CanvasPane implements AuxPane {
    * your next edit somewhere you had just decided to stop writing.
    */
   private async saveAs(): Promise<void> {
-    const file = await this.askName('Save canvas as', this.title())
+    // "Somewhere else" and "somewhere at all" are different questions, and the
+    // second one is the one an unnamed canvas is being asked.
+    const file = this.path
+      ? await this.askName('Save canvas as', this.title())
+      : await this.chooseDestination()
     if (!file) return
     await this.moveTo(file)
   }
 
+  /**
+   * Points the pane at a file and writes it there.
+   *
+   * The order is the whole of it when the canvas had no name: the real write
+   * happens first and the scratch buffer is dropped only once it has landed.
+   * The other way round trades the only copy of somebody's thinking for a save
+   * that might yet fail — and a save can fail for the ordinary reasons, a
+   * folder that is not writable or a disk that is full.
+   */
   private async moveTo(file: string): Promise<void> {
+    const wasUnnamed = !this.path
     this.path = file
     store.setPaneFile(this.paneId, file)
     if (this.nameEl) this.nameEl.textContent = this.title()
-    await this.save()
+    const written = await this.save()
     void this.loadSiblings()
+    if (!wasUnnamed) return
+    if (written) {
+      await backend().scratch.drop(this.paneId, SCRATCH_EXT)
+      return
+    }
+    // Nothing was written, so nothing has moved. The pane goes back to being
+    // unnamed rather than sitting on a path it never reached: the buffer still
+    // holds the canvas, the next save still finds it, and the toast has already
+    // said what happened.
+    this.path = ''
+    store.setPaneFile(this.paneId, '')
+    if (this.nameEl) this.nameEl.textContent = this.title()
   }
 
   /**
@@ -650,17 +755,38 @@ export class CanvasPane implements AuxPane {
     this.saveTimer = setTimeout(() => void this.save(), 700)
   }
 
-  private async save(): Promise<void> {
+  /**
+   * Writes the canvas out, to its file or to the buffer standing in for one.
+   *
+   * Deliberately silent about which: a canvas with no name is saved just as
+   * often and just as automatically as one with a name, and an autosave that
+   * stopped to ask where to put a file would be a worse interruption than not
+   * saving at all. Answers whether the write landed, because dropping the
+   * buffer depends on it.
+   */
+  private async save(): Promise<boolean> {
     if (this.saveTimer) clearTimeout(this.saveTimer)
     this.saveTimer = null
+    if (!this.loaded) return false
+    // Two spaces and one node per line, so a canvas in a repository produces a
+    // diff somebody can read rather than one enormous line. The buffer is
+    // written the same way — it is the same document, and one day it may be
+    // read out of the data folder by hand.
+    const text = JSON.stringify({ nodes: this.nodes, edges: this.edges }, null, 2)
     const file = this.file()
-    if (!file || !this.loaded) return
     try {
-      // Two spaces and one node per line, so a canvas in a repository produces a
-      // diff somebody can read rather than one enormous line.
-      await backend().files.writeText(file, JSON.stringify({ nodes: this.nodes, edges: this.edges }, null, 2))
+      if (file) await backend().files.writeText(file, text)
+      else await backend().scratch.write(this.paneId, SCRATCH_EXT, text)
+      return true
     } catch {
-      showToast('Could not save the canvas', `${this.title()} could not be written.`, { kind: 'warn' })
+      showToast(
+        'Could not save the canvas',
+        file
+          ? `${this.title()} could not be written.`
+          : 'This canvas has no name yet, and the place it is being held could not be written.',
+        { kind: 'warn' }
+      )
+      return false
     }
   }
 
@@ -1413,7 +1539,7 @@ export class CanvasPane implements AuxPane {
       // means a heading, a list, a `[[link]]` and even a mermaid diagram all
       // work inside a note, for free.
       body.classList.add('markdown')
-      body.appendChild(renderMarkdown(node.text ?? '', folderOf(this.file())))
+      body.appendChild(renderMarkdown(node.text ?? '', this.folder()))
     } else if (node.type === 'group') {
       body.textContent = node.label ?? ''
     } else if (node.type === 'file' && isImagePath(path)) {
@@ -1856,6 +1982,20 @@ function thumbnail(canvas: CanvasFile): SVGSVGElement {
 
 function isCode(path: string): boolean {
   return !!grammarFor(path)
+}
+
+/**
+ * The canvas a pane from before canvases had names was always on.
+ *
+ * A free function rather than a method because the constructor needs it before
+ * the instance is a going concern, and because it is the one piece of the old
+ * "whatever the project's canvas is" rule that still has a job: resolving the
+ * past, never naming the future.
+ */
+function projectCanvas(workspaceId: string): string {
+  const workspace = store.workspaces.find((w) => w.id === workspaceId)
+  if (!workspace) return ''
+  return joinPath(backend().capabilities.platform, workspace.cwd, PROJECT_FILE)
 }
 
 /** How many lines of a source file a card shows before it stops. */

@@ -8,6 +8,7 @@ import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readTokenUsage } from './tokenUsage'
 import { startFileDrag } from './fileDrag'
 import { historyDir, writePaneHistory } from './paneHistoryFile'
+import { dropScratch, readScratch, sweepScratch, writeScratch } from './scratchBuffer'
 import { TimeLog, timeLogPath } from './timeLog'
 import {
   hasSharePassphrase,
@@ -35,6 +36,9 @@ import { readClaudeSettings, setClaudeIntegration } from './claudeConfig'
 import { currentBranch } from './gitBranch'
 import * as git from './git'
 import { registerImageScheme, serveImages } from './imageProtocol'
+import { registerDocumentScheme, serveDocuments } from './docProtocol'
+import { registerMediaScheme, serveMedia } from './mediaProtocol'
+import { PowerLock } from './powerLock'
 import {
   readDirectory,
   listByExtension,
@@ -69,7 +73,7 @@ import {
   addWorktree,
   listWorktrees,
   removeWorktree,
-  repoRoot,
+  mainCheckoutRoot,
   suggestWorktreeDir,
   worktreeAt,
 } from './worktrees'
@@ -175,6 +179,12 @@ function bootApp(): void {
   // privileges once one exists, and the images pane cannot load a thing without
   // this. The handler itself is installed after `whenReady`.
   registerImageScheme()
+  // The same, for the reader pane's PDFs. Two schemes rather than one because
+  // an image and an embedded document are granted by different CSP directives —
+  // see `shared/docs.ts`.
+  registerDocumentScheme()
+  // And sound and video through `media-src`, which is a third directive again.
+  registerMediaScheme()
 
   // Windows shows toasts under this identity, and shows the *name of the Start
   // Menu shortcut* that carries it. Claiming it is only half the job — see
@@ -200,6 +210,7 @@ function bootApp(): void {
   let win: BrowserWindow | null = null
   let store: Store
   let ptys: PtyManager
+  let powerLock: PowerLock | undefined
   let scrollback: ScrollbackStore
   let pidMap: PidMap
   /**
@@ -560,6 +571,11 @@ function bootApp(): void {
         // The guest is not our renderer: it has its own process, no preload,
         // no node, and no access to anything on this side. See `browserPane.ts`.
         webviewTag: true,
+        // Chromium's PDF viewer is a plugin document, and without this an
+        // `<embed type="application/pdf">` renders as nothing at all. It is the
+        // only plugin that exists in a modern engine — this does not reopen the
+        // door to NPAPI, which has not existed for a decade.
+        plugins: true,
       },
     })
 
@@ -671,15 +687,15 @@ function bootApp(): void {
       // Every worktree command runs from the main checkout: `worktree add` from
       // inside another worktree works, but relative paths would then resolve
       // against the wrong root.
-      const root = (await repoRoot(cwd)) ?? cwd
+      const root = (await mainCheckoutRoot(cwd)) ?? cwd
       return addWorktree(root, { branch, dir })
     })
     ipcMain.handle(IPC.worktreeRemove, async (_e, cwd: string, dir: string, force: boolean) => {
-      const root = (await repoRoot(cwd)) ?? cwd
+      const root = (await mainCheckoutRoot(cwd)) ?? cwd
       return removeWorktree(root, dir, force)
     })
     ipcMain.handle(IPC.worktreeSuggest, async (_e, cwd: string, branch: string) => {
-      const root = await repoRoot(cwd)
+      const root = await mainCheckoutRoot(cwd)
       return root ? suggestWorktreeDir(root, branch) : null
     })
     // What git is doing, while it is doing it. Wired here rather than imported
@@ -934,6 +950,23 @@ function bootApp(): void {
     )
     ipcMain.handle(IPC.agentState, (_e, paneId?: string) => ptys.agentState(paneId))
 
+    // The untitled buffers. `scratchBuffer.ts` validates the pane id and the
+    // extension itself rather than trusting either — they arrive from a
+    // renderer and are turned into a filename.
+    ipcMain.handle(IPC.powerLock, () =>
+      powerLock?.status() ?? { hold: false, reason: 'off', holding: [], supported: false }
+    )
+
+    ipcMain.handle(IPC.scratchRead, (_e, paneId: string, ext: string) =>
+      readScratch(SHARED_DATA_DIR, paneId, ext)
+    )
+    ipcMain.handle(IPC.scratchWrite, (_e, paneId: string, ext: string, text: string) =>
+      writeScratch(SHARED_DATA_DIR, paneId, ext, text)
+    )
+    ipcMain.handle(IPC.scratchDrop, (_e, paneId: string, ext: string) =>
+      dropScratch(SHARED_DATA_DIR, paneId, ext)
+    )
+
     // A screenshot on the clipboard becomes a file path typed into the pane,
     // which is what an agent can actually act on — the same gesture as dropping
     // an image into a chat, from any Windows capture tool.
@@ -1050,6 +1083,8 @@ function bootApp(): void {
 
   app.whenReady().then(() => {
     serveImages()
+    serveDocuments()
+    serveMedia()
     ensureStartMenuShortcut()
     const userData = SHARED_DATA_DIR
     store = new Store(userData)
@@ -1205,6 +1240,13 @@ function bootApp(): void {
         },
         onStatus: (s) => {
           send(IPC.onPaneStatus, s)
+          // An agent starting or finishing is the event the wake lock exists
+          // for, so it is answered here rather than left to the next poll. The
+          // poll is the safety net for the case with no event at all — an agent
+          // that dies without saying so — and this is the fast path for the
+          // ordinary one. Cheap enough to call on every status: it filters a
+          // short array and usually changes nothing.
+          if (s.agent) powerLock?.evaluate()
           // Two different facts arrive on one channel. Split them, because a
           // reader watching for "an agent needs me" should not have to wade
           // through a throughput detector's opinion of every pane.
@@ -1241,6 +1283,25 @@ function bootApp(): void {
           .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`),
       }
     )
+
+    // After `ptys`, because it reads that registry, and before the window,
+    // because a workspace restored with an agent already running should be
+    // holding the machine up from the first evaluation rather than from the
+    // first report after it.
+    //
+    // Both settings are read through getters rather than captured, so changing
+    // the mode takes effect on the next evaluation — at most `POLL_MS` away,
+    // and immediately if anything else prompts one. A setting about sleep that
+    // needed a restart to apply would be a poor joke.
+    powerLock = new PowerLock(
+      () => ptys.agentState(),
+      () => store.settings.keepAwake
+    )
+
+    // Unawaited on purpose. Nothing in the app is waiting on a file that has
+    // been sitting there for a month, and a slow disk should not hold up the
+    // window.
+    void sweepScratch(SHARED_DATA_DIR)
 
     registerIpc()
     createWindow()
@@ -1327,6 +1388,11 @@ function bootApp(): void {
     if (shutdownRan) return
     shutdownRan = true
     try {
+      // First, and deliberately so. Everything below it can throw, and the one
+      // piece of state that must not survive this process is a power blocker:
+      // it outlives nothing else we hold, but while it is registered the
+      // machine will not sleep, and there is no longer an app to release it.
+      powerLock?.dispose()
       scrollback?.shutdownSync()
       scrollback?.dispose()
       ptys?.release()

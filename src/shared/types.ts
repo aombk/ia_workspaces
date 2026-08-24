@@ -1,3 +1,7 @@
+import type { KeepAwakeMode } from './powerLock'
+
+export type { KeepAwakeMode }
+
 /**
  * Types shared between the main process, preload bridge and renderer.
  *
@@ -107,14 +111,6 @@ export interface Workspace {
    * file tree, diff and compare panes check before assuming otherwise.
    */
   sshHost?: string
-  /**
-   * The note file this workspace's Notes tab opens.
-   *
-   * Defaults to `NOTES.md` in the workspace folder — per project, which is the
-   * point: the note lives with the code it is about, so it is in the repo, in
-   * your backups and open to whatever you already edit markdown with.
-   */
-  notesFile?: string
   /**
    * Whether this workspace shows the docked tree. Per workspace, not global —
    * a scratch workspace of shells rarely wants one, a project usually does.
@@ -1446,6 +1442,26 @@ export interface Settings {
    */
   idleAgentRelease: number
   /**
+   * Whether a working agent keeps the machine awake.
+   *
+   * The problem it solves is the one that costs a whole night: an agent is
+   * given a long job, the machine is left to get on with it, and it suspends
+   * ten minutes later with the job a tenth done. Nothing is lost, but nothing
+   * happened either, and you do not find out until the morning.
+   *
+   * `'ac'` is the default and is the reason this is three values rather than a
+   * checkbox. On a desktop it is indistinguishable from `'on'`, because a
+   * desktop is always on mains. On a laptop it does the thing you would have
+   * chosen anyway: hold the machine up while it is plugged in, and never hold
+   * a battery open on its behalf. A flat battery in a bag is a worse outcome
+   * than a job that waited.
+   *
+   * What holds the machine awake is `'working'` and only `'working'` — see
+   * `shared/powerLock.ts`, which owns the decision and explains why an agent
+   * parked on a permission prompt deliberately does not count.
+   */
+  keepAwake: KeepAwakeMode
+  /**
    * Draw with the processor instead of the graphics card.
    *
    * Off, because the card is faster at what a terminal does and every machine
@@ -2329,6 +2345,7 @@ export interface AgentChoice {
   isDefault?: boolean
 }
 
+
 export interface PaneAgentState {
   paneId: string
   state: AgentRunState
@@ -2343,6 +2360,21 @@ export interface PaneAgentState {
   model?: string
   contextPct?: number
   tokens?: string
+  /**
+   * When this pane last reported anything, as epoch milliseconds.
+   *
+   * Exposed for the wake lock, which cannot trust `state` on its own. Nothing
+   * expires `runDepth`: an agent that is killed, or whose `runEnd` hook never
+   * fires, stays `'working'` for as long as the app runs. On a badge that is a
+   * cosmetic lie. On something holding a laptop open it is a flat battery by
+   * morning, and an invisible one, because a machine failing to sleep is not a
+   * thing anybody notices in time.
+   *
+   * So the lock reads this instead and stops counting a pane that has gone
+   * quiet. The badge stays optimistic, which is the right behaviour for a
+   * badge; the lock is made sceptical, which is the right behaviour for a lock.
+   */
+  updatedAt: number
 }
 
 /** Pushed whenever a pane's observed activity or declared state changes. */
@@ -2388,6 +2420,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // Off. It ends processes, and a default that ends processes has to be one the
   // user chose — the setting explains the trade and the memory it gives back.
   idleAgentRelease: 0,
+  // Mains-only. See the field: it is `'on'` on every desktop, and the safe
+  // choice on every laptop, so it is the one default that needs no warning.
+  keepAwake: 'ac',
   useSoftwareRendering: false,
   cryptoCoins: 'btc, eth, ltc',
   cryptoCurrency: 'eur',

@@ -49,7 +49,6 @@ export interface SavedWorkspace {
   wslDistro?: string
   /** Which SSH host, when the workspace's shell is `ssh`. */
   sshHost?: string
-  notesFile?: string
   treeVisible?: boolean
   collapsed?: boolean
   /**
@@ -138,7 +137,6 @@ export function exportWorkspaces(chosen: Workspace[], now: Date): WorkspaceFile 
       if (w.shell) saved.shell = w.shell
       if (w.wslDistro) saved.wslDistro = w.wslDistro
       if (w.sshHost) saved.sshHost = w.sshHost
-      if (w.notesFile) saved.notesFile = w.notesFile
       if (w.treeVisible) saved.treeVisible = true
       if (w.collapsed) saved.collapsed = true
       // A parent outside the chosen set is dropped rather than dangling: the
@@ -297,7 +295,6 @@ export function importWorkspaces(
       ...(isShell(w.shell) ? { shell: w.shell } : {}),
       ...(text(w.wslDistro) ? { wslDistro: text(w.wslDistro) } : {}),
       ...(text(w.sshHost) ? { sshHost: text(w.sshHost) } : {}),
-      ...(text(w.notesFile) ? { notesFile: text(w.notesFile) } : {}),
       ...(w.treeVisible === true ? { treeVisible: true } : {}),
       ...(w.collapsed === true ? { collapsed: true } : {}),
     })

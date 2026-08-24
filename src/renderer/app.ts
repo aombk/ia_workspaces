@@ -51,6 +51,7 @@ import { initRelayMonitor, watchRelay } from './ui/relayMonitor'
 import { initTimeMonitor } from './ui/timeMonitor'
 import { initTokenMonitor } from './ui/tokenMonitor'
 import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
+import { initAwakeStrip } from './ui/awakeStrip'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
 import { initMonitorDock, toggleMonitorDock } from './ui/monitorDock'
 
@@ -217,6 +218,7 @@ export async function start(): Promise<void> {
   // A sweep lands on its own timer, not through the store, so the sidebar would
   // otherwise keep yesterday's triangles until something unrelated redrew it.
   watchRelay(render)
+  initAwakeStrip()
   initMonitorDock()
   // The link at the bottom of the strip opens the panel. No workspace is
   // involved any more, which is the whole point of it being a dock.
@@ -400,17 +402,36 @@ function openInEditor(target: string): void {
 /**
  * Is this canvas pane showing that canvas?
  *
- * Both sides are normalised through "no file means the project's own", so a
- * pane saved before canvases had names and a request for `notes.canvas` by its
- * full path are recognised as the same canvas rather than opening it twice.
+ * Three cases, and the middle one is new enough to be worth spelling out,
+ * because it used to be folded into the third and that was a bug.
+ *
+ * A pane whose file is **absent** was saved before canvases had names, and
+ * still means the project's own `notes.canvas` — so a request for that file by
+ * its full path finds it rather than opening the same document twice, which
+ * would have the two panes saving over each other.
+ *
+ * A pane whose file is the **empty string** is a canvas nobody has named. That
+ * is not a file at all, and it is emphatically not `notes.canvas`: while the
+ * two were normalised together, an untitled canvas answered to a request for
+ * the project's real one, and opening `notes.canvas` from the tree or the
+ * document list jumped to the empty pane instead — the actual file was
+ * unreachable for as long as an untitled canvas was open.
+ *
+ * A request for **nothing** is a request for a *new* untitled canvas, which no
+ * existing pane can satisfy. Two unnamed canvases are two documents that happen
+ * to share the absence of a name, exactly as two untitled editor tabs are.
  */
 function sameCanvas(pane: PaneState, wanted: string, workspaceId: string): boolean {
-  const workspace = store.workspaces.find((w) => w.id === workspaceId)
-  const fallback = workspace
-    ? joinPath(backend().capabilities.platform, workspace.cwd, 'notes.canvas')
-    : ''
-  const resolve = (file: string): string => (file || fallback).toLowerCase()
-  return resolve(pane.file ?? '') === resolve(wanted)
+  if (!wanted) return false
+  if (pane.file === undefined) {
+    const workspace = store.workspaces.find((w) => w.id === workspaceId)
+    const fallback = workspace
+      ? joinPath(backend().capabilities.platform, workspace.cwd, 'notes.canvas')
+      : ''
+    return fallback.toLowerCase() === wanted.toLowerCase()
+  }
+  if (!pane.file) return false
+  return pane.file.toLowerCase() === wanted.toLowerCase()
 }
 
 function findPane(
@@ -743,8 +764,10 @@ const actions: UiActions = {
     // panes on two canvases is just a project with two canvases in it, which is
     // the point of them having names.
     //
-    // A pane with no file recorded is the project's own `notes.canvas`, so
-    // asking for that by name finds it as well as asking for it by default.
+    // A pane saved before canvases had names is the project's own
+    // `notes.canvas`, so asking for that by name finds it. Asking for nothing
+    // is asking for a *new* untitled canvas, which no open pane can be — see
+    // `sameCanvas`, which draws all three lines.
     const wanted = file ?? ''
     const existing = findPane(
       (p) => p.kind === 'canvas' && sameCanvas(p, wanted, workspaceId),

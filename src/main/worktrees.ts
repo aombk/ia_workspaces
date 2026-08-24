@@ -187,13 +187,21 @@ export async function removeWorktree(
  * tree — our own file tree and search included — would otherwise show the same
  * project twice.
  */
-export function suggestWorktreeDir(repoRoot: string, branch: string): string {
+export function suggestWorktreeDir(mainRoot: string, branch: string): string {
   const safe = branch.replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '') || 'worktree'
-  return path.join(path.dirname(path.resolve(repoRoot)), `${path.basename(repoRoot)}-${safe}`)
+  return path.join(path.dirname(path.resolve(mainRoot)), `${path.basename(mainRoot)}-${safe}`)
 }
 
-/** The repository's main checkout, which is where `worktree` commands are run. */
-export async function repoRoot(cwd: string): Promise<string | null> {
+/**
+ * The repository's **main** checkout, which is where `worktree` commands are run.
+ *
+ * Not to be confused with `git.ts`'s `checkoutRoot`, which answers the other
+ * question: the root of whichever checkout `cwd` is in. Inside a linked
+ * worktree the two disagree — that one returns the worktree, this one returns
+ * the checkout the worktree belongs to — and both used to be called `repoRoot`,
+ * which made picking the wrong one a matter of which import landed first.
+ */
+export async function mainCheckoutRoot(cwd: string): Promise<string | null> {
   const res = await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
   if (!res.ok) return null
   const common = res.out.trim()

@@ -1838,10 +1838,6 @@ function normalize(raw: unknown): PersistedState {
             ? rawWorkspace.groupId
             : null,
       collapsed: Boolean(rawWorkspace.collapsed),
-      notesFile:
-        typeof rawWorkspace.notesFile === 'string' && rawWorkspace.notesFile
-          ? rawWorkspace.notesFile
-          : undefined,
       shell: SHELL_KINDS.has(rawWorkspace.shell as ShellKind)
         ? (rawWorkspace.shell as ShellKind)
         : undefined,
@@ -2235,7 +2231,9 @@ export function paneLabel(pane: PaneState): string {
   if (pane.kind === 'day') return 'today'
   // The canvas's own name, since a workspace can hold several now. Stripped of
   // `.canvas`, which every one of them ends in and none of them is told apart
-  // by. Absent means the project's own — see `DEFAULT_FILE`.
+  // by. Empty means a canvas nobody has named yet, and absent means one saved
+  // before canvases had names — both fall through to the bare word, which is
+  // the honest label for a document with no name to show.
   if (pane.kind === 'canvas') {
     const name = fileName(pane.file ?? '').replace(/\.canvas$/i, '')
     return name || 'canvas'

@@ -48,8 +48,18 @@ export function hookEvents(iawPath: string): Record<string, string> {
   // at all. A best-effort notification must not be able to fail an agent's turn.
   const hush = ' 2>/dev/null || true'
   return {
-    Notification: `${iaw} notify --quiet --title "Claude Code" --body "is waiting for you"${hush}`,
-    Stop: `${iaw} notify --quiet --title "Claude Code" --body "finished responding"${hush}`,
+    // Two jobs on one event, and the second is the one that was missing.
+    //
+    // The notification tells *you* the agent is waiting. The report tells the
+    // *app*, which is a different audience and a different consequence: it is
+    // what puts the pane into `blocked`, and `blocked` is what releases the
+    // wake lock. Without it the app had no idea any agent was ever doing
+    // anything — `runDepth` stayed 0, every pane read `idle`, and a feature
+    // built on "an agent is working" could never fire. See `agentState.ts`.
+    Notification: `${iaw} notify --quiet --title "Claude Code" --body "is waiting for you"${hush}; ${iaw} report-agent --blocked "waiting for you"${hush}`,
+    // A turn ended: the refcount comes back down, and anything that was parked
+    // on a human is no longer parked, because the agent has stopped either way.
+    Stop: `${iaw} notify --quiet --title "Claude Code" --body "finished responding"${hush}; ${iaw} report-agent --run-end --unblocked${hush}`,
     // Records the conversation id against the pane, so closing the app and
     // reopening it can resume this exact session rather than the newest one in
     // the folder. `iaw session` reads the id from the hook JSON on stdin.
@@ -66,7 +76,32 @@ export function hookEvents(iawPath: string): Record<string, string> {
     // Nothing is printed on success, which matters here and nowhere else: what
     // a `UserPromptSubmit` hook writes to stdout is added to the agent's
     // context.
-    UserPromptSubmit: `${iaw} session --quiet${hush}`,
+    //
+    // The run-start rides here rather than on `PreToolUse` because a turn is
+    // what "working" means — an agent thinking for two minutes before it
+    // touches a tool is working, and a wake lock that only held while a tool
+    // ran would let the machine go down in the gaps. `--run-end` on `Stop`
+    // brings it back down; the refcount nests, so a subagent finishing cannot
+    // clear the outer run.
+    //
+    // Unbalanced reports are survivable by design: nothing expires `runDepth`,
+    // but the wake lock stops counting a pane that has not reported in five
+    // minutes, so a `Stop` that never arrives costs a stale badge rather than
+    // a machine that never sleeps. See `shared/powerLock.ts`.
+    //
+    // `--unblocked` rides along because submitting a prompt is the one thing we
+    // can read as an answer without guessing. `Notification` fires for an idle
+    // prompt as well as a permission request, so a pane could sit `blocked`
+    // from the moment Claude went quiet, through you typing the next prompt,
+    // and all the way to the `Stop` at the end of the turn it kicked off —
+    // showing "waiting for you" over an agent that was visibly working.
+    //
+    // Focus deliberately does not clear the flag and should not: we cannot see
+    // whether looking at a pane answered anything, and a pane that quietly
+    // stopped asking is the failure this feature exists to prevent. A submitted
+    // prompt is different in kind — the agent has been given something to do,
+    // so whatever it was parked on is over. See `agentState.ts`.
+    UserPromptSubmit: `${iaw} session --quiet${hush}; ${iaw} report-agent --run-start --unblocked${hush}`,
   }
 }
 
@@ -113,7 +148,9 @@ export function readClaudeSettings(): ClaudeConfigInfo {
       path: file,
       exists: true,
       bellEnabled: parsed[NOTIF_KEY] === NOTIF_VALUE,
-      // Nothing left to add means every hook we install is already there.
+      // Nothing left to add *or refresh* — see `readAgentHooks`. An install
+      // predating a change to the commands reports false, so the panel offers
+      // to update it instead of showing it as configured.
       hooksInstalled: added === 0,
       raw,
     }

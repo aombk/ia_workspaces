@@ -288,6 +288,10 @@ export class AgentStateRegistry {
       blockedReason: null,
       choices: [],
       answeredAt: null,
+      // News of a closure is news, and it is current. The state is `unknown`
+      // so nothing counts it as working regardless, but dating it now rather
+      // than at the epoch keeps "when did we last hear about this pane" true.
+      updatedAt: Date.now(),
     })
   }
 
@@ -302,6 +306,9 @@ export class AgentStateRegistry {
         blockedReason: null,
         choices: [],
         answeredAt: null,
+        // Never reported, so there is no "last report". 0 is the honest answer
+        // and reads as unambiguously stale to anything checking freshness.
+        updatedAt: 0,
       }
     }
     const fresh = !rec.metaExpiresAt || rec.metaExpiresAt > Date.now()
@@ -313,6 +320,7 @@ export class AgentStateRegistry {
       blockedReason: rec.blockedReason,
       choices: rec.choices,
       answeredAt: rec.answeredAt,
+      updatedAt: rec.updatedAt,
       model: fresh ? rec.model : undefined,
       contextPct: fresh ? rec.contextPct : undefined,
       tokens: fresh ? rec.tokens : undefined,

@@ -17,6 +17,8 @@ import { showToast } from './ui/toast'
 import { remoteHostOfPane, store } from './state'
 import { sortEntries } from '../shared/images'
 import { isCanvasPath } from '../shared/canvas'
+import { isDocumentPath } from '../shared/docs'
+import { isMediaPath, mediaKind } from '../shared/media'
 import type { FileEntry, GitStatusMap, Settings } from '../shared/types'
 
 /**
@@ -1562,8 +1564,41 @@ export class FilesPane {
             ...(isCanvasPath(entry.path)
               ? [{ label: 'Open canvas', onClick: () => this.hooks.openCanvasTab(entry.path) }]
               : []),
+            // And a PDF is the same shape of thing one step further along: a
+            // document the reader shows whole, so it leads for the same reason
+            // the canvas does. It is named for the format rather than for the
+            // pane because "Open in reader" tells you which window it lands in
+            // and "Open PDF" tells you that it will be *readable* when it gets
+            // there — which is the whole question anyone right-clicking a PDF
+            // in a tree of source files is actually asking.
+            ...(isDocumentPath(entry.path)
+              ? [{ label: 'Open PDF', onClick: () => this.hooks.openReader(entry.path) }]
+              : []),
+            // Sound and video land in the same pane for the same reason, and
+            // are named for the verb rather than the pane: nobody right-
+            // clicking an mp4 is asking which window it opens in.
+            ...(isMediaPath(entry.path)
+              ? [
+                  {
+                    label: mediaKind(entry.path) === 'video' ? 'Play video' : 'Play audio',
+                    onClick: () => this.hooks.openReader(entry.path),
+                  },
+                ]
+              : []),
+            // `Edit` survives the binary, unlike the reader entry below it:
+            // `modeForFile` already sends a `.pdf` to the hex view, which never
+            // autosaves, so `Edit` on a PDF is the one way in the app to look
+            // at the bytes — and looking at the header of a file that will not
+            // open is a real thing to want from a file tree.
             { label: 'Edit', onClick: () => this.hooks.openEditorTab(entry.path) },
-            { label: 'Open in reader', onClick: () => this.hooks.openReader(entry.path) },
+            // Dropped for a document, because for one it is not a second
+            // choice — it calls the very same hook as `Open PDF` above and
+            // lands in the very same pane. Two entries that differ only in
+            // wording read as two behaviours, and the reader is already spoken
+            // for by the one at the top.
+            ...(isDocumentPath(entry.path) || isMediaPath(entry.path)
+              ? []
+              : [{ label: 'Open in reader', onClick: () => this.hooks.openReader(entry.path) }]),
             { label: 'Open in external editor', onClick: () => this.hooks.openInEditor(entry.path) },
             { label: 'Open with Windows', onClick: () => void backend().openInExplorer(entry.path) },
           ]),

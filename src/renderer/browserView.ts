@@ -86,7 +86,12 @@ export class DomBrowserView implements BrowserView {
     // Its own partition, so a page here does not inherit or pollute anything,
     // and `persist:` so a login survives the pane being closed and reopened.
     this.view.setAttribute('partition', 'persist:browser')
-    this.view.setAttribute('allowpopups', 'false')
+    // Popups stay off, and the way to say so is to say nothing. `allowpopups`
+    // is a boolean attribute — Electron reads it with `hasAttribute`, never
+    // looking at the value — so `setAttribute('allowpopups', 'false')`, which
+    // is what stood here, switched popups *on*. Absence is the only "off"
+    // there is.
+    this.view.removeAttribute('allowpopups')
     // The guest's one script — see `webviewPreload.ts` for why it has to exist
     // and what it is limited to. Resolved against the renderer's own URL,
     // because both are files we ship side by side.

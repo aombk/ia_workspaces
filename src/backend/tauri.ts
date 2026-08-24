@@ -78,7 +78,21 @@ export function createTauriBackend(): Backend {
     // window positioned over the layout, which is a different set of problems
     // from an element in the tree. Declared absent until it exists, and the
     // browser pane's own code already refuses to open where it is.
-    capabilities: { browser: null, platform: platform() },
+    capabilities: { browser: null, documents: false, platform: platform() },
+
+    // No blocker on this host, and saying so is the honest answer rather than
+    // reporting a lock nobody holds. `supported: false` is what the sidebar
+    // renders as "not available here".
+    powerLock: async () => ({ hold: false, reason: 'off' as const, holding: [], supported: false }),
+
+    // No scratch store on this host yet. Answering rather than throwing is the
+    // whole point of a total contract: an untitled pane here simply behaves the
+    // way it did before there was one — nothing is kept, and nothing breaks.
+    scratch: {
+      read: async () => null,
+      write: async () => {},
+      drop: async () => {},
+    },
 
     loadState: () => call('state:load'),
     saveState: (state) => call('state:save', state),

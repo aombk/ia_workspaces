@@ -47,7 +47,7 @@ import { sparklines, type SparkSeries } from './ui/sparkline'
 import {
   band,
   bytes,
-  duration,
+  durationSeconds,
   money,
   percent,
   rate,
@@ -1135,7 +1135,7 @@ export class MonitorPane implements AuxPane {
         this.reading(
           'left',
           battery.secondsLeft
-            ? duration(battery.secondsLeft)
+            ? durationSeconds(battery.secondsLeft)
             : battery.remainingWh !== null
               ? `${battery.remainingWh.toFixed(1)} Wh`
               : null,
@@ -1147,7 +1147,7 @@ export class MonitorPane implements AuxPane {
       )
     }
 
-    card.appendChild(this.reading('uptime', duration(stats.uptimeSeconds)))
+    card.appendChild(this.reading('uptime', durationSeconds(stats.uptimeSeconds)))
     return card
   }
 
