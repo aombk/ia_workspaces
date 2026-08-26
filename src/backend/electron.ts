@@ -142,6 +142,7 @@ export function createElectronBackend(): Backend {
     },
 
     pasteImage: () => api.pasteImage(),
+    clipboardImage: () => api.clipboardImage(),
 
     contextMenu: {
       get: () => api.contextMenu.get(),

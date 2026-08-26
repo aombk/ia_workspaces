@@ -134,13 +134,9 @@ function workspaceRow(row: SidebarRow, active: string | null): HTMLElement {
 
   // A shut parent is the one place a waiting agent could hide, so what is
   // nested under it counts towards what the row reports.
-  const needsInput =
-    store.workspaceNeedsInput(workspace.id) ||
-    (workspace.collapsed && store.subtreeNeedsInput(workspace.id))
-  const hasAttention =
-    !needsInput &&
-    (store.workspaceHasAttention(workspace.id) ||
-      (workspace.collapsed && store.subtreeHasAttention(workspace.id)))
+  const demand = store.workspaceDemand(workspace.id, workspace.collapsed)
+  const needsInput = demand === 'blocked'
+  const hasAttention = demand === 'notice'
 
   const marker = depth > 0 ? (NESTING_GLYPHS[store.settings.nestingMarker] ?? '') : ''
 

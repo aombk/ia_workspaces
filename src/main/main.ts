@@ -1,6 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from 'electron'
 import { appendFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 import path from 'node:path'
 import { listProcesses } from './processes'
@@ -93,7 +94,12 @@ import {
   MAC_TRAFFIC_LIGHTS,
 } from '../shared/platform'
 import { DEFAULT_THEME_ID, findInterfaceTheme, type InterfaceTheme } from '../shared/themes'
-import type { HistoryFilter, SpawnRequest, WeatherRequest } from '../shared/types'
+import type {
+  ClipboardImage,
+  HistoryFilter,
+  SpawnRequest,
+  WeatherRequest,
+} from '../shared/types'
 
 /** The title bar's height. Must match `--titlebar-h` in styles.css. */
 const TITLEBAR_H = 36
@@ -172,6 +178,91 @@ if (isCliVerb(cliArgs[0])) {
   runCli(cliArgs, SHARED_DATA_DIR).then((code) => process.exit(code))
 } else {
   bootApp()
+}
+
+/** Files a clipboard file-URL is worth treating as a picture. */
+const CLIPBOARD_IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic|avif)$/i
+
+/**
+ * An image the clipboard *points at*, as opposed to pixels it carries.
+ *
+ * Copying a file in Finder puts a file URL on the pasteboard and the file's
+ * display name beside it as plain text. That name is why pasting a screenshot
+ * used to type `Screenshot 2026-08-25 at 9.20.21 PM` into a pane: whoever asked
+ * the clipboard for text got an answer, and stopped looking.
+ */
+function clipboardImageFile(): string | null {
+  for (const file of clipboardFiles()) {
+    if (CLIPBOARD_IMAGE_EXT.test(file)) return file
+  }
+  return null
+}
+
+/**
+ * Paths the clipboard is carrying, in whichever flavour this copy used.
+ *
+ * Two, because Finder does not consistently offer one: `public.file-url` is the
+ * modern single-file flavour, and `NSFilenamesPboardType` is the older list one
+ * that a multiple selection — and, depending on the macOS version, a single one
+ * — arrives as instead. Reading only the first is why a copied screenshot fell
+ * through to the bitmap branch and pasted the file's *icon*.
+ */
+function clipboardFiles(): string[] {
+  const out: string[] = []
+
+  try {
+    const url = clipboard.read('public.file-url').trim()
+    if (url) out.push(fileURLToPath(url))
+  } catch {
+    // Not a URL, or a flavour this platform does not have.
+  }
+
+  try {
+    // A property list, whose paths are the only part worth having. Read as text
+    // rather than parsed: an XML plist yields its strings to a match, and a
+    // binary one yields nothing, which is the same answer as "no such flavour"
+    // and is handled the same way.
+    const plist = clipboard.read('NSFilenamesPboardType')
+    for (const m of plist.matchAll(/<string>([^<]+)<\/string>/g)) {
+      const file = m[1].trim()
+      if (file && !out.includes(file)) out.push(file)
+    }
+  } catch {
+    // Not present. The file-url above may still have answered.
+  }
+
+  try {
+    // Windows. `FileNameW` is a single path in UTF-16, which is what Explorer
+    // puts up for a copied file — the two flavours above are macOS UTIs and are
+    // simply absent here, so without this a screenshot copied in Explorer was
+    // not seen as an image at all.
+    const wide = clipboard.readBuffer('FileNameW').toString('ucs2').replace(/\0+$/, '').trim()
+    if (wide && !out.includes(wide)) out.push(wide)
+  } catch {
+    // Not Windows, or nothing on that flavour.
+  }
+
+  return out
+}
+
+/**
+ * What the clipboard is offering as a picture, and by which of the two routes.
+ *
+ * A copied *file* is judged by its name and answered with its path, never with
+ * `readImage()`. Both macOS and Windows put the file's *icon* up as the picture
+ * for a file copy, so reading the bitmap gets a grey PNG document however good
+ * the screenshot was — which is the whole bug this exists to avoid, and it bit
+ * twice: once here, and once in the agent that was handed the keystroke and
+ * read the same icon for itself.
+ *
+ * `readImage()` is believed only when there is no file at all. That is the
+ * screen-capture case, where the pixels are the only copy of the thing and
+ * there is no path anybody could paste instead.
+ */
+function clipboardImage(): ClipboardImage {
+  const file = clipboardImageFile()
+  if (file) return { file, pixels: false }
+  return { file: null, pixels: !clipboard.readImage().isEmpty() }
 }
 
 function bootApp(): void {
@@ -970,7 +1061,15 @@ function bootApp(): void {
     // A screenshot on the clipboard becomes a file path typed into the pane,
     // which is what an agent can actually act on — the same gesture as dropping
     // an image into a chat, from any Windows capture tool.
+    ipcMain.handle(IPC.clipboardImage, () => clipboardImage())
+
     ipcMain.handle(IPC.pasteImage, () => {
+      // A file the clipboard points at is used where it lies. Copying it into
+      // temp would hand the pane a second name for a picture that already has
+      // one the user recognises, and leave a duplicate behind.
+      const existing = clipboardImageFile()
+      if (existing) return existing
+
       const image = clipboard.readImage()
       if (image.isEmpty()) return null
       try {

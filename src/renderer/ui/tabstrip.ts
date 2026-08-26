@@ -66,9 +66,10 @@ export function renderTabstrip(): void {
 
   workspace.tabs.forEach((tab, index) => {
     const isActive = tab.id === workspace.activeTabId
-    // Waiting on a human outranks unseen activity, and unlike it does not go
-    // away when you look — only the agent saying it is unblocked clears this.
-    const needsInput = store.tabNeedsInput(tab)
+    // Waiting on a human outranks unseen activity, and the ordering lives in
+    // `paneDemand` rather than here — see `state.ts`.
+    const demand = store.tabDemand(tab)
+    const needsInput = demand === 'blocked'
     const el = document.createElement('div')
     el.className = 'tab' + (isActive ? ' active' : '') + (needsInput ? ' needs-input' : '')
     el.dataset.tabId = tab.id
@@ -77,7 +78,7 @@ export function renderTabstrip(): void {
     el.title = `${tabLabel(tab)}\n${tab.panes.map((p) => p.cwd).join('\n')}`
     el.draggable = renaming !== tab.id
 
-    if (needsInput || store.tabHasAttention(tab)) {
+    if (demand !== 'none') {
       const dot = document.createElement('span')
       dot.className = needsInput ? 'attention-dot attention-dot--input' : 'attention-dot'
       dot.title = needsInput ? 'Waiting for your answer' : 'Needs attention'

@@ -39,6 +39,16 @@ __iaw_ran=0
 __iaw_esc=$(printf '\033')
 __iaw_bel=$(printf '\007')
 
+# A newline, the long way round, because the short way is silently wrong.
+# `$(printf '\n')` is the empty string: command substitution strips trailing
+# newlines, and a newline is nothing but a trailing newline. Used in a `case`
+# pattern that became `*""*`, which matches every line there is — so every
+# submitted command was treated as multi-line and blanked, and the E marker
+# below was never emitted at all. The `x` gives the newline something to be in
+# front of, and is then trimmed off.
+__iaw_nl=$(printf '\nx')
+__iaw_nl=${__iaw_nl%x}
+
 # The B marker has to sit at the very end of PS1 rather than being printed,
 # because it marks the boundary the *input* starts at. Both shells need it
 # wrapped in their zero-width markers or every prompt redraw, every reverse
@@ -87,7 +97,7 @@ __iaw_report_command() {
   __iaw_out="${__iaw_esc}]133;C${__iaw_bel}"
 
   case "$__iaw_line" in
-    *"$(printf '\n')"*) __iaw_line="" ;;
+    *"$__iaw_nl"*) __iaw_line="" ;;
   esac
   if [ -n "$__iaw_line" ] && [ "${#__iaw_line}" -le 512 ]; then
     __iaw_out="${__iaw_out}${__iaw_esc}]133;E;${__iaw_line}${__iaw_bel}"
@@ -140,6 +150,10 @@ elif [ -n "$BASH_VERSION" ]; then
     __iaw_raw=$(HISTTIMEFORMAT='' builtin history 1 2>/dev/null)
     __iaw_raw=${__iaw_raw#"${__iaw_raw%%[![:space:]]*}"}
     __iaw_raw=${__iaw_raw#* }
+    # Twice, because `history` pads between the number and the line: stripping
+    # up to the first space leaves the padding behind, and every recalled bash
+    # command came back with a space in front of it.
+    __iaw_raw=${__iaw_raw#"${__iaw_raw%%[![:space:]]*}"}
     __iaw_report_command "${__iaw_raw:-$BASH_COMMAND}"
   }
 

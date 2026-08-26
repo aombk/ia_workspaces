@@ -2495,3 +2495,19 @@ export const WORKSPACE_COLORS = [
   '#a8862f',
   '#4a72a8',
 ] as const
+
+/**
+ * What the clipboard is offering as a picture.
+ *
+ * The two are not the same thing and cannot be handled the same way. `file` is
+ * an image somebody copied in Finder or Explorer, and the path is the whole
+ * answer — the pasteboard's *picture* for that copy is the file's icon, which
+ * is how a screenshot pasted as a generic PNG document. `pixels` is a screen
+ * capture, which exists only on the clipboard and has no path to give.
+ */
+export interface ClipboardImage {
+  /** An image file the clipboard points at, if it points at one. */
+  file: string | null
+  /** Whether there are pixels on the clipboard worth a paste keystroke. */
+  pixels: boolean
+}

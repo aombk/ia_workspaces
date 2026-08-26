@@ -213,6 +213,38 @@ export class AgentStateRegistry {
   }
 
   /**
+   * A line submitted at a pane that said it was waiting.
+   *
+   * `--unblocked` rides on `Stop` and `UserPromptSubmit`, and neither fires
+   * when a turn is interrupted or the agent is killed. Nothing expires
+   * `awaitingHuman` — the TTL above governs metadata only — so a pane could sit
+   * "waiting for you" over a prompt nobody was waiting at, until it was closed.
+   *
+   * Enter, and not focus. Looking at a pane does not answer it, and a pane that
+   * quietly stops asking is the failure this whole feature exists to prevent.
+   * Submitting a line is the same event `UserPromptSubmit` reports — read here
+   * directly, so it still lands when no hook does.
+   *
+   * The answer path is untouched: `markAnswered` still refuses to clear on our
+   * say-so, because there the agent is the one that has to confirm.
+   */
+  submittedByHuman(paneId: string): void {
+    const rec = this.records.get(paneId)
+    if (!rec?.awaitingHuman) return
+    const waiter = rec.waiter
+    rec.waiter = undefined
+    rec.awaitingHuman = false
+    rec.blockedReason = null
+    rec.choices = []
+    rec.updatedAt = Date.now()
+    // Owed an answer even though this one did not come through the ask: a
+    // caller parked on this pane would otherwise hold its connection open
+    // until its own deadline.
+    waiter?.settle({ id: '', label: '' })
+    this.onChange(this.snapshot(paneId))
+  }
+
+  /**
    * Drops a waiter that gave up — its caller went away, or it ran out of time.
    *
    * Keyed by request id so a timeout firing late cannot clear a *newer*

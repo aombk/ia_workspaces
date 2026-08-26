@@ -647,6 +647,9 @@ export class PtyManager {
       // Proof a turn began even when the output that follows is too small for
       // the throughput detector to notice on its own.
       this.activity.beginTurn(paneId)
+      // Whatever the pane was parked on, somebody is at it and has just given
+      // it a line. See `submittedByHuman` for why Enter and not focus.
+      this.agents.submittedByHuman(paneId)
       // Without shell integration this is the only command-start signal there
       // is. With it, 133;C is authoritative and this would also fire for every
       // Enter pressed inside a full-screen program.

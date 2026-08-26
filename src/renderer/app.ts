@@ -1,9 +1,9 @@
 import './styles.css'
 import { backend } from '../backend'
-import { store, paneLabel, tabLabel } from './state'
+import { store, paneLabel, shellFor, tabLabel } from './state'
 import { attachZoomWheel, TerminalManager } from './terminals'
 import { FilesPane } from './filesPane'
-import { loadShells } from './shells'
+import { loadShells, resolvedShellKind, shellLabel } from './shells'
 import { playSound } from './sound'
 import { activeTheme, applyChrome, isTranslucent, setRealTransparency } from './themes'
 import { checkForUpdatesAtStartup } from './updates'
@@ -303,7 +303,7 @@ function render(): void {
   renderUsage()
   syncSystemStrip()
   renderInbox()
-  terminals?.applyAttention(store.attention)
+  terminals?.applyAttention()
   terminals?.applyPaneStatus()
   syncDockedTree()
   void syncMountedTab()
@@ -323,15 +323,28 @@ function renderStatus(): void {
   cwd.textContent = pane?.cwd ?? store.activeWorkspace?.cwd ?? ''
   cwd.title = cwd.textContent ? `${cwd.textContent}\nClick to open in Explorer` : ''
 
-  const labels: Record<string, string> = {
-    powershell: 'Windows PowerShell',
-    pwsh: 'PowerShell 7',
-    cmd: 'Command Prompt',
-    wsl: 'WSL',
-    custom: 'Custom shell',
-  }
-  document.getElementById('status-shell')!.textContent =
-    labels[pane?.shell ?? store.settings.shell] ?? ''
+  // What the pane is *running*, which is two questions this used to get wrong.
+  //
+  // `shellFor` is the first: the rule the spawn itself follows — the pane's own
+  // choice, else its workspace's, else the default. Reading `pane.shell` alone
+  // skipped the middle term, so a pane inheriting a WSL workspace was labelled
+  // with the global default instead of WSL.
+  //
+  // `resolvedShellKind` is the second: a declared kind that does not exist here
+  // falls back the same way the spawn falls back. A workspace file written on
+  // Windows says `powershell`, and on a Mac that pane runs zsh — which is why
+  // this strip read "Windows PowerShell" under a zsh prompt.
+  //
+  // The name itself comes from the host's own shell list rather than a table
+  // written here, which is what the table got wrong a third time: it knew only
+  // the Windows shells, so a genuinely-zsh pane had no label at all.
+  const chosen = pane
+    ? shellFor(pane, store.workspaceOfPane(pane.id), store.settings)
+    : shellFor({}, store.activeWorkspace, store.settings)
+  document.getElementById('status-shell')!.textContent = shellLabel(
+    resolvedShellKind(chosen.shell),
+    chosen
+  )
 
   const tab = store.activeTab
   const panes = document.getElementById('status-panes')!
@@ -357,6 +370,7 @@ async function syncMountedTab(): Promise<void> {
   try {
     await terminals.showTab(workspace.id, tab)
     for (const pane of tab.panes) store.clearAttention(pane.id)
+    store.settleAttended()
     updateBadge()
   } finally {
     mounting = false
@@ -489,6 +503,9 @@ async function goToWorkspace(workspaceId: string): Promise<void> {
   if (store.activeWorkspace?.id !== workspaceId && !(await confirmWslStart(workspace))) return
 
   store.setActiveWorkspace(workspaceId)
+  // Being here answers "which project wants me", so its dot stops blinking.
+  // The tab holding the question keeps its own mark until you reach the pane.
+  store.markWorkspaceInputSeen(workspaceId)
   // Clicking a workspace should never land on an empty pane.
   if (!workspace.tabs.length) store.addTab(workspaceId)
   else if (!workspace.activeTabId) store.setActiveTab(workspaceId, workspace.tabs[0].id)
@@ -1286,11 +1303,12 @@ function wireAlerts(): void {
 
   backend().on.windowFocus((focused) => {
     if (!focused) return
-    // Coming back to the window clears the pane you land on, matching the
-    // "auto-dismiss what you're actually looking at" rule.
+    // Coming back to the window settles the pane you land on, matching the
+    // "auto-dismiss what you're actually looking at" rule. `settleAttended`
+    // owns that rule; this is one of the four moments it can newly become true.
     const paneId = store.activeTab?.activePaneId
     if (paneId) {
-      store.clearAttention(paneId)
+      store.settleAttended()
       store.markPaneNotificationsRead(paneId)
     }
     updateBadge()

@@ -41,6 +41,7 @@ import type {
   Relay,
   RelayPublishEntry,
   TimeSpan,
+  ClipboardImage,
 } from '../shared/types'
 
 /**
@@ -602,6 +603,9 @@ export interface Backend {
 
   /** Writes a clipboard image to a temp file and returns its path, or null. */
   pasteImage(): Promise<string | null>
+
+  /** What image the clipboard holds, if any. Costs no file write. */
+  clipboardImage(): Promise<ClipboardImage>
 
   contextMenu: {
     get(): Promise<boolean>

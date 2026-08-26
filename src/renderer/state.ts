@@ -133,6 +133,24 @@ const EMPTY: PersistedState = {
  * owns the schema and every host must agree — a host store is a plain
  * JSON passthrough, so anything not defaulted here would arrive undefined.
  */
+/**
+ * What something on screen is asking of you, loudest first.
+ *
+ * `'blocked'` is an agent parked on a human: it stops for you and only the
+ * agent saying otherwise releases it. `'notice'` is something that happened
+ * and you have not seen — a run that finished, a bell, a long command ending —
+ * and looking at it is what settles it. The two get different blink rates, so
+ * the rate itself ranks them without a second colour.
+ */
+export type Demand = 'blocked' | 'notice' | 'none'
+
+const DEMAND_RANK: Record<Demand, number> = { blocked: 2, notice: 1, none: 0 }
+
+/** The louder of two demands, for folding panes into tabs into workspaces. */
+export function louder(a: Demand, b: Demand): Demand {
+  return DEMAND_RANK[a] >= DEMAND_RANK[b] ? a : b
+}
+
 class WorkspaceState {
   private data: PersistedState = structuredClone(EMPTY)
   private listeners = new Set<Listener>()
@@ -449,18 +467,6 @@ class WorkspaceState {
   }
 
   /** Whether anything nested under this workspace is waiting or shouting. */
-  subtreeNeedsInput(workspaceId: string): boolean {
-    return this.subtreeOf(workspaceId)
-      .slice(1)
-      .some((w) => this.workspaceNeedsInput(w.id))
-  }
-
-  subtreeHasAttention(workspaceId: string): boolean {
-    return this.subtreeOf(workspaceId)
-      .slice(1)
-      .some((w) => this.workspaceHasAttention(w.id))
-  }
-
   // ------------------------------------------------------------ workspaces
 
   renameWorkspace(id: string, name: string): void {
@@ -639,6 +645,11 @@ class WorkspaceState {
     const w = this.data.workspaces.find((x) => x.id === workspaceId)
     if (!w || w.activeTabId === tabId) return
     w.activeTabId = tabId
+    // Every pane in the tab, not just the active one: a split shows both, so
+    // arriving here has been a look at both.
+    for (const pane of w.tabs.find((t) => t.id === tabId)?.panes ?? []) {
+      this.seenInput.add(pane.id)
+    }
     this.commit()
   }
 
@@ -1145,7 +1156,7 @@ class WorkspaceState {
     const tab = this.tab(tabId)
     if (!tab || tab.activePaneId === paneId) return
     tab.activePaneId = paneId
-    this.attention.delete(paneId)
+    this.settleAttended()
     this.commit()
   }
 
@@ -1260,8 +1271,34 @@ class WorkspaceState {
   }
 
   setPaneAgent(paneId: string, agent: PaneAgentState): void {
+    // A question that was not being asked a moment ago is a new one, and a new
+    // one has not been seen however thoroughly the last was. Re-armed here
+    // rather than when the old one clears, because the pane can go from one
+    // question straight to the next without ever passing through unblocked.
+    const was = this.agents.get(paneId)?.state
+    if (agent.state === 'blocked' && was !== 'blocked') {
+      this.seenInput.delete(paneId)
+      const workspace = this.workspaceOfPane(paneId)
+      if (workspace) this.seenInputWorkspaces.delete(workspace.id)
+    }
+
     if (agent.state === 'unknown') this.agents.delete(paneId)
     else this.agents.set(paneId, agent)
+
+    // A run that ended is the other thing worth being told about, and it used
+    // to be told only by accident. The blink came from the notification path,
+    // so a finished agent moved the sidebar only if notifications were enabled,
+    // and `onCommandFinished` was on, and the run outlasted `minCommandSeconds`
+    // — three settings about *toasts* deciding whether a dot blinks. It is a
+    // fact about the pane, so it is recorded here, where the fact arrives.
+    //
+    // Nothing else changes: `shouldHoldAwake` counts only `'working'`, so the
+    // same transition that starts the blink is the one that drops the wake
+    // lock and lets the machine sleep with the signal waiting on the far side.
+    if (was === 'working' && agent.state === 'idle') this.markAttention(paneId)
+
+    // Whatever just arrived, it cannot be news in the pane you are sitting in.
+    this.settleAttended()
     this.emit()
   }
 
@@ -1297,6 +1334,17 @@ class WorkspaceState {
   }
 
   markAttention(paneId: string): void {
+    // Never latch onto the pane you are sitting in. Attention means "something
+    // happened here you have not seen", and you are looking straight at it —
+    // so there is nothing unseen to record. Without this the signal fires on
+    // the pane you are typing into and then has nothing left to clear it: the
+    // three things that used to clear attention were all *navigation* — mount
+    // a different tab, click a notification, refocus the window — and none of
+    // them is available to someone who never left.
+    if (this.isAttended(paneId)) {
+      this.settleAttended()
+      return
+    }
     if (this.attention.has(paneId)) return
     this.attention.add(paneId)
     this.emit()
@@ -1307,35 +1355,121 @@ class WorkspaceState {
     this.emit()
   }
 
-  tabHasAttention(tab: TerminalTabState): boolean {
-    return tab.panes.some((p) => this.attention.has(p.id))
-  }
-
-  workspaceHasAttention(workspaceId: string): boolean {
-    const w = this.data.workspaces.find((x) => x.id === workspaceId)
-    return Boolean(w?.tabs.some((t) => this.tabHasAttention(t)))
-  }
+  /**
+   * Questions that have been looked at, at each of the two levels they show up.
+   *
+   * A blocked pane marks its workspace in the sidebar and its own tab, and the
+   * two are settled separately because they answer different questions:
+   * *which project* wants me is answered by going there, and *which pane*
+   * wants me is only answered by arriving at the pane. Clearing both on the
+   * first click would send you to a workspace and then leave you hunting the
+   * tab it was in.
+   *
+   * The agent's own state is untouched by either — see `paneDemand`. This
+   * settles the blinking, not the question.
+   */
+  private seenInput = new Set<string>()
+  private seenInputWorkspaces = new Set<string>()
 
   /**
-   * Whether anything in here is parked on a human.
+   * Everything the pane you are actually in is trying to tell you, settled.
    *
-   * Deliberately read off the declared agent state rather than `attention`.
-   * Attention means "something happened here you have not seen", so looking at
-   * the pane settles it — which is right for a bell and wrong for a question,
-   * because reading a question is not answering it. This one only goes away
-   * when the agent itself says it is no longer waiting.
+   * The rule the old code never had: *being here* is what settles a signal, and
+   * being here is a fact about the present rather than an event in the past.
+   * Attention was cleared by three navigation events and `seenInput` by a
+   * fourth, so a signal that arrived while you were already in the pane had
+   * nothing left to clear it — it blinked at you while you typed into it, and
+   * only leaving the tab and coming back would stop it. `setActivePane` looked
+   * like it covered this and does not: it returns early when the pane has not
+   * changed, which is exactly the case where you never went anywhere.
+   *
+   * Called wherever either half of "is this news, and am I here" can change:
+   * the status arriving, the pane changing, the window coming back, a key
+   * being pressed. Cheap enough to call on all four — it is three set
+   * operations and it emits only when something actually moved.
+   *
+   * The agent's own state is deliberately untouched. A question stops
+   * *blinking* when you arrive at it and stops *being a question* only when the
+   * agent says so — reading a question is not answering it.
    */
-  paneNeedsInput(paneId: string): boolean {
+  settleAttended(): void {
+    const paneId = this.activeTab?.activePaneId
+    if (!paneId || !this.isAttended(paneId)) return
+
+    // The active workspace by definition — the attended pane is in the active
+    // tab of it — which keeps this O(1) instead of a `workspaceOfPane` scan.
+    // It runs on every keystroke, so it has to cost nothing when there is
+    // nothing to settle, which is almost always.
+    const workspaceId = this.data.activeWorkspaceId
+    const settled =
+      !this.attention.has(paneId) &&
+      (!this.paneBlocked(paneId) || this.seenInput.has(paneId)) &&
+      (!workspaceId || this.seenInputWorkspaces.has(workspaceId))
+    if (settled) return
+
+    this.attention.delete(paneId)
+    if (this.paneBlocked(paneId)) this.seenInput.add(paneId)
+    if (workspaceId) this.seenInputWorkspaces.add(workspaceId)
+    this.emit()
+  }
+
+  /** The workspace is the one on screen: stop its dot blinking. */
+  markWorkspaceInputSeen(workspaceId: string): void {
+    if (this.seenInputWorkspaces.has(workspaceId)) return
+    this.seenInputWorkspaces.add(workspaceId)
+    this.emit()
+  }
+
+  /** Parked on a human, whether or not anybody has looked at it yet. */
+  paneBlocked(paneId: string): boolean {
     return this.agents.get(paneId)?.state === 'blocked'
   }
 
-  tabNeedsInput(tab: TerminalTabState): boolean {
-    return tab.panes.some((p) => this.paneNeedsInput(p.id))
+  /**
+   * What one pane is asking of you, and the only question any indicator asks.
+   *
+   * This replaces four overlapping notions — `attention`, `paneBlocked`,
+   * `paneNeedsInput` and the two seen-sets — that every surface used to
+   * recombine for itself. The tab strip had one rule, the sidebar had another,
+   * the pane ring had a third, and each was separately correct and separately
+   * maintained. There is one rule now and three renderings of it.
+   *
+   * Ordered, because a pane can be both: a question outranks a notice, and the
+   * two blink at different speeds so the rate itself ranks them on screen.
+   */
+  paneDemand(paneId: string): Demand {
+    if (this.paneBlocked(paneId) && !this.seenInput.has(paneId)) return 'blocked'
+    return this.attention.has(paneId) ? 'notice' : 'none'
   }
 
-  workspaceNeedsInput(workspaceId: string): boolean {
+  tabDemand(tab: TerminalTabState): Demand {
+    return tab.panes.reduce<Demand>((acc, p) => louder(acc, this.paneDemand(p.id)), 'none')
+  }
+
+  /**
+   * A workspace's demand, optionally including what is hidden under it.
+   *
+   * The blocked half is read off `paneBlocked` rather than `paneDemand`, so
+   * that settling one pane's tab does not also settle the workspace holding it
+   * — the two levels are cleared by their own visits. A shut parent is the one
+   * place a waiting agent could hide, which is what `includeSubtree` is for.
+   */
+  workspaceDemand(workspaceId: string, includeSubtree = false): Demand {
+    const own = this.ownWorkspaceDemand(workspaceId)
+    if (!includeSubtree) return own
+    return this.subtreeOf(workspaceId)
+      .slice(1)
+      .reduce<Demand>((acc, w) => louder(acc, this.ownWorkspaceDemand(w.id)), own)
+  }
+
+  private ownWorkspaceDemand(workspaceId: string): Demand {
     const w = this.data.workspaces.find((x) => x.id === workspaceId)
-    return Boolean(w?.tabs.some((t) => this.tabNeedsInput(t)))
+    if (!w) return 'none'
+    const blocked =
+      !this.seenInputWorkspaces.has(workspaceId) &&
+      w.tabs.some((t) => t.panes.some((p) => this.paneBlocked(p.id)))
+    if (blocked) return 'blocked'
+    return w.tabs.some((t) => t.panes.some((p) => this.attention.has(p.id))) ? 'notice' : 'none'
   }
 
   // --------------------------------------------------------------- settings

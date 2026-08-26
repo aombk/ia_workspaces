@@ -423,7 +423,7 @@ html.mac-caption .titlebar-drag {
   border-radius: var(--radius-dot);
   background: var(--warn);
   flex: none;
-  animation: pulse 1.6s ease-in-out infinite;
+  animation: pulse 2.2s ease-in-out infinite;
 }
 
 /*
@@ -435,7 +435,6 @@ html.mac-caption .titlebar-drag {
   width: 8px;
   height: 8px;
   background: var(--danger);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 28%, transparent);
 }
 
 /*
@@ -445,14 +444,31 @@ html.mac-caption .titlebar-drag {
  * tells the workspaces apart at a glance.
  */
 .workspace.has-attention .workspace-dot {
-  animation: pulse 1.6s ease-in-out infinite;
+  animation: pulse 2.2s ease-in-out infinite;
 }
 
+/*
+ * Slow, and no halo.
+ *
+ * A blink is noticed by moving, not by being bright, and a 1.1s throb with a
+ * red ring around it read as an emergency across the whole sidebar. At this
+ * speed it is visible when you look and ignorable when you don't — which is
+ * the honest weight for "an agent is waiting", something that will keep
+ * until you get there.
+ */
 .workspace.needs-input .workspace-dot {
   animation: pulse 1.1s ease-in-out infinite;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 32%, transparent);
 }
 
+/*
+ * Two speeds, and the question is the faster one.
+ *
+ * Everything used to blink at 1.6s — a pane that merely finished, a pane that
+ * is working, and a pane that is stuck on you, all at one urgency. Now
+ * something that merely happened breathes at 2.2s and a question blinks at
+ * 1.1s, so the rate itself ranks them and the sidebar has a foreground and a
+ * background instead of one flat alarm.
+ */
 @keyframes pulse {
   0%,
   100% {
@@ -464,24 +480,31 @@ html.mac-caption .titlebar-drag {
 }
 
 /*
- * The row or tab holding a question, tinted so the thing you have to find is
- * findable without hunting for a 8px dot. The left edge is the loud part; the
- * wash behind it keeps it legible when the row is also the active one.
+ * The row or tab holding a question: a slow blink on its edge, and no wash.
+ *
+ * The wash behind the row was the loudest part of the whole thing — a red
+ * block in the sidebar for something that will keep until you get there. The
+ * edge blinks on the same clock as the dot, so a sidebar with a question in it
+ * moves in one rhythm rather than flickering in three.
+ *
+ * Nothing here changes what the row *says*; it settles when you visit it, and
+ * the question itself is still the agent's to release. See `seenInput` in
+ * `state.ts`.
  */
 .workspace.needs-input,
 .tab.needs-input {
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
   box-shadow: inset 2px 0 0 var(--danger);
+  animation: edge-blink 1.1s ease-in-out infinite;
 }
 
-.workspace.needs-input:hover,
-.tab.needs-input:hover {
-  background: color-mix(in srgb, var(--danger) 18%, transparent);
-}
-
-.workspace.needs-input.active,
-.tab.needs-input.active {
-  background: color-mix(in srgb, var(--danger) 20%, transparent);
+@keyframes edge-blink {
+  0%,
+  100% {
+    box-shadow: inset 2px 0 0 var(--danger);
+  }
+  50% {
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--danger) 25%, transparent);
+  }
 }
 
 .add-workspace {
@@ -5596,10 +5619,14 @@ thead .csv-cell {
   outline: 2px solid var(--warn) !important;
 }
 
-/* An agent that declared it is stuck outranks the generic attention ring. */
-.pane[data-status='blocked'] {
-  outline: 2px solid var(--danger) !important;
-}
+/*
+ * No ring for a blocked pane.
+ *
+ * It used to get a 2px danger outline on top of a pulsing dot, a tinted tab, a
+ * tinted sidebar row, a bar across the bottom of the pane and a bell — five
+ * things shouting one fact. The blinking dot carries it; the rest was volume,
+ * and volume is what makes an alert something you learn to ignore.
+ */
 
 /* --------------------------------------------------------- pane agent state */
 
@@ -5617,12 +5644,12 @@ thead .csv-cell {
 
 .pane-state--working {
   background: var(--accent);
-  animation: pulse 1.6s ease-in-out infinite;
+  animation: pulse 2.2s ease-in-out infinite;
 }
 
 .pane-state--blocked {
   background: var(--danger);
-  animation: pulse 1.6s ease-in-out infinite;
+  animation: pulse 1.1s ease-in-out infinite;
 }
 
 /*
@@ -5642,7 +5669,7 @@ thead .csv-cell {
   flex-wrap: wrap;
   padding: 6px 10px;
   background: var(--bg-raised);
-  border-top: 2px solid var(--danger);
+  border-top: 1px solid var(--border-strong);
   font-size: calc(12px * var(--ui-text, 1));
 }
 

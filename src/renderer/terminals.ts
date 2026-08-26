@@ -318,6 +318,11 @@ export class TerminalManager {
     // nobody is watching.
     term.onData((data) => {
       if (this.wakeIfAsleep(paneId)) return
+      // Typing into a pane is the plainest possible statement that you are in
+      // it, and it was the one the signals never listened to: a pane could
+      // blink and ring while you answered the very question it was blinking
+      // about. Costs nothing when there is nothing to settle.
+      store.settleAttended()
       void backend().pty.write(paneId, data)
     })
     term.onBinary((data) => {
@@ -331,6 +336,11 @@ export class TerminalManager {
       const tab = store.tabOfPane(paneId)
       if (tab && tab.activePaneId !== paneId) {
         store.setActivePane(tab.id, paneId)
+      } else {
+        // Already the active pane, so `setActivePane` would return early — and
+        // returning early is what used to leave a signal blinking on the pane
+        // you had just clicked into.
+        store.settleAttended()
       }
     })
 
@@ -587,12 +597,12 @@ export class TerminalManager {
    * hand one over:
    *
    * **The program reads the clipboard itself.** Every agent CLI worth the name
-   * does — Claude Code binds Ctrl+V to its own image paste and shells out to
-   * PowerShell for the bitmap, which is how a screenshot becomes an attachment
-   * rather than a filename. All it needs is to *see* the keystroke, so for a
-   * pane running an agent the raw `Ctrl+V` byte is forwarded and we get out of
-   * the way. This pane used to swallow that key, which is exactly why pasting
-   * a screenshot into an agent did nothing at all.
+   * does — Claude Code binds Ctrl+V to its own image paste and shells out for
+   * the bitmap, which is how a screenshot becomes an attachment rather than a
+   * filename. All it needs is to *see* the keystroke, so for a pane running an
+   * agent the raw `Ctrl+V` byte is forwarded and we get out of the way. This
+   * pane used to swallow that key, which is exactly why pasting a screenshot
+   * into an agent did nothing at all.
    *
    * **Otherwise, a path.** A plain shell has no idea what a bitmap is, so the
    * image is written to a temp file and its path is typed in — the same
@@ -609,36 +619,58 @@ export class TerminalManager {
     // `term.paste` applies that wrapping, normalises the line endings, and
     // emits through the same `onData` that carries typing, so it still reaches
     // this pane's shell by the one path everything else uses.
-    try {
-      const text = await navigator.clipboard.readText()
-      // Text first. It is the overwhelmingly common case and it is free,
-      // whereas asking the host for an image costs a round trip — and on some
-      // hosts a process spawn — that would otherwise be paid on every paste.
-      if (text) {
-        term.paste(text)
-        return
-      }
-    } catch {
-      /* clipboard can be denied; the image path may still work */
+    // Both questions at once, and both before anything is decided. Asking for
+    // text and taking it if there was any is what broke pasting a screenshot on
+    // macOS: copying an image file in Finder puts the file's *display name* on
+    // the pasteboard beside the picture, so the clipboard always had text, the
+    // image was never looked for, and an agent that would have taken the
+    // picture got `Screenshot 2026-08-25 at 9.20.21 PM` typed at it instead.
+    // Windows capture tools put a bitmap up with no text at all, which is why
+    // the same code was fine there and hid the bug.
+    //
+    // Concurrent because the image question costs a round trip to the host, and
+    // paying it after the text read would double the latency of every paste.
+    const [text, image] = await Promise.all([
+      navigator.clipboard.readText().catch(() => ''),
+      backend()
+        .clipboardImage()
+        .catch(() => ({ file: null, pixels: false })),
+    ])
+
+    // A copied image *file* is pasted as its path, and this is the one thing
+    // this app can do that the program on the other end cannot: the pasteboard's
+    // picture for a file copy is the file's icon, so an agent left to read the
+    // clipboard itself attaches a grey PNG document. The path is the real
+    // image, and every agent resolves one into an attachment.
+    //
+    // Quoted because a path can contain spaces — a screenshot's name always
+    // does — with a trailing space so whatever is typed next stands clear of it.
+    if (image.file) {
+      term.paste(`"${image.file}" `)
+      return
     }
 
-    // No text. An agent handles its own clipboard, and does it better than we
-    // can: it gets the pixels, where we could only ever get it a filename.
-    // Sent through `pty.write` rather than `term.paste`, because this is a
-    // keystroke and not a paste — bracketing it would hide it.
-    if (store.paneAgent(paneId)) {
+    // An image goes through as the keystroke, and nothing else happens.
+    //
+    // This is what `Ctrl+V` already does on a Mac, where it is left alone
+    // deliberately — see the `!isMac()` guard in the key handler — and it is
+    // why pasting a screenshot works in a pane driven by that key and not by
+    // this one. The program on the other end reads the clipboard itself and
+    // gets the pixels; the best this app could ever hand it is a filename.
+    //
+    // It used to hand it one, and the filename was wrong: `readImage()` on a
+    // file copied in Finder returns the file's *icon*, so a screenshot pasted
+    // as a generic PNG document. Reading the clipboard is the program's job in
+    // every other terminal, and doing it here bought nothing but that bug.
+    //
+    // Through `pty.write` rather than `term.paste`, because this is a keystroke
+    // and not a paste — bracketing it would hide it.
+    if (image.pixels) {
       void backend().pty.write(paneId, '\x16')
       return
     }
 
-    try {
-      const imagePath = await backend().pasteImage()
-      // Quoted because a temp path can contain spaces, with a trailing space so
-      // whatever the user types next doesn't run into it.
-      if (imagePath) term.paste(`"${imagePath}" `)
-    } catch {
-      /* nothing pasteable */
-    }
+    if (text) term.paste(text)
   }
 
   // ---------------------------------------------------------------- layout
@@ -1373,9 +1405,9 @@ export class TerminalManager {
    * Rings panes that want attention. Splits make tab badges insufficient —
    * with four panes on screen you need to see *which* one is asking.
    */
-  applyAttention(paneIds: ReadonlySet<string>): void {
+  applyAttention(): void {
     for (const [id, element] of this.paneEntries()) {
-      element.classList.toggle('attention', paneIds.has(id))
+      element.classList.toggle('attention', store.paneDemand(id) !== 'none')
     }
   }
 

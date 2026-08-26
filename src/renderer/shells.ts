@@ -9,6 +9,7 @@
  * once at startup and answered from memory after that.
  */
 import { backend } from '../backend'
+import { shellFallbackChain } from '../shared/platform'
 import { sshHostLabel, type SshHost } from '../shared/ssh'
 import type { ShellKind, ShellProfile, ShellTarget } from '../shared/types'
 
@@ -40,6 +41,31 @@ export function wslDistros(): string[] {
 /** Hosts from `~/.ssh/config`. Empty when there is no config to read. */
 export function sshHosts(): SshHost[] {
   return hosts
+}
+
+/**
+ * The shell a declared kind actually resolves to on this machine.
+ *
+ * The renderer half of `resolveShell` in `main/shells.ts`, walking the same
+ * fallback chain for the same reason that one does: a workspace file written on
+ * Windows records `powershell`, and on a Mac no such shell exists, so the spawn
+ * lands on zsh instead. Anything that *displays* the shell has to walk that
+ * chain too or it names a program that is not running — which is exactly how
+ * the status bar came to read "Windows PowerShell" under a zsh prompt.
+ *
+ * An unresolvable kind is handed back unchanged. `resolveShell` names the
+ * platform's guaranteed shell at that point and lets the spawn report the real
+ * error; there is nothing for a label to report, and inventing a shell name for
+ * a machine that has none of them would be a worse answer than the one asked
+ * for.
+ */
+export function resolvedShellKind(kind: ShellKind): ShellKind {
+  if (profiles.some((p) => p.kind === kind && p.available)) return kind
+  for (const fallback of shellFallbackChain(backend().capabilities.platform)) {
+    const hit = profiles.find((p) => p.kind === fallback && p.available)
+    if (hit) return hit.kind
+  }
+  return kind
 }
 
 /**

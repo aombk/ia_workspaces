@@ -43,6 +43,7 @@ import type {
   Relay,
   RelayPublishEntry,
   TimeSpan,
+  ClipboardImage,
 } from '../shared/types'
 
 /**
@@ -263,6 +264,9 @@ const api = {
 
   /** Absolute path of a clipboard image written to a temp file, or null. */
   pasteImage: (): Promise<string | null> => ipcRenderer.invoke(IPC.pasteImage),
+
+  /** What image the clipboard holds, if any. Writes nothing. */
+  clipboardImage: (): Promise<ClipboardImage> => ipcRenderer.invoke(IPC.clipboardImage),
 
   contextMenu: {
     get: (): Promise<boolean> => ipcRenderer.invoke(IPC.getContextMenu),

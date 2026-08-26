@@ -104,6 +104,7 @@ export const IPC = {
   agentAnswer: 'agent:answer',
   agentState: 'agent:state',
   pasteImage: 'clipboard:pasteImage',
+  clipboardImage: 'clipboard:image',
   getContextMenu: 'shell:getContextMenu',
   setContextMenu: 'shell:setContextMenu',
   notify: 'notify:show',
