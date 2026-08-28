@@ -92,6 +92,9 @@
       "entitlements": "packaging/entitlements.mac.plist",
       "entitlementsInherit": "packaging/entitlements.mac.inherit.plist",
       "x64ArchFiles": "macsensors",
+      "signIgnore": [
+        "\\.pak$"
+      ],
       "notarize": false,
       "target": [
         {

@@ -5,9 +5,16 @@
 #
 # Output:
 #   build/ia_workspaces.dmg   drag-to-Applications disk image
-#   build/ia_workspaces.pkg   installer with a destination page
+#   build/ia_workspaces.pkg   installer with a destination page — only with --pkg
 #
-# Both are universal binaries — one artifact that runs natively on Apple
+# The .dmg is the deliverable: it is what the updater feed (latest-mac.yml)
+# serves, so it is the only artifact anything consumes after first install. The
+# .pkg is off by default because it costs a second notarization upload — a few
+# minutes a release — to produce something nothing downstream reads. Ask for it
+# with --pkg when you want managed deployment (Jamf, Munki, `installer -pkg`)
+# or an install-time destination page, and see the installer section below.
+#
+# The .dmg is a universal binary — one artifact that runs natively on Apple
 # Silicon and Intel — so there is nothing to pick between at download time.
 #
 # By default this produces SIGNED, NOTARIZED and STAPLED artifacts: Developer ID
@@ -36,6 +43,9 @@
 # Flags:
 #   --no-sign     UNSIGNED build; no codesign, notarize or staple.
 #   --test        Alias for --no-sign.
+#   --pkg         Also build the .pkg installer. Adds a pkgbuild plus a second
+#                 220MB notarization upload and staple — roughly three minutes.
+#   --no-pkg      Accepted and does nothing; skipping the .pkg is the default.
 #   --clean       Wipe out/ first.
 #
 # An unsigned .app is refused by Gatekeeper on any machine that did not build
@@ -46,6 +56,34 @@
 # it goes into the .dmg, and only electron-builder can sequence that.
 # Notarization is done here, afterwards, to the finished .dmg — which is the
 # thing that actually leaves this machine.
+#
+# One thing about that signing step is worth knowing before you touch it, and
+# it lives in package.json where no comment can explain it:
+#
+#     "signIgnore": ["\\.pak$"]
+#
+# @electron/osx-sign signs every *file* it walks, not every binary. The bundle
+# holds 307 files of which ~50 are Mach-O; the other 223 are Chromium's
+# per-language `locale.pak` translation tables. Notarization requires a secure
+# timestamp on each signature, and every timestamp is a separate round trip to
+# Apple's server — so signing the .pak files meant ~230 requests fired inside
+# two minutes. Apple rate-limits that service: the burst got throttled, codesign
+# sat on a dead connection for 15m54s, then failed with
+#
+#     -67885 The timestamp service is not available
+#
+# which electron-builder reported only as "Above command failed, retrying".
+# Signing a .pak individually was always redundant — the framework's own
+# _CodeSignature/CodeResources already seals a SHA-256 of all 220 of them, so
+# tampering with one still fails verification with "a sealed resource is missing
+# or invalid". Ignoring them removed ~180 requests and took signing from 25
+# minutes to under one, with the same integrity coverage and notarization
+# accepting the result unchanged.
+#
+# So: if a future Electron ships new non-code resources and signing starts
+# crawling again, widen that pattern rather than assuming the network is at
+# fault. And do not try to solve it by dropping --timestamp — notarization
+# rejects signatures without one.
 set -uo pipefail
 
 cd "$(dirname "$0")"
@@ -59,6 +97,7 @@ SIGN_ID="${APPLE_SIGN_ID:-}"
 NOTARY_PROFILE="${NOTARYTOOL_PROFILE:-notar}"
 
 DO_SIGN=1
+DO_PKG=0
 DO_CLEAN=0
 ASSUME_YES=0
 WANT_HOSTS=0
@@ -66,10 +105,12 @@ WANT_HOSTS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-sign|--test) DO_SIGN=0; shift ;;
+    --pkg) DO_PKG=1; shift ;;
+    --no-pkg) DO_PKG=0; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --hosts)  WANT_HOSTS=1; shift ;;
     --clean)          DO_CLEAN=1; shift ;;
-    -h|--help)        sed -n '2,43p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,53p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -185,8 +226,10 @@ if [[ $DO_SIGN -eq 1 ]]; then
   # having the first does not give you the second. Warned rather than fatal —
   # the .dmg is still signed and notarized, and an unsigned .pkg is worth
   # producing so the shape of the build can be checked.
-  security find-identity -v 2>/dev/null | grep -q "Developer ID Installer" \
-    || echo "[!] no \"Developer ID Installer\" certificate — the .pkg will be unsigned. Create one at developer.apple.com."
+  if [[ $DO_PKG -eq 1 ]]; then
+    security find-identity -v 2>/dev/null | grep -q "Developer ID Installer" \
+      || echo "[!] no \"Developer ID Installer\" certificate — the .pkg will be unsigned. Create one at developer.apple.com."
+  fi
   # Without the "Developer ID Application: " prefix: electron-builder picks the
   # certificate type itself and refuses outright a CSC_NAME that names one.
   # Stripped here rather than asked for stripped, because the prefix is part of
@@ -277,7 +320,16 @@ for candidate in out/electron-pack/mac-universal/ia_workspaces.app \
   [[ -d "$candidate" ]] && APP_BUNDLE="$candidate" && break
 done
 
-if [[ -z "$APP_BUNDLE" ]]; then
+if [[ $DO_PKG -eq 0 ]]; then
+  # Both copies have to go, and neither is optional. tools/collect.mjs keeps
+  # `ia_workspaces.pkg` in its keep-list unconditionally and copies it from
+  # out/installer, so a .pkg left behind by an earlier run would survive this
+  # one: collected into build/ as though this run had made it, then notarized
+  # and stapled below. That is a stale installer shipped under a new version
+  # number, which is worse than no installer at all.
+  rm -f "out/installer/ia_workspaces.pkg" "build/ia_workspaces.pkg"
+  echo "[-] .dmg only — pass --pkg for the installer"
+elif [[ -z "$APP_BUNDLE" ]]; then
   echo "[!] no .app found under out/electron-pack — skipping the .pkg"
 else
   echo "[*] packaging installer (.pkg)"
