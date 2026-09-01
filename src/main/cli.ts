@@ -49,6 +49,18 @@ looking around
   iaw send-key <key> [--ctrl] [--alt]   send one key, e.g. send-key c --ctrl
   iaw events [--after N] [--follow]     what has happened, as JSON
 
+showing something
+  iaw open <path>                       show a file in a pane beside this one
+  iaw open --edit <path>                open it in the editor instead
+  iaw open --url <address>              a browser pane on that page
+  iaw open --pane KIND                  one of the app's own panes — git,
+                                        search, images, running, tokens,
+                                        prompts, runbook, focus, today, canvas
+
+  For an agent this is the difference between telling you where it put a chart
+  and showing it to you. Nothing is closed and nothing is replaced: it opens
+  beside what you are looking at, and you close it like any other pane.
+
 the session host
 
   iaw host                              is it running, and what is it holding
@@ -110,7 +122,14 @@ report-agent options
   --run-end             a turn ended
   --run-depth N         set the refcount outright
   --seq N               drop replayed reports older than this
+  --progress N          how far through this turn you are, 0-100
+  --failed              this turn went wrong  (--ok clears it)
   --model M  --context-pct N  --tokens T  --ttl MS
+
+  Progress and the other metadata go stale on the TTL: a number nobody has
+  refreshed in a minute stops being drawn, because a bar frozen at 60% looks
+  more maintained than no bar at all. --failed does not expire; the next
+  --run-start clears it.
 
 The pane is taken from IAW_PANE_ID, or found by walking up the process tree
 when something dropped the environment. --pane overrides both.
@@ -130,6 +149,7 @@ const VERBS: Method[] = [
   'send-key',
   'read-screen',
   'events',
+  'open',
 ]
 
 /** How long `ask` waits by default, and the most it will ever wait. */
@@ -570,6 +590,25 @@ function buildRequest(method: Method, args: Args, identity: PaneIdentity): Built
       return { value: { ...base, text: args.enter ? text + '\r' : text } }
     }
 
+    case 'open': {
+      // `--pane` already means "act on that pane id" everywhere else, so the
+      // kind of pane to open gets its own flag rather than being overloaded
+      // into a word that would mean two different things depending on the verb.
+      const kind = args['pane-kind']
+      if (kind && kind !== 'true') return { value: { ...base, openPane: String(kind) } }
+
+      // Each form carries its own target: `--edit <path>`, `--url <address>`,
+      // or a bare path. A flag given with no value parses as the string 'true',
+      // which is not a path anybody meant.
+      const edit = args.edit && args.edit !== 'true' ? String(args.edit) : null
+      const url = args.url && args.url !== 'true' ? String(args.url) : null
+      const bare = args._ ? String(args._) : null
+      const target = edit ?? url ?? bare
+      if (!target) return { error: 'open needs a path, --url <address>, or --pane <kind>' }
+
+      return { value: { ...base, target, edit: edit !== null, url: url !== null } }
+    }
+
     case 'send-key': {
       const key = args.key ?? args._
       if (!key) return { error: 'send-key needs a key name' }
@@ -600,6 +639,13 @@ function buildRequest(method: Method, args: Args, identity: PaneIdentity): Built
       if (args.model !== undefined) report.model = args.model
       if (args['context-pct'] !== undefined) report.contextPct = Number(args['context-pct'])
       if (args.tokens !== undefined) report.tokens = args.tokens
+      if (args.progress !== undefined) {
+        const pct = Number(args.progress)
+        if (!Number.isFinite(pct)) return { error: '--progress needs a number from 0 to 100' }
+        report.progress = pct
+      }
+      if (args.failed) report.failed = true
+      if (args.ok) report.ok = true
       if (args.ttl !== undefined) report.ttl = Number(args.ttl)
       return { value: report }
     }

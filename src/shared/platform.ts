@@ -139,6 +139,26 @@ export function joinPath(p: PlatformKind, ...parts: string[]): string {
 }
 
 /**
+ * Whether a path stands on its own, or is relative to somewhere.
+ *
+ * The sibling of `joinPath`, and it has to know the platform for the same
+ * reason: `C:\\work` is absolute on Windows and an oddly-named relative folder
+ * everywhere else, while a UNC share (`\\\\server\\share`) is a shape POSIX has
+ * no concept of at all. A leading separator counts on both — it is absolute on
+ * POSIX, and on Windows it means "the root of the current drive", which is
+ * still not something to join a working directory onto.
+ */
+export function isAbsolutePath(p: PlatformKind, target: string): boolean {
+  if (!target) return false
+  if (p === 'windows') {
+    if (/^[a-zA-Z]:[\\/]/.test(target)) return true
+    if (/^[\\/]{2}/.test(target)) return true
+    return /^[\\/]/.test(target)
+  }
+  return target.startsWith('/')
+}
+
+/**
  * A directory that is certain to exist, for when nothing better is known.
  *
  * The renderer needs a synchronous answer — a pane being repaired on load, a

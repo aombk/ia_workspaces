@@ -80,6 +80,17 @@ interface Session {
   flushTimer: NodeJS.Timeout | null
   exited: boolean
   /**
+   * The shell is still running somewhere; we have lost our way to it.
+   *
+   * Distinct from `exited`, and the distinction is the whole point: an exited
+   * shell is gone and its pane says so, while a detached one is alive in a
+   * broker we can no longer reach. The scrollback is intact, the pane looks
+   * completely ordinary, and every byte written to it goes nowhere. Set by
+   * `handleHostLost` and never cleared — a respawn builds a new `Session`, and
+   * that is the only thing that reconnects a pane.
+   */
+  detached: boolean
+  /**
    * The shell's process id once ConPTY has resolved it — see `registerPid`.
    * Held here rather than read back off the pty so the pid map is always
    * unregistered with the same value it was registered with.
@@ -414,6 +425,7 @@ export class PtyManager {
       pending: '',
       flushTimer: null,
       exited: false,
+      detached: false,
       pid: 0,
       spawnedAt,
       shellImage: resolved.file,
@@ -604,10 +616,37 @@ export class PtyManager {
    * are marked so the next spawn reconnects rather than assuming it is already
    * attached.
    */
+  /**
+   * The broker went away, and every pane it was holding went with it.
+   *
+   * Said out loud, in each pane it happened to, because the alternative is the
+   * worst failure this class can produce: the shells are still running in a
+   * process we can no longer reach, so the panes keep their scrollback, keep
+   * their titles, and look completely ordinary — while every keystroke
+   * disappears. The only trace used to be one line on a console nobody has
+   * open.
+   *
+   * A line in the pane rather than a toast, and rather than an alert: this is a
+   * fact about *that* pane, it belongs where you are about to type, and six
+   * detached panes must not mean six notifications. It reads the same way the
+   * restore notice does, which is the other thing this app writes into somebody
+   * else's scrollback.
+   */
   private handleHostLost(): void {
     console.error('[pty] lost the session host; panes are detached until the next spawn')
     this.backend = null
     this.starting = null
+
+    for (const session of this.sessions.values()) {
+      if (session.exited || session.detached) continue
+      session.detached = true
+      this.hooks.onData({
+        paneId: session.id,
+        data:
+          '\r\n\x1b[38;5;244m── detached from the session host — this pane cannot be typed ' +
+          'into. Open a new tab to get a shell back. ──\x1b[0m\r\n',
+      })
+    }
   }
 
   /**
@@ -639,9 +678,29 @@ export class PtyManager {
     this.backend?.write(session.id, command + '\r')
   }
 
-  write(paneId: string, data: string): void {
+  /**
+   * Sends bytes to a pane's shell. Returns whether they reached one.
+   *
+   * The return value is not ceremony. Three things can swallow a write, and
+   * until this reported them all three were indistinguishable from success:
+   * there is no session for the pane yet (the broker is still being connected
+   * to, and `spawn` is what registers one), the shell has exited, or the host
+   * was lost and every pane is detached from a shell that is still running
+   * without us.
+   *
+   * Typing may ignore the answer, and does — a keystroke aimed at a pane whose
+   * shell has gone should vanish rather than raise anything. What must not
+   * ignore it is anything writing *on the user's behalf*: the runbook, the
+   * command history, the markup editor all put a line on a prompt and then say
+   * nothing, so a dropped write left them looking as though the feature simply
+   * did not work.
+   */
+  write(paneId: string, data: string): boolean {
     const s = this.sessions.get(paneId)
-    if (!s || s.exited) return
+    if (!s || s.exited || s.detached) return false
+    // Read once: `handleHostLost` can null this between the check and the send.
+    const backend = this.backend
+    if (!backend) return false
 
     if (/[\r\n]/.test(data)) {
       // Proof a turn began even when the output that follows is too small for
@@ -658,7 +717,8 @@ export class PtyManager {
         s.commandStartedAt = Date.now()
       }
     }
-    this.backend?.write(paneId, data)
+    backend.write(paneId, data)
+    return true
   }
 
   resize(paneId: string, cols: number, rows: number): void {

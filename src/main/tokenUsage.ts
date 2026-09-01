@@ -36,10 +36,9 @@
  * than silently reporting zero. A plausible zero is the one answer this must
  * never give.
  */
-import { createReadStream } from 'node:fs'
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import os from 'node:os'
+import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { readAppended, sessionOf, transcriptFiles, transcriptsRoot } from './transcripts'
 import {
   CACHE_MULTIPLIERS,
   priceFor,
@@ -49,11 +48,6 @@ import {
   type TokenReport,
   type TokenTotals,
 } from '../shared/types'
-
-/** Where Claude Code keeps its transcripts, on every platform it runs on. */
-function projectsDir(): string {
-  return path.join(os.homedir(), '.claude', 'projects')
-}
 
 /** Our own record of what has already been read, beside the app's other state. */
 const CACHE_NAME = 'token-usage.json'
@@ -68,7 +62,7 @@ const CACHE_NAME = 'token-usage.json'
  * cache from another version is discarded and the transcripts re-read, which
  * costs one slow scan exactly once.
  */
-const CACHE_VERSION = 2
+const CACHE_VERSION = 3
 
 /**
  * How many days of per-day detail travel to the renderer.
@@ -128,6 +122,18 @@ interface FileCache {
   days: Record<string, number>
   /** Most recent line's timestamp, in ms. */
   lastAt: number | null
+  /**
+   * The last `message.id` counted, so the next block of the same reply is not
+   * counted again. See `take`.
+   *
+   * One id rather than a set, because the blocks of a reply are written
+   * consecutively — checked across every transcript on the machine this was
+   * written on: 2,540 repeated ids, not one of them with another reply in
+   * between. It has to survive between runs all the same: the reader is
+   * incremental, and a reply's blocks can straddle the point where one scan
+   * stopped and the next began.
+   */
+  lastMessageId: string | null
 }
 
 type Cache = Record<string, FileCache>
@@ -155,10 +161,10 @@ async function scan(dataDir: string): Promise<TokenReport> {
   cachePath = path.join(dataDir, CACHE_NAME)
   if (!cache) cache = await loadCache(cachePath)
 
-  const root = projectsDir()
+  const root = transcriptsRoot()
   let files: string[]
   try {
-    files = await transcripts(root)
+    files = await transcriptFiles(root)
   } catch {
     // No `~/.claude/projects` at all: Claude Code has never run here. That is
     // an answer, not a failure — and a different one from "we could not look".
@@ -191,75 +197,45 @@ async function scan(dataDir: string): Promise<TokenReport> {
   return build(files)
 }
 
-/** Every `*.jsonl` one level under `projects/`, which is where they all live. */
-async function transcripts(root: string): Promise<string[]> {
-  const out: string[] = []
-  for (const dir of await readdir(root, { withFileTypes: true })) {
-    if (!dir.isDirectory()) continue
-    const inside = path.join(root, dir.name)
-    let entries
-    try {
-      entries = await readdir(inside, { withFileTypes: true })
-    } catch {
-      continue
-    }
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith('.jsonl')) out.push(path.join(inside, entry.name))
-    }
-  }
-  return out
-}
-
 /**
  * Reads whatever has been appended to one transcript since last time.
  *
  * Returns whether anything changed, so an idle poll writes no cache file.
  */
 async function readFileInto(file: string): Promise<boolean> {
-  const info = await stat(file)
-  const known = cache![file]
-
-  // Untouched since the last scan. Size *and* mtime, because a file rewritten
-  // to the same length is a file to re-read.
-  if (known && known.size === info.size && known.mtimeMs === info.mtimeMs) return false
-
-  // Shrunk, which means rewritten rather than appended to. The offsets we hold
-  // are about a file that no longer exists, so it is counted again from zero.
-  const entry: FileCache =
-    known && info.size >= known.offset
-      ? known
-      : { size: 0, mtimeMs: 0, offset: 0, byCwd: {}, days: {}, lastAt: null }
-
   // The conversation this file *is*, by its name. A line claiming a different
   // one is history copied in from a fork — see the note at the top.
-  const own = path.basename(file, '.jsonl')
+  const own = sessionOf(file)
+  let entry = cache![file] ?? blank()
 
-  let consumed = entry.offset
-  let leftover = ''
-  const stream = createReadStream(file, { start: entry.offset, encoding: 'utf8' })
-
-  for await (const chunk of stream) {
-    const text = leftover + (chunk as string)
-    const lines = text.split('\n')
-    // The last piece may be half a line the writer has not finished. It is held
-    // back, and its bytes are not counted as read.
-    leftover = lines.pop() ?? ''
-    for (const line of lines) {
-      consumed += Buffer.byteLength(line, 'utf8') + 1
-      if (!line) continue
+  const read = await readAppended(
+    file,
+    cache![file],
+    (line) => {
       // Cheap before expensive: most lines in a transcript are user turns and
       // tool results, and `JSON.parse` on all 193 MB of them is the whole cost
       // of the first scan. Only lines that could carry counters are parsed.
-      if (!line.includes('"output_tokens"')) continue
+      if (!line.includes('"output_tokens"')) return
       take(entry, line, own)
+    },
+    // Rewritten rather than appended to, so what we counted from it is about a
+    // file that no longer exists and would otherwise be counted twice.
+    () => {
+      entry = blank()
     }
-  }
+  )
+  if (!read) return false
 
-  entry.offset = consumed
-  entry.size = info.size
-  entry.mtimeMs = info.mtimeMs
+  entry.offset = read.scanned.offset
+  entry.size = read.scanned.size
+  entry.mtimeMs = read.scanned.mtimeMs
   cache![file] = entry
   return true
+}
+
+/** A transcript nothing has been read from yet. */
+function blank(): FileCache {
+  return { size: 0, mtimeMs: 0, offset: 0, byCwd: {}, days: {}, lastAt: null, lastMessageId: null }
 }
 
 /** One transcript line, counted if it is an assistant turn of this conversation. */
@@ -271,8 +247,33 @@ function take(entry: FileCache, line: string, own: string): void {
     return
   }
 
-  const usage = row?.message?.usage
-  if (!usage || typeof usage.output_tokens !== 'number') return
+  const one = usageTotals(row?.message?.usage)
+  if (!one) return
+
+  /**
+   * One reply, counted once.
+   *
+   * Claude Code writes **one line per content block** — the thinking, the
+   * text, each tool call — and stamps every one of them with the same
+   * `message.id` and the same whole-reply `usage`. They are three records of
+   * one billed response, not three responses, and summing the rows was
+   * counting a reply once for every block it happened to contain.
+   *
+   * It is not a rounding error. Measured against the transcripts on the
+   * machine this was fixed on: output over-reported by 54%, cache reads by
+   * 40%, cache writes by 59% — a headline figure roughly double the truth,
+   * published to the other machines through `shareTokens` as well as shown
+   * here.
+   *
+   * A missing id is counted rather than skipped, on the same principle as the
+   * session check below: a format that stops writing the field must not
+   * silently zero everything.
+   */
+  const messageId = row?.message?.id
+  if (typeof messageId === 'string' && messageId) {
+    if (messageId === entry.lastMessageId) return
+    entry.lastMessageId = messageId
+  }
 
   // Only an *explicitly different* id is refused. Absent is counted: a format
   // that stops writing the field must not silently zero every project.
@@ -283,26 +284,7 @@ function take(entry: FileCache, line: string, own: string): void {
   const model = typeof row?.message?.model === 'string' ? row.message.model : '(unknown)'
 
   const byModel = (entry.byCwd[cwd] ??= {})
-  const totals = (byModel[model] ??= zero())
-
-  const cacheCreation = usage.cache_creation ?? {}
-  // The two cache-write windows are kept apart because they are priced apart —
-  // an hour's cache costs 2x input, five minutes' 1.25x. Older transcripts have
-  // only the flat total, which is taken as the five-minute kind, that being what
-  // Claude Code wrote before the long window existed.
-  const write1h = num(cacheCreation.ephemeral_1h_input_tokens)
-  const write5m = num(cacheCreation.ephemeral_5m_input_tokens)
-  const writeTotal = num(usage.cache_creation_input_tokens)
-
-  const one: TokenTotals = {
-    input: num(usage.input_tokens),
-    output: num(usage.output_tokens),
-    cacheWrite1h: write1h,
-    cacheWrite5m: write5m || Math.max(0, writeTotal - write1h),
-    cacheRead: num(usage.cache_read_input_tokens),
-    messages: 1,
-  }
-  add(totals, one)
+  add((byModel[model] ??= zero()), one)
 
   const at = Date.parse(row?.timestamp ?? '')
   if (Number.isFinite(at)) {
@@ -316,6 +298,37 @@ function take(entry: FileCache, line: string, own: string): void {
 
 function num(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+/**
+ * One `usage` object from a transcript, as the five counters this app keeps.
+ *
+ * Exported because `turns.ts` reads the same field of the same lines for a
+ * different question, and two readings of somebody else's format is one more
+ * than can be kept in step. Null when the object is not a usage block at all,
+ * which is how a caller tells an assistant reply from every other kind of line.
+ *
+ * The two cache-write windows are kept apart because they are priced apart — an
+ * hour's cache costs 2x input, five minutes' 1.25x. Older transcripts have only
+ * the flat total, which is taken as the five-minute kind, that being what Claude
+ * Code wrote before the long window existed.
+ */
+export function usageTotals(usage: any): TokenTotals | null {
+  if (!usage || typeof usage.output_tokens !== 'number') return null
+
+  const cacheCreation = usage.cache_creation ?? {}
+  const write1h = num(cacheCreation.ephemeral_1h_input_tokens)
+  const write5m = num(cacheCreation.ephemeral_5m_input_tokens)
+  const writeTotal = num(usage.cache_creation_input_tokens)
+
+  return {
+    input: num(usage.input_tokens),
+    output: num(usage.output_tokens),
+    cacheWrite1h: write1h,
+    cacheWrite5m: write5m || Math.max(0, writeTotal - write1h),
+    cacheRead: num(usage.cache_read_input_tokens),
+    messages: 1,
+  }
 }
 
 /** `YYYY-MM-DD` in the machine's own timezone, which is the day the user had. */
@@ -426,7 +439,7 @@ function sessionModels(entry: FileCache): Record<string, TokenTotals> {
  * anyone who wants to know where $1,600 came from can see that most of it was
  * cache hits at ten cents on the dollar rather than having to take it on faith.
  */
-function priceOf(byModel: Record<string, TokenTotals>): {
+export function priceOf(byModel: Record<string, TokenTotals>): {
   cost: number
   costs: ReturnType<typeof zeroCosts>
   unpriced: string[]

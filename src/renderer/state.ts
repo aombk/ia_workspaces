@@ -11,6 +11,7 @@ import {
   type AgentSession,
   type BoardPlacement,
   type EditorMode,
+  type HistoryScope,
   type NotificationRecord,
   type PaneActivity,
   type PaneAgentState,
@@ -166,6 +167,7 @@ class WorkspaceState {
    */
   private readonly activity = new Map<string, PaneActivity>()
   private readonly agents = new Map<string, PaneAgentState>()
+  private readonly runEndedListeners = new Set<(paneId: string) => void>()
 
   async load(): Promise<void> {
     this.data = normalize(await backend().loadState())
@@ -214,6 +216,24 @@ class WorkspaceState {
   subscribe(cb: Listener): () => void {
     this.listeners.add(cb)
     return () => this.listeners.delete(cb)
+  }
+
+  /**
+   * Called when a pane's agent stops working, with the pane it happened in.
+   *
+   * A separate list from `subscribe`, because this is a *moment* rather than a
+   * state: the ordinary listeners fire on every change and cannot tell "an
+   * agent is idle" — which is true for hours — from "an agent has just this
+   * second finished", which is the only thing anything here wants to act on.
+   *
+   * It exists so that what is read from a transcript after a turn can be read
+   * *when the turn ends* rather than on the next minute's poll. Deliberately
+   * not a place to put work: a listener here runs inside the state change that
+   * fired it.
+   */
+  onAgentRunEnded(cb: (paneId: string) => void): () => void {
+    this.runEndedListeners.add(cb)
+    return () => this.runEndedListeners.delete(cb)
   }
 
   private emit(): void {
@@ -1170,6 +1190,19 @@ class WorkspaceState {
   }
 
   /** Applied from OSC updates; writes through so a restart lands in place. */
+  /**
+   * Puts a pane on a ring of history, and makes that the ring new panes get.
+   *
+   * Two writes because the switch means two things — see `setPaneScope`. Saved
+   * rather than held in memory: the whole point is that it survives a restart.
+   */
+  setPaneHistoryScope(paneId: string, scope: HistoryScope): void {
+    const pane = this.pane(paneId)
+    if (pane) pane.historyScope = scope
+    this.data.settings.historyScope = scope
+    this.commit()
+  }
+
   updatePaneMeta(
     paneId: string,
     meta: { cwd?: string; title?: string; agentSession?: AgentSession; lastCommand?: string }
@@ -1295,7 +1328,10 @@ class WorkspaceState {
     // Nothing else changes: `shouldHoldAwake` counts only `'working'`, so the
     // same transition that starts the blink is the one that drops the wake
     // lock and lets the machine sleep with the signal waiting on the far side.
-    if (was === 'working' && agent.state === 'idle') this.markAttention(paneId)
+    if (was === 'working' && agent.state === 'idle') {
+      this.markAttention(paneId)
+      for (const cb of this.runEndedListeners) cb(paneId)
+    }
 
     // Whatever just arrived, it cannot be news in the pane you are sitting in.
     this.settleAttended()
@@ -1316,10 +1352,14 @@ class WorkspaceState {
    * A declared state always beats an observed one: "blocked" is a fact the
    * agent stated, while "active" is only our reading of the byte rate.
    */
-  paneIndicator(paneId: string): 'blocked' | 'working' | 'active' | null {
+  paneIndicator(paneId: string): 'blocked' | 'working' | 'failed' | 'active' | null {
     const agent = this.agents.get(paneId)
     if (agent?.state === 'blocked') return 'blocked'
     if (agent?.state === 'working') return 'working'
+    // A run that ended badly. Below `working` because a pane still doing
+    // something is better described by what it is doing, and above `active`
+    // because a verdict beats a reading of the byte rate.
+    if (agent?.state === 'failed') return 'failed'
     return this.activity.get(paneId) === 'active' ? 'active' : null
   }
 
@@ -2361,6 +2401,7 @@ export function paneLabel(pane: PaneState): string {
   if (pane.kind === 'ports') return 'running'
   if (pane.kind === 'tokens') return 'token stats'
   if (pane.kind === 'runbook') return 'runbook'
+  if (pane.kind === 'prompts') return 'prompts'
   if (pane.kind === 'focus') return 'focus'
   if (pane.kind === 'day') return 'today'
   // The canvas's own name, since a workspace can hold several now. Stripped of

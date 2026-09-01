@@ -1,6 +1,15 @@
 @import '@xterm/xterm/css/xterm.css';
 
 :root {
+  /*
+   * Every native control the browser tints itself — checkboxes, radios, range
+   * sliders, progress bars — takes the app's accent, decided here rather than
+   * per control. It was set on exactly one checkbox before, so every other one
+   * in the app was drawing in the platform's blue.
+   *
+   * Our own `.switch` paints itself and is unaffected.
+   */
+  accent-color: var(--accent);
   --bg: #141414;
   --bg-raised: #1c1c1c;
   --bg-hover: #262626;
@@ -435,6 +444,20 @@ html.mac-caption .titlebar-drag {
   width: 8px;
   height: 8px;
   background: var(--danger);
+}
+
+/*
+ * A turn that ended badly.
+ *
+ * The same red as a question and deliberately still, while the others pulse.
+ * The difference between them is urgency, not kind: a question is holding
+ * everything up and moves; a verdict about work that is already over waits.
+ * Movement rather than hue, so it survives a colour-blind reader and a dimmed
+ * screen — the same pairing the pane's own dot uses.
+ */
+.attention-dot--failed {
+  background: var(--danger);
+  animation: none;
 }
 
 /*
@@ -1187,6 +1210,8 @@ kbd {
 .relay-note,
 .runbook-note,
 .runbook-hint,
+.prompts-note,
+.prompts-text,
 .tokens-note,
 .tokens-table,
 .tokens-folders {
@@ -1906,6 +1931,167 @@ kbd {
    What you actually run in this project. Built from the tokens pane's shapes
    because it is the same kind of thing — a dense list read at a glance — and
    two panes of stats that look different are two panes to learn. */
+
+/*
+ * Every prompt you have ever sent, as a tab. A search box, a count, and a list
+ * grouped by the day — see `promptsPane.ts` for why the day is the axis.
+ */
+.prompts-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.prompts-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 6px;
+}
+
+.prompts-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input, var(--bg-raised));
+  color: var(--text);
+  font: inherit;
+  font-size: calc(12px * var(--ui-text, 1));
+}
+
+.prompts-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* The same control, the same words, in the day pane's header — see
+   `.prompts-here`. One question about a list should not be two shapes. */
+.day-scope {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.prompts-here {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.prompts-summary {
+  flex: none;
+  padding: 0 12px 6px;
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+}
+
+.prompts-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The day the prompts below it were sent. Sticky, because scrolling a long
+   search is exactly when you stop knowing where in the year you are. */
+.prompts-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 0 4px;
+  background: var(--bg);
+  color: var(--text-faint);
+  font-size: calc(10px * var(--ui-text, 1));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.prompts-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.prompts-row:hover {
+  border-color: var(--border);
+  background: var(--bg-hover);
+}
+
+.prompts-text {
+  min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  font-size: calc(12px * var(--ui-text, 1));
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The same amber the search pane marks a hit with, deliberately. A match is a
+   match wherever it is found, and the accent colour is the wrong thing to use
+   for one: it is the theme's own, so on a grey theme a highlight drawn from it
+   is a grey box on grey text that nobody can see. */
+.prompts-text mark {
+  background: rgba(210, 153, 34, 0.32);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+}
+
+.prompts-facts {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+  white-space: nowrap;
+}
+
+/* The turn's own facts, in the same words the pane strip uses. */
+.prompts-strip {
+  grid-column: 1 / -1;
+  color: var(--text-faint);
+  font-size: calc(10px * var(--ui-text, 1));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompts-note {
+  margin: 8px 0;
+  color: var(--text-faint);
+  font-size: calc(12px * var(--ui-text, 1));
+  line-height: 1.5;
+}
 
 .runbook-pane {
   display: flex;
@@ -3550,7 +3736,6 @@ button:disabled .gw-note {
 .diff-tick {
   flex: none;
   margin: 0;
-  accent-color: var(--accent);
   cursor: pointer;
 }
 
@@ -5450,6 +5635,29 @@ thead .csv-cell {
   animation: toast-in 0.18s ease-out;
 }
 
+/*
+ * A toast that goes somewhere says so.
+ *
+ * The click has always worked — an alert toast jumps to the pane that raised
+ * it — and nothing on screen admitted it: `.toast` sets `cursor: pointer`, and
+ * the title and body inside it, which cover nearly the whole thing, override
+ * that with `cursor: text` so they can be selected. The pointer only appeared
+ * over a few pixels of padding, so the feature was there and invisible.
+ *
+ * Only the ones that lead somewhere. Plenty of toasts are just a message, and
+ * a hand cursor over one of those is a promise nothing keeps.
+ */
+.toast.clickable,
+.toast.clickable .toast-title,
+.toast.clickable .toast-body {
+  cursor: pointer;
+}
+
+.toast.clickable:hover {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
 .toast.warn {
   border-left-color: var(--warn);
 }
@@ -5653,6 +5861,46 @@ thead .csv-cell {
 }
 
 /*
+ * A turn that ended badly.
+ *
+ * The same red as blocked and deliberately *still*, because the difference
+ * between them is urgency and not kind: blocked is a question holding
+ * everything up, and pulses; failed is a verdict about work that is already
+ * over, and waits. Two reds told apart by movement rather than by hue, which
+ * is the distinction that survives colour-blindness and a dimmed screen.
+ *
+ * No ring, no tinted tab, no bell — see the note above about five things
+ * shouting one fact. The dot carries it.
+ */
+.pane-state--failed {
+  background: var(--danger);
+}
+
+/*
+ * How far through the work the agent says it is.
+ *
+ * Along the very top of the pane, absolutely positioned so it never enters
+ * xterm's size measurement — the same rule the two bars at the bottom follow,
+ * and for the same reason: a strip that changed the grid would reflow the
+ * scrollback every time the number moved.
+ *
+ * Two pixels, no background track, no percentage in text. It is a glance, and
+ * a glance is all it can honestly be: the number came from the agent, and the
+ * app has no way to check it.
+ */
+.pane-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  z-index: 6;
+  background: var(--accent);
+  border-radius: 0 1px 1px 0;
+  transition: width 0.3s ease-out;
+  pointer-events: none;
+}
+
+/*
  * The answer bar. Absolutely positioned so it never enters xterm's own size
  * measurement — a bar that changed the grid size would reflow the whole
  * scrollback every time an agent asked a question.
@@ -5705,6 +5953,288 @@ thead .csv-cell {
   flex: none;
   color: var(--text-faint);
   font-size: calc(11px * var(--ui-text, 1));
+}
+
+/* ---------------------------------------------------------- image-notes editor */
+
+/*
+ * Marking places on a picture. Sits on the app's one overlay, like the settings
+ * panel and the prompt dialog, and is sized to the window rather than to the
+ * image: a screenshot is nearly always bigger than the space there is for it,
+ * and the one thing this must not do is make somebody scroll to find the corner
+ * they want to point at.
+ */
+.image-notes-panel {
+  /* Centred the way `.settings-panel` is, because the overlay it sits on is a
+     backdrop and nothing else — it dims what is behind and lays nothing out. */
+  position: fixed;
+  z-index: 60;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, calc(100vw - 48px));
+  height: min(800px, calc(100vh - 48px));
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.image-notes-head {
+  flex: none;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.image-notes-head h2 {
+  margin: 0 0 4px;
+  font-size: calc(14px * var(--ui-text, 1));
+  font-weight: 600;
+  color: var(--text);
+}
+
+.image-notes-head p {
+  margin: 0;
+  font-size: calc(11px * var(--ui-text, 1));
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+.image-notes-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr minmax(240px, 300px);
+}
+
+/* The picture, centred in whatever room is left, and the frame the badges are
+   positioned against — so a badge is a percentage of the image rather than of
+   the panel, and stays put when the window is resized. */
+/* Flex rather than grid, and that is load-bearing: a grid item's
+   `max-height: 100%` does not reliably resolve against the track, so the
+   picture overflowed its stage and was clipped — putting part of the very
+   image you are trying to point at outside the box, unreachable. The element
+   must also stay exactly the size of the picture, since a click is mapped from
+   its bounding rectangle; letterboxing inside a larger element would land
+   markers in the margins. */
+.image-notes-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  overflow: hidden;
+  cursor: crosshair;
+}
+
+.image-notes-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/*
+ * A badge on the picture. Amber, the colour a match is marked with everywhere
+ * else in this app, and the same colour it is burned into the copy with — what
+ * you place is what comes out.
+ */
+.image-notes-badge {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border: 2px solid rgba(0, 0, 0, 0.65);
+  border-radius: 999px;
+  background: #d29922;
+  color: #101010;
+  font: inherit;
+  font-size: calc(11px * var(--ui-text, 1));
+  font-weight: 600;
+  line-height: 1;
+  cursor: grab;
+}
+
+.image-notes-badge:active {
+  cursor: grabbing;
+}
+
+/*
+ * The next badge, under the cursor, before it exists.
+ *
+ * The badge is centred on the point you click, so it covers that point — on a
+ * screenshot scaled down to fit this dialog it can be wider than the button you
+ * were aiming at. This is what lets you see that before committing, and then
+ * place the badge clear of the thing and drag a spike back to it.
+ */
+.image-notes-badge.ghost {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/*
+ * The spikes, in one SVG under the badges.
+ *
+ * `viewBox` in the image's own pixels with `preserveAspectRatio: none`, so the
+ * shapes are computed once against the real coordinates and stretched to
+ * whatever size the picture is being shown at. The preview and the burned copy
+ * then come from the same geometry rather than from two that agree by luck.
+ */
+.image-notes-spikes {
+  position: absolute;
+  pointer-events: none;
+}
+
+.image-notes-spike {
+  fill: #d29922;
+  stroke: rgba(0, 0, 0, 0.65);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.image-notes-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px;
+  gap: 6px;
+}
+
+.image-notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.image-notes-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.image-notes-number {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #d29922;
+  color: #101010;
+  font-size: calc(11px * var(--ui-text, 1));
+  font-weight: 600;
+}
+
+.image-notes-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input, var(--bg));
+  color: var(--text);
+  font: inherit;
+  font-size: calc(12px * var(--ui-text, 1));
+}
+
+.image-notes-note:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.image-notes-remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: calc(14px * var(--ui-text, 1));
+  line-height: 1;
+}
+
+.image-notes-remove:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.image-notes-empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+  line-height: 1.45;
+}
+
+.image-notes-foot {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+
+/*
+ * The facts of the last finished turn, along the bottom of the pane it happened
+ * in. Shares the corner with `.pane-blocked` and never shows at the same time —
+ * see `renderTurnBar` for why the question always wins.
+ *
+ * Quieter than the blocked bar in every way it can be: no border, a background
+ * that only just separates it from the scrollback, and text a size down. It is
+ * a footnote to work that is over, and it sits above a terminal somebody is
+ * still reading.
+ */
+.pane-turn {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  padding: 3px 10px;
+  background: color-mix(in srgb, var(--bg-raised) 88%, transparent);
+  color: var(--text-dim);
+  font-size: calc(11px * var(--ui-text, 1));
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/*
+ * Hover puts it back: the titles carry the full file lists and the cost
+ * caveat, and a strip that cannot be pointed at cannot show them. Off by
+ * default so a click meant for the terminal underneath is never eaten by a
+ * summary of something that has already finished.
+ */
+.pane-turn:hover {
+  pointer-events: auto;
+}
+
+.pane-turn__fact {
+  flex: 0 0 auto;
+}
+
+/*
+ * The facts that are context rather than news — which model, which tools, how
+ * long. What is left at full strength is what changed and what it cost.
+ */
+.pane-turn__fact.quiet {
+  color: var(--text-faint);
 }
 
 /* ------------------------------------------------------------ notifications */

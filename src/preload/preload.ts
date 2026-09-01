@@ -26,6 +26,7 @@ import type {
   SystemStats,
   UsageReport,
   TokenReport,
+  TurnIndex,
   SharedTokens,
   TokenPublishEntry,
   RepoStatus,
@@ -44,6 +45,7 @@ import type {
   RelayPublishEntry,
   TimeSpan,
   ClipboardImage,
+  OpenViewRequest,
 } from '../shared/types'
 
 /**
@@ -196,6 +198,11 @@ const api = {
   sshHosts: (): Promise<SshHost[]> => ipcRenderer.invoke(IPC.sshHosts),
   claudeUsage: (retry?: boolean): Promise<UsageReport> => ipcRenderer.invoke(IPC.claudeUsage, retry),
   claudeTokens: (): Promise<TokenReport> => ipcRenderer.invoke(IPC.claudeTokens),
+  claudeTurns: (): Promise<TurnIndex> => ipcRenderer.invoke(IPC.claudeTurns),
+  saveNotedImage: (from: string, bytes: Uint8Array): Promise<string> =>
+    ipcRenderer.invoke(IPC.saveNotedImage, from, bytes),
+  readImageBytes: (path: string): Promise<Uint8Array | null> =>
+    ipcRenderer.invoke(IPC.readImageBytes, path),
   shareTokens: (dir: string, entries: TokenPublishEntry[]): Promise<SharedTokens> =>
     ipcRenderer.invoke(IPC.shareTokens, dir, entries),
   relay: (dir: string, entries: RelayPublishEntry[]): Promise<Relay> =>
@@ -248,7 +255,7 @@ const api = {
   pty: {
     spawn: (req: SpawnRequest): Promise<{ ok: boolean; error?: string; shell?: string }> =>
       ipcRenderer.invoke(IPC.ptySpawn, req),
-    write: (id: string, data: string): Promise<void> => ipcRenderer.invoke(IPC.ptyWrite, id, data),
+    write: (id: string, data: string): Promise<boolean> => ipcRenderer.invoke(IPC.ptyWrite, id, data),
     resize: (id: string, cols: number, rows: number): Promise<void> =>
       ipcRenderer.invoke(IPC.ptyResize, id, cols, rows),
     kill: (id: string): Promise<void> => ipcRenderer.invoke(IPC.ptyKill, id),
@@ -310,6 +317,7 @@ const api = {
     alert: (cb: (a: TerminalAlert) => void) => subscribe(IPC.onAlert, cb),
     focusTerminal: (cb: (p: { workspaceId: string; paneId: string }) => void) =>
       subscribe(IPC.onFocusTerminal, cb),
+    openView: (cb: (p: OpenViewRequest) => void) => subscribe(IPC.onOpenView, cb),
     windowFocus: (cb: (focused: boolean) => void) => subscribe(IPC.onWindowFocus, cb),
     externalState: (cb: (state: unknown) => void) => subscribe(IPC.onExternalState, cb),
     gitProgress: (cb: (p: GitProgress) => void) => subscribe(IPC.onGitProgress, cb),

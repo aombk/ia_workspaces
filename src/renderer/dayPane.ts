@@ -10,7 +10,7 @@
  * how long, what was run in them, what failed, and what got committed. Nothing
  * was typed into a form. That is the whole argument for it existing.
  *
- * Deliberately across projects and for one day, which is what makes it a pane
+ * Across projects and for one day, which is what makes it a pane
  * of its own rather than another card in `focusPane.ts` — that one answers
  * "how is this project going", and this one answers "where did today go".
  */
@@ -19,6 +19,8 @@ import { backend } from '../backend'
 import { allHistory, refreshPaneHistory, watchHistory } from './ui/paneHistory'
 import { byDay, dayKey, durationMs, refreshTimeNow, timeSpans, watchTime } from './ui/timeMonitor'
 import type { Commit, HistoryEntry } from '../shared/types'
+import { inProject } from '../shared/runbook'
+import { store } from './state'
 
 /** Commits are fetched per project, so only for the ones you actually touched. */
 const MAX_PROJECTS_FOR_COMMITS = 8
@@ -41,6 +43,16 @@ export class DayPane implements AuxPane {
   private back = 0
   /** Commits by project folder, for the day on screen. Cleared when the day changes. */
   private commits = new Map<string, Commit[]>()
+  /**
+   * Whether to show only the project you are standing in.
+   *
+   * On by default, and that is a change of emphasis worth naming: this pane was
+   * built to answer "where did the day go" across every project, and opening it
+   * unscoped answers a question you mostly have at the end of a week rather than
+   * in the middle of an afternoon. The wider view is one click away and keeps
+   * its own paragraph below; what moved is which of the two you get first.
+   */
+  private here = true
 
   constructor(readonly paneId: string) {
     this.element = document.createElement('div')
@@ -96,6 +108,12 @@ export class DayPane implements AuxPane {
     const { from, to, key } = this.window()
     const out = new Map<string, Line>()
 
+    // Applied at the end rather than while collecting: the folders are gathered
+    // from three sources that name them slightly differently, and filtering
+    // each one separately is three chances to disagree about what "this
+    // project" includes.
+    const root = this.here ? (store.workspaceOfPane(this.paneId)?.cwd ?? '') : ''
+
     for (const span of timeSpans()) {
       if (span.end <= from || span.start >= to) continue
       const id = norm(span.cwd)
@@ -110,6 +128,7 @@ export class DayPane implements AuxPane {
     for (const [id, line] of out) {
       line.ms = byDay(timeSpans(), line.cwd).get(key) ?? 0
       if (!line.ms) out.delete(id)
+      else if (root && !inProject({ cwd: line.cwd }, root)) out.delete(id)
     }
 
     for (const entry of allHistory()) {
@@ -217,7 +236,23 @@ export class DayPane implements AuxPane {
     forward.disabled = this.back === 0
     forward.addEventListener('click', () => this.go(-1))
 
-    head.append(back, label, forward)
+    // Same control and the same words as the prompt explorer's, because it is
+    // the same question about a different list. Two pieces of chrome meaning
+    // one thing should not be two different shapes.
+    const scope = document.createElement('label')
+    scope.className = 'day-scope'
+    scope.title = 'Only the project this workspace is in, or below it.'
+    const box = document.createElement('input')
+    box.type = 'checkbox'
+    box.checked = this.here
+    box.addEventListener('change', () => {
+      this.here = box.checked
+      this.render()
+    })
+    scope.appendChild(box)
+    scope.appendChild(document.createTextNode('this project'))
+
+    head.append(back, label, forward, scope)
     return head
   }
 

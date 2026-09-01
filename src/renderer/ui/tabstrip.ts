@@ -78,10 +78,28 @@ export function renderTabstrip(): void {
     el.title = `${tabLabel(tab)}\n${tab.panes.map((p) => p.cwd).join('\n')}`
     el.draggable = renaming !== tab.id
 
-    if (demand !== 'none') {
+    // A turn that ended badly, on any pane in this tab. Read here rather than
+    // from `demand`, which is about *attention* — whether you have seen the
+    // pane since something happened — and this is about what happened. The two
+    // coincide most of the time and are not the same question.
+    //
+    // It has to live on the tab because the pane's own dot is in the pane
+    // *header*, and an unsplit tab has no header: a single-pane tab could
+    // declare itself failed and show nothing anywhere.
+    const failed = tab.panes.some((p) => store.paneAgent(p.id)?.state === 'failed')
+
+    if (demand !== 'none' || failed) {
       const dot = document.createElement('span')
-      dot.className = needsInput ? 'attention-dot attention-dot--input' : 'attention-dot'
-      dot.title = needsInput ? 'Waiting for your answer' : 'Needs attention'
+      dot.className = needsInput
+        ? 'attention-dot attention-dot--input'
+        : failed
+          ? 'attention-dot attention-dot--failed'
+          : 'attention-dot'
+      dot.title = needsInput
+        ? 'Waiting for your answer'
+        : failed
+          ? 'The last turn here ended badly'
+          : 'Needs attention'
       el.appendChild(dot)
     }
 
@@ -338,8 +356,8 @@ function newTabEntries(workspaceId: string): MenuEntry[] {
       onClick: () => actions.openTokens(workspaceId),
     },
     {
-      label: 'runbook',
-      onClick: () => actions.openRunbook(workspaceId),
+      label: 'prompts',
+      onClick: () => actions.openPrompts(workspaceId),
     },
     {
       label: 'focus',
@@ -492,6 +510,16 @@ function openTabMenu(x: number, y: number, workspaceId: string, tabId: string): 
     // Everything else a workspace can open lives on the `+`, not here.
     ...reopenAsEntries(activePane, workspaceId),
     ...editorModeEntries(activePane),
+    // Only where there is a shell to type the result into. A image-notes editor on a
+    // git tab would open, work, and then have nowhere to put what it produced.
+    ...(activePane && isTerminalPane(activePane)
+      ? [
+          {
+            label: 'Clipboard image notes editor\u2026',
+            onClick: () => actions.addImageNotes(activePane.id),
+          },
+        ]
+      : []),
     'separator',
     { label: 'Split right', shortcut: 'Ctrl+\\', onClick: () => actions.splitPane('row') },
     { label: 'Split down', shortcut: 'Ctrl+Shift+\\', onClick: () => actions.splitPane('column') },

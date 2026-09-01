@@ -33,7 +33,14 @@ import type { WorkspaceFile } from '../shared/workspaceFile'
 import type { UiActions } from './ui/actions'
 import { initCanvasPanes } from './canvasPane'
 import { DEFAULT_SETTINGS, isTerminalPane } from '../shared/types'
-import type { NotificationRecord, PaneState, TerminalAlert, Workspace } from '../shared/types'
+import { OPENABLE_PANES } from '../shared/types'
+import type {
+  NotificationRecord,
+  OpenViewRequest,
+  PaneState,
+  TerminalAlert,
+  Workspace,
+} from '../shared/types'
 import {
   initPalette,
   hidePalette,
@@ -43,13 +50,15 @@ import {
   togglePalette,
 } from './ui/palette'
 import { isNavigation, isPrimary } from './ui/keys'
-import { fallbackCwd, isWindows, joinPath, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
+import { fallbackCwd, isAbsolutePath, isWindows, joinPath, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
 import { isWslPath, wslDistroOf } from '../shared/wsl'
 import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
 import { initRelayMonitor, watchRelay } from './ui/relayMonitor'
 import { initTimeMonitor } from './ui/timeMonitor'
 import { initTokenMonitor } from './ui/tokenMonitor'
+import { initTurnMonitor } from './ui/turnMonitor'
+import { typeIntoPane } from './ui/paneInput'
 import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
 import { initAwakeStrip } from './ui/awakeStrip'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
@@ -58,6 +67,22 @@ import { initMonitorDock, toggleMonitorDock } from './ui/monitorDock'
 let terminals: TerminalManager
 /** Guards against re-entrant mounts while a spawn is in flight. */
 let mounting = false
+/**
+ * A sync that arrived while one was already running, and still needs doing.
+ *
+ * The guard above drops a re-entrant call, which is right — two mounts of the
+ * same tab racing each other is exactly the mess it exists to prevent — but
+ * dropping it *and forgetting* is not. A mount can be in flight for as long as
+ * a shell takes to spawn, and anything that opens a tab in that window used to
+ * get a tab in the strip with the previous tab's contents still on screen: the
+ * document says one thing and the window shows another, until something else
+ * happens to trigger a sync.
+ *
+ * Rare from a mouse, because you cannot click while the first tab is still
+ * coming up. Not rare at all from `iaw open`, which is a message arriving on a
+ * socket and does not wait for the window to be ready.
+ */
+let mountWanted = false
 /** Fallback folder for workspaces created without picking one. */
 // Empty rather than a platform default, because this module is evaluated before
 // `entry.electron.ts` reaches its `setBackend(...)` line — asking for the
@@ -116,7 +141,7 @@ export async function start(): Promise<void> {
     jumpToPane: (workspaceId, paneId) => actions.jumpToPane(workspaceId, paneId),
     // Typed, never submitted: ending a process is not a one-click action from a
     // list that refreshes under your cursor.
-    suggest: (paneId, command) => void backend().pty.write(paneId, command),
+    suggest: (paneId, command) => void typeIntoPane(paneId, command),
   })
 
   terminals.setFilesHooks({
@@ -129,7 +154,7 @@ export async function start(): Promise<void> {
       const tab = store.activeTab
       const target = tab?.panes.find((p) => p.id === tab.activePaneId && isTerminalPane(p))
         ?? tab?.panes.find(isTerminalPane)
-      if (target) void backend().pty.write(target.id, text)
+      void typeIntoPane(target?.id, text)
     },
     onNavigate: (paneId, cwd) => {
       store.updatePaneMeta(paneId, { cwd })
@@ -213,6 +238,7 @@ export async function start(): Promise<void> {
   initCanvasPanes(actions)
   initUsageMonitor()
   initTokenMonitor()
+  initTurnMonitor()
   initRelayMonitor()
   initTimeMonitor()
   // A sweep lands on its own timer, not through the store, so the sidebar would
@@ -361,7 +387,13 @@ function renderEmptyState(): void {
 async function syncMountedTab(): Promise<void> {
   const workspace = store.activeWorkspace
   const tab = store.activeTab
-  if (!workspace || !tab || mounting) return
+  if (!workspace || !tab) return
+  // Deferred rather than dropped — see `mountWanted`. Whatever changed while
+  // the last mount was in flight still has to reach the screen.
+  if (mounting) {
+    mountWanted = true
+    return
+  }
   if (terminals.mountedTab === tab.id) {
     terminals.setActivePane(tab.activePaneId)
     return
@@ -374,6 +406,12 @@ async function syncMountedTab(): Promise<void> {
     updateBadge()
   } finally {
     mounting = false
+  }
+  // Read *after* the flag clears, and looped rather than recursed once: the
+  // deferred sync can itself be overtaken while it runs.
+  while (mountWanted) {
+    mountWanted = false
+    await syncMountedTab()
   }
 }
 
@@ -752,13 +790,19 @@ const actions: UiActions = {
     this.reopenPaneAs(paneId, 'ssh', { sshHost: host })
   },
 
-  openBrowser(workspaceId) {
+  openBrowser(workspaceId, url) {
     // Deliberately not deduplicated the way the ports and search panes are.
     // Those answer one question about the whole app, so a second one is a
     // duplicate; two browser panes on two different pages is the normal way to
     // use a browser.
     if (!backend().capabilities.browser) return
-    store.addTab(workspaceId, undefined, 'browser')
+    // `addTabWith` when there is an address, because the pane has to know it
+    // *before* it is mounted — see the note on that method. Setting the url on
+    // the line after `addTab` is one moment too late: the pane has already
+    // opened on the home page, and the page you asked for arrives as a second
+    // navigation you can see happen.
+    if (url) store.addTabWith(workspaceId, 'browser', { url })
+    else store.addTab(workspaceId, undefined, 'browser')
     void syncMountedTab()
   },
 
@@ -819,6 +863,32 @@ const actions: UiActions = {
       return
     }
     store.addTab(workspaceId, undefined, 'focus')
+    void syncMountedTab()
+  },
+
+  addImageNotes(paneId) {
+    const tab = store.activeTab
+    const target =
+      paneId ??
+      tab?.panes.find((p) => p.id === tab.activePaneId && isTerminalPane(p))?.id ??
+      tab?.panes.find(isTerminalPane)?.id
+    if (!target) {
+      showToast('No terminal to mark up for', 'The result is typed into a shell, so it needs one.')
+      return
+    }
+    void terminals.addNotesToClipboardImage(target)
+  },
+
+  openPrompts(workspaceId) {
+    // One for the whole app: it searches every project, so a second copy would
+    // be the same search twice. The "this project" filter inside it is what
+    // makes it about a folder, and that is a tick box rather than a tab.
+    const existing = findPane((p) => p.kind === 'prompts')
+    if (existing) {
+      actions.jumpToPane(existing.workspaceId, existing.paneId)
+      return
+    }
+    store.addTab(workspaceId, undefined, 'prompts')
     void syncMountedTab()
   },
 
@@ -1138,6 +1208,12 @@ async function remount(): Promise<void> {
   } finally {
     mounting = false
   }
+  // A remount is a mount too: anything that asked for one while this was in
+  // flight is owed the same catch-up.
+  while (mountWanted) {
+    mountWanted = false
+    await syncMountedTab()
+  }
 }
 
 // ----------------------------------------------------------------- docked tree
@@ -1167,7 +1243,7 @@ function syncDockedTree(): void {
         const target =
           tab?.panes.find((p) => p.id === tab.activePaneId && isTerminalPane(p)) ??
           tab?.panes.find(isTerminalPane)
-        if (target) void backend().pty.write(target.id, text)
+        void typeIntoPane(target?.id, text)
       },
       // Browsing is just browsing: the tree remembers where it is, and the
       // workspace root stays where it was put. Moving the root is a deliberate
@@ -1301,6 +1377,8 @@ function wireAlerts(): void {
     actions.jumpToPane(workspaceId, paneId)
   })
 
+  backend().on.openView((req) => openView(req))
+
   backend().on.windowFocus((focused) => {
     if (!focused) return
     // Coming back to the window settles the pane you land on, matching the
@@ -1314,6 +1392,67 @@ function wireAlerts(): void {
     updateBadge()
     terminals.focusActive()
   })
+}
+
+/**
+ * Shows whatever `iaw open` asked for.
+ *
+ * The point of this, and the reason it is worth a verb of its own: an agent
+ * that has just produced a chart, a screenshot or a rendered page can only
+ * print you the path to it. Every pane kind this app has was already reachable
+ * from a menu and from the palette, and reachable from nothing the agent could
+ * call — so the one participant that most often has something to show had no
+ * way to show it.
+ *
+ * **It opens beside the work that asked**, not wherever the focus happens to
+ * be: the request carries the pane it came from, so a background agent cannot
+ * throw a window in front of what you are reading in another workspace. It
+ * never closes or replaces anything, and what it opens is an ordinary pane you
+ * close like any other.
+ */
+function openView(req: OpenViewRequest): void {
+  // The asking pane's workspace, falling back to the active one for a caller
+  // that is not in a pane at all — a script run from an outside shell.
+  const workspaceId = store.workspaceOfPane(req.paneId)?.id ?? store.activeWorkspace?.id
+  if (!workspaceId) return
+
+  if (req.openPane) {
+    const kind = OPENABLE_PANES[req.openPane]
+    if (!kind) return
+    // Through the same actions the menus call, so a pane opened this way is
+    // deduplicated, focused and laid out exactly as one opened by hand. A verb
+    // that took its own path would be a second set of rules to keep in step.
+    switch (kind) {
+      case 'diff': return actions.openDiff(workspaceId)
+      case 'history': return actions.openHistory(workspaceId)
+      case 'search': return actions.openSearch(workspaceId)
+      case 'images': return actions.openImages(workspaceId)
+      case 'ports': return actions.openPorts(workspaceId)
+      case 'tokens': return actions.openTokens(workspaceId)
+      case 'prompts': return actions.openPrompts(workspaceId)
+      case 'runbook': return actions.openRunbook(workspaceId)
+      case 'focus': return actions.openFocus(workspaceId)
+      case 'day': return actions.openDay(workspaceId)
+      case 'canvas': return actions.openCanvas(workspaceId)
+      case 'files': return actions.newFileTab(workspaceId)
+      default: return
+    }
+  }
+
+  if (!req.target) return
+  if (req.url) {
+    actions.openBrowser(workspaceId, req.target)
+    return
+  }
+  // A relative path is relative to the pane that asked, which is the folder the
+  // agent is working in and the only one it could have meant.
+  const cwd = store.pane(req.paneId)?.cwd ?? store.activeWorkspace?.cwd ?? ''
+  const platform = backend().capabilities.platform
+  const full = isAbsolutePath(platform, req.target)
+    ? req.target
+    : joinPath(platform, cwd, req.target)
+  if (req.edit) actions.openEditor(workspaceId, full)
+  else actions.openReader(full)
 }
 
 function handleAlert(alert: TerminalAlert): void {

@@ -39,6 +39,17 @@ export interface UiActions {
   openTokens(workspaceId: string): void
   /** The commands you actually run in this project, as a tab. */
   openRunbook(workspaceId: string): void
+  /** Every prompt you have sent an agent, across every project, as a tab. */
+  openPrompts(workspaceId: string): void
+  /**
+   * Numbers a picture from the clipboard and types the result into a pane.
+   *
+   * With no `paneId` it uses the focused terminal, which is what the palette
+   * means. Reachable from the tab menu, the pane menu and the palette because
+   * the pane menu alone was not reachable at all: a pane header only exists
+   * once a tab is split, so an unsplit tab — the ordinary case — had no way in.
+   */
+  addImageNotes(paneId?: string): void
   /** Time on this project, what is left to do, and a timer, as a tab. */
   openFocus(workspaceId: string): void
   /** Where the day went, across every project, as a tab. */
@@ -85,8 +96,14 @@ export interface UiActions {
   saveAllWorkspaces(): void
   /** Reads a workspace file, adding what it holds beside what is already open. */
   loadWorkspaces(): void
-  /** A web page in a tab. Only where `Backend.capabilities.browser` is true. */
-  openBrowser(workspaceId: string): void
+  /**
+   * A web page in a tab. Only where `Backend.capabilities.browser` is true.
+   *
+   * With no `url` it opens on the configured home page, which is what the menu
+   * does. `iaw open --url` passes one, so an agent can put the page it just
+   * built in front of you rather than telling you the address.
+   */
+  openBrowser(workspaceId: string, url?: string): void
   /** Show a file read-only, as a split beside the current pane. */
   openReader(path: string): void
   /**

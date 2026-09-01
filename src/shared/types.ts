@@ -150,9 +150,54 @@ export const PANE_KINDS = [
   'focus',
   'day',
   'canvas',
+  'prompts',
 ] as const
 
 export type PaneKind = (typeof PANE_KINDS)[number]
+
+/**
+ * The pane kinds `iaw open --pane` will open, and their CLI names.
+ *
+ * A deliberate subset of `PANE_KINDS`, listed here rather than derived from it.
+ * Three of them are not things you ask for by name — `terminal` has its own
+ * verb, `reader` and `editor` want a file rather than a bare word, `compare`
+ * wants two, and `monitor` is not a tab any more. A list that grew itself would
+ * quietly start offering all of those.
+ *
+ * The names are the ones on the app's own menus, so what you type matches what
+ * you see: `git`, not `diff`; `running`, not `ports`; `today`, not `day`.
+ */
+/**
+ * What `iaw open` asked the window to show.
+ *
+ * Pushed from the main process rather than returned to the caller, because
+ * opening a pane is the renderer's business — it owns the tabs and the layout.
+ * `paneId` is the pane the request came from, so the new one lands beside the
+ * work that asked for it rather than wherever the focus happens to be.
+ */
+export interface OpenViewRequest {
+  paneId: string
+  /** A path, or an address when `url` is set. Empty when `openPane` is used. */
+  target: string
+  /** A key of `OPENABLE_PANES`, or empty. */
+  openPane: string
+  edit: boolean
+  url: boolean
+}
+
+export const OPENABLE_PANES: Record<string, PaneKind> = {
+  git: 'diff',
+  history: 'history',
+  search: 'search',
+  images: 'images',
+  running: 'ports',
+  tokens: 'tokens',
+  prompts: 'prompts',
+  focus: 'focus',
+  today: 'day',
+  canvas: 'canvas',
+  files: 'files',
+}
 
 /**
  * How the editor pane shows the file it has open.
@@ -242,6 +287,18 @@ export function isTerminalPane(pane: { kind?: PaneKind }): boolean {
 /**
  * One pane. Splitting a tab adds panes; it never adds tabs.
  */
+/**
+ * Which ring of command history a pane's Up arrow walks.
+ *
+ * Here rather than beside the control that sets it, because it is now part of
+ * the saved document: a pane remembers the ring it was put on, and the last one
+ * chosen becomes the ring new panes start on.
+ */
+export type HistoryScope = 'terminal' | 'machine' | 'everywhere'
+
+/** Narrowest first, which is the order the corner control cycles through. */
+export const SCOPES: readonly HistoryScope[] = ['terminal', 'machine', 'everywhere']
+
 export interface PaneState {
   id: string
   /** Defaults to 'terminal' when absent, so older documents still load. */
@@ -271,6 +328,16 @@ export interface PaneState {
    * reopening it comes back to the same one rather than a blank prompt.
    */
   agentSession?: AgentSession
+  /**
+   * Which ring of history this pane's Up arrow walks.
+   *
+   * Absent means "whatever new panes start on" — `Settings.historyScope`, which
+   * is the last ring anybody chose. The same absence-is-inheritance rule
+   * `shell` uses above, and for the same reason: a value here is a decision
+   * somebody made about *this* pane, and there is no way to record a decision
+   * that was never made.
+   */
+  historyScope?: HistoryScope
   /**
    * The last command line submitted in this pane, so a restored pane can offer
    * it back. Reported by shell integration, which is the only thing that knows
@@ -693,6 +760,94 @@ export interface TokenReport {
   status: 'ok' | 'none'
   projects: ProjectTokenUsage[]
   sessions: SessionTokenUsage[]
+  scannedAt: number
+}
+
+/**
+ * One thing a turn did to a file, and how much of it.
+ *
+ * Counted from the patch Claude Code records against its own edit, rather than
+ * from the file on disk: the file has moved on since, and the question this
+ * answers is what *that turn* did.
+ */
+export interface TurnEdit {
+  path: string
+  added: number
+  removed: number
+}
+
+/**
+ * One prompt you typed, and everything the agent did about it.
+ *
+ * The unit is a *human* turn, which is not the same as a message: one prompt
+ * can produce forty assistant messages and four hundred tool calls, and it is
+ * still one thing you asked for. Everything below is summed over that span.
+ *
+ * Read from Claude Code's own transcripts and never estimated — see
+ * `main/turns.ts` for what is taken from where, and for the one figure that is
+ * an estimate and says so.
+ */
+export interface AgentTurn {
+  /** The conversation this belongs to, by its transcript's name. */
+  session: string
+  /** Absolute path of that transcript, so a pane can be matched to its turns. */
+  file: string
+  /** Position in the conversation, counting human turns only, from 1. */
+  n: number
+  /** What you typed. Long prompts are clipped for storage — see `clipped`. */
+  prompt: string
+  clipped: boolean
+  /** When you sent it. */
+  at: number
+  /** When the last reply to it landed, or null while it is still the live turn. */
+  endedAt: number | null
+  /** The folder the conversation was in when you sent it. */
+  cwd: string
+  /** The branch it was on, as Claude Code recorded it. */
+  branch: string | null
+  /** The model that answered. The last one, if the turn changed models. */
+  model: string | null
+  totals: TokenTotals
+  /**
+   * What the model was carrying when it last replied — the context window in
+   * use, not the tokens this turn added.
+   */
+  context: number
+  /** How many times each tool ran, by the tool's own name. */
+  tools: Record<string, number>
+  /** Files read, in the order first read, capped. */
+  read: string[]
+  /** Files written, with the size of the change. */
+  edited: TurnEdit[]
+  /** Images that rode along with the prompt. */
+  images: number
+}
+
+/**
+ * One conversation, as the index knows it.
+ *
+ * `title` and `cost` are Claude Code's own and are not computed here. It names
+ * its conversations itself and records what it charged for them, so producing a
+ * second answer to either question would be inventing a disagreement.
+ */
+export interface ConversationRecord {
+  id: string
+  file: string
+  cwd: string
+  title: string | null
+  startedAt: number | null
+  lastAt: number | null
+  turns: number
+  /** What Claude Code says the conversation cost, when it has said. */
+  reportedCost: number | null
+}
+
+export interface TurnIndex {
+  /** `none` means Claude Code has never written a transcript on this machine. */
+  status: 'ok' | 'none'
+  /** Newest first, across every project. */
+  turns: AgentTurn[]
+  conversations: ConversationRecord[]
   scannedAt: number
 }
 
@@ -1370,6 +1525,45 @@ export interface Settings {
   customShellArgs: string
   /** Inject OSC reporting into the shell for cwd tracking + command markers. */
   shellIntegration: boolean
+  /**
+   * The ring of history a new terminal starts on.
+   *
+   * Set by flipping the corner control on any pane rather than in the settings
+   * panel: a second control for one value is two things that can disagree, and
+   * the corner is where the decision is actually made. Flipping it says both
+   * "this pane" and "and from now on, new ones too", which is what somebody who
+   * has set it three times in a row means.
+   *
+   * Ships as `terminal` — this pane's own commands. The widest ring is the most
+   * impressive default and the least useful one: what you nearly always want
+   * from the Up arrow is the thing *you just ran here*, not the thing you ran
+   * in some other window an hour ago.
+   */
+  historyScope: HistoryScope
+  /**
+   * Whether pasting a picture opens the notes editor instead of pasting it.
+   *
+   * Off, and that is the important part. An ordinary paste is muscle memory and
+   * has to stay instant; taxing every paste to serve the occasional one that
+   * wants notes is the wrong trade, and it would also change what the agent
+   * *receives*. With this off, pixels on the clipboard reach the program as a
+   * `Ctrl+V` keystroke so it reads the clipboard itself — see `paste` — and
+   * turning this on replaces that with a file path, which is a real difference
+   * to anything on the other end.
+   *
+   * On for the people who paste a screenshot in order to point at it, every
+   * time. The menu and the palette stay for everyone else.
+   */
+  notesOnPaste: boolean
+  /**
+   * Whether a finished agent turn leaves its facts along the bottom of the pane.
+   *
+   * On, because the numbers are already on the disk and the strip is the only
+   * place anybody sees them — but a setting rather than a fact, because it
+   * occupies a line of a terminal and somebody working in a short pane will
+   * want that line back.
+   */
+  showTurnSummary: boolean
   /**
    * The interface theme: app chrome, and the window properties that go with it
    * — transparency, backdrop, corner rounding, workspace markers.
@@ -2324,7 +2518,7 @@ export interface TerminalMeta {
 export type PaneActivity = 'active' | 'idle'
 
 /** State an agent declares about itself, never inferred. */
-export type AgentRunState = 'blocked' | 'working' | 'idle' | 'unknown'
+export type AgentRunState = 'blocked' | 'working' | 'failed' | 'idle' | 'unknown'
 
 /**
  * One answer a blocked agent will accept.
@@ -2360,6 +2554,19 @@ export interface PaneAgentState {
   model?: string
   contextPct?: number
   tokens?: string
+  /**
+   * How far through the work the agent says it is, 0–100.
+   *
+   * Declared, never inferred — the same rule as the state itself. Nothing here
+   * can know what fraction of a job is done, and a bar this app invented would
+   * be a guess wearing the clothes of a measurement.
+   *
+   * Held to the same freshness rule as the other metadata: a number nobody has
+   * updated in a minute stops being shown. A bar frozen at 60% for an hour is
+   * worse than no bar, because it is the one thing on screen that looks like it
+   * is still being maintained.
+   */
+  progress?: number
   /**
    * When this pane last reported anything, as epoch milliseconds.
    *
@@ -2404,6 +2611,9 @@ export const DEFAULT_SETTINGS: Settings = {
   customShellPath: '',
   customShellArgs: '',
   shellIntegration: true,
+  showTurnSummary: true,
+  notesOnPaste: false,
+  historyScope: 'terminal',
   themeId: 'graphite',
   customThemes: [],
   customTerminalThemes: [],

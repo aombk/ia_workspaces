@@ -543,8 +543,8 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
       onClick: () => actions.openTokens(workspaceId),
     },
     {
-      label: 'runbook',
-      onClick: () => actions.openRunbook(workspaceId),
+      label: 'prompts',
+      onClick: () => actions.openPrompts(workspaceId),
     },
     {
       label: 'focus',

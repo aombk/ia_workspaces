@@ -40,10 +40,12 @@ release. It turned out to solve problems other people have too, so here it is.
   editor (`Ctrl+Shift+O`), git (`Ctrl+Shift+D`, holding both Changes and
   History), compare files (`Ctrl+Alt+D`), search (`Ctrl+Shift+S`), images
   (`Ctrl+Shift+G`), running processes (`Ctrl+Shift+R`), token stats, browser
-  (`Ctrl+Shift+B`), and the four below that are about the work rather than the
-  code: **Runbook**, **Focus**, **Today** and **Canvas**. A terminal is the
-  first entry and `Ctrl+T` still opens one without asking. Each splits beside a
-  shell like any other pane.
+  (`Ctrl+Shift+B`), **Prompts** — every prompt you have ever sent an agent, see
+  [What the agent has been doing](#what-the-agent-has-been-doing) — and the four
+  below that are about the work rather than the code: **Focus**, **Today** and
+  **Canvas**. (The runbook stopped being a tab — it is a view inside the command
+  history box now, which is where you were already looking for a command.) A terminal is the first entry and `Ctrl+T` still
+  opens one without asking. Each splits beside a shell like any other pane.
 
   ![Every kind of tab](docs/screenshots/tab-types.png)
 
@@ -336,7 +338,22 @@ release. It turned out to solve problems other people have too, so here it is.
 
   Up and Down at a prompt walk it. A control in each terminal's top-right corner
   switches the slice: **this terminal**, **this machine**, or **everywhere** —
-  the last recalling commands from your other machines in the same project. Where
+  the last recalling commands from your other machines in the same project.
+
+  The search box has a fourth view: the **runbook** — not "what did I run, most
+  recent first" but *what does this project actually run, worst first*. Commands
+  that failed last time lead, then ones that fail sometimes, then the ones you
+  lean on most, each with how it has been going (`failed (exit 1) · 12 times ·
+  4.2s`). It used to be a tab, which meant the answer to a question about
+  commands lived somewhere other than the box you open to look for a command.
+
+  The choice **sticks**. It is saved with the pane, so it survives a restart,
+  and the last ring you picked becomes the one new terminals start on — flipping
+  the switch says both "this pane" and "and from now on". A pane you set
+  differently keeps its own setting, because it has one. It ships on *this
+  terminal*: the widest ring is the most impressive default and the least useful
+  one, since what you nearly always want from the Up arrow is the thing you just
+  ran here. Where
   the shell can bind its own arrows (PowerShell, pwsh, bash, zsh) the binding
   lives there, so its own line editor replaces its own line; elsewhere the app
   types it in. The ⌕ beside the switch searches the same slice.
@@ -894,8 +911,25 @@ go silent. So the agent says so itself.
 iaw report-agent --blocked "permission: Bash(rm -rf build)" --choices @choices.json
 iaw report-agent --run-start          # a turn began; the count nests
 iaw report-agent --unblocked          # the human answered
+iaw report-agent --progress 45        # how far through this turn it is
+iaw report-agent --failed             # this turn ended badly  (--ok clears it)
 iaw agent-state                       # every pane, as JSON
 ```
+
+**How far through?** `--progress` draws a two-pixel line along the top of the
+pane. Declared, never inferred: nothing here can know what fraction of a job is
+done, and a bar this app invented would be a guess wearing the clothes of a
+measurement. It goes stale on the same one-minute rule as the other metadata,
+because a bar frozen at 60% for an hour looks more maintained than no bar at
+all.
+
+**Did it work?** `--failed` is the state the other three could not express: an
+agent that finished and an agent that fell over both stop producing output and
+both drop to a depth of zero, so without being told they look identical. It
+marks the tab with a still red dot — a question pulses, a verdict waits, and
+telling them apart by movement rather than hue survives a colour-blind reader
+and a dimmed screen. The next `--run-start` clears it, because a new turn makes
+the last one's failure history.
 
 A blocked pane gets a red ring and a bar carrying the answers that agent
 published. Clicking one types it in.
@@ -1046,6 +1080,155 @@ environment — Claude Code does not pass its own environment to MCP servers it
 starts. Those processes are still *descendants* of the pane's shell, so each
 pane's shell PID is recorded in the app's data folder under `pid-map` and `iaw`
 walks up its own ancestry until it recognises one.
+
+## Notes on a picture
+
+You paste a screenshot to show an agent what is wrong, and then you have to say
+*where* — "the button in the top right, no, the other one, above the tab bar".
+Words are a poor tool for a coordinate, and the picture is right there.
+
+Right-click a terminal **tab** — or a pane header, or `Ctrl+P` and type *notes* →
+**Clipboard image notes editor…**.
+
+The picture opens with a faint numbered badge tracking your cursor, so you can
+see where the next one lands before committing — a badge is centred on the point
+you click, so on a scaled-down screenshot it can be wider than the button you
+were aiming at.
+
+**Click to mark the spot, or drag to point at it.** Let go without moving and the
+badge sits on the thing you meant. Drag, and the badge stays where you pressed
+while a spike runs from it to where you release — so the badge stands clear of
+something small and the tip marks it. Borrowed from Flameshot's counter tool,
+down to the rule that a drag which never leaves the badge counts as a click, and
+to the shape: a filled kite from the badge's full width to a point, rather than
+a line with an arrowhead, which reads at any size.
+
+Notes can be dragged (the spike travels with them), removed, and renumber
+themselves when one goes.
+
+What lands on the prompt is **both halves at once**: the path of a copy with
+①②③ burned into it, and the notes as text — `Note 1: this padding is wrong.
+Note 2: this button should be blue.` The model reads the note and finds the
+badge on the picture, so you never describe a location again.
+
+A capture tool will draw numbers on a screenshot too, and several do it better
+than this. What it cannot do is carry the notes as text tied to those numbers
+into the same message — that pairing is the whole point, and doing it by hand is
+exactly where the numbers stop matching the prose.
+
+**Paste can be the way in, if you ask for it.** *Settings → Behaviour → "Pasting
+a picture opens the notes editor"*, **off** by default. Off is not timidity: an
+ordinary paste hands a picture straight to whatever is running in the pane — a
+copied file as its path, a screenshot as the `Ctrl+V` keystroke that lets the
+program read the clipboard itself — and turning this on replaces that with a
+file path. That is a real change to what the thing on the other end receives, so
+it is a decision you make once rather than a default imposed on every paste.
+
+The original is never touched: the badges go into a copy beside the app's other
+screenshots. A note you leave blank is still drawn and still named in the
+text, because a badge the prose never mentions reads as a mistake. And like
+everything else this app puts on a prompt, it is **typed, not sent**.
+
+## Showing you something
+
+Every pane kind in this app was reachable from a menu and from the palette, and
+from nothing an agent could call. Which is backwards: the participant that most
+often has something worth looking at — a chart it just rendered, a screenshot it
+just took, the page it just built — could only print you the path to it.
+
+```bash
+iaw open ./out/chart.png              # a read-only pane, beside the work
+iaw open --edit src/app.ts            # the editor instead
+iaw open --url http://localhost:5173  # a browser pane on that page
+iaw open --pane git                   # or one of the app's own panes: git,
+                                      # history, search, images, running,
+                                      # tokens, prompts, runbook, focus,
+                                      # today, canvas, files
+```
+
+**It opens beside the work that asked.** The request carries the pane it came
+from, so a relative path resolves against *that* pane's folder, and a background
+agent in another workspace cannot throw a window in front of what you are
+reading. Nothing is closed and nothing is replaced; what you get is an ordinary
+pane you close like any other.
+
+Whether the file turns out to be readable is the pane's business to report, in
+the pane, exactly as it would for a file you opened yourself.
+
+## What the agent has been doing
+
+Claude Code writes every conversation to `~/.claude/projects` as it happens —
+one JSON object per line, carrying the prompt you typed, the tokens each reply
+cost, every file it read or wrote, and the patch for each change. The token
+counter has read those files for a while to answer *which project is eating the
+tokens*. Three more things fall out of the same read, and none of them costs
+anything to produce: **nothing is summarised, nothing is asked of a model, and
+nothing leaves the machine.**
+
+The unit is a **turn** — one prompt of yours, and everything the agent did about
+it. One prompt can produce forty replies and four hundred tool calls and it is
+still one thing you asked for.
+
+### A finished turn says what it cost
+
+When an agent stops, a line along the bottom of its pane says which model
+answered, how much of the context window was in use, which files changed and by
+how many lines, what tools ran, how long it took, and what it would have cost at
+API prices. Hovering any part of it gives the full list behind the number.
+
+It yields to the blocked bar — while an agent is asking you something, that
+question is the only thing that belongs in that corner — and it does not appear
+while a turn is still running, because a total that climbs while you read it
+invites arithmetic against a number that has already moved. Switch it off under
+*Settings → Agents* if you would rather have the line back.
+
+### Every prompt you have ever sent
+
+A **prompts** tab, from the `+` menu or the palette. It searches your own agent
+history across every project — "when did I last deal with a notarisation
+failure" is a question about a year rather than about a directory. It opens on
+**this project**, because the question you have while looking at one is nearly
+always about it; the tick box widens to everything, one click away.
+
+The box takes what every search box takes:
+
+| | |
+|---|---|
+| `login form` | both words, anywhere, in any order |
+| `"login form"` | exactly that, in that order |
+| `-test` | must not appear |
+| `project:alpha` | the folder it was sent in |
+| `after:2026-01-15` `before:2026-02-01` | inclusive of both days named |
+| `has:image` | prompts that carried a picture |
+
+Anything it does not recognise is searched for as a word, so a URL or a Windows
+path in the box finds the prompt containing it rather than quietly matching
+nothing. Results are grouped by the day they were sent, and picking one **types
+it on the prompt without sending it** — the same rule the runbook and the
+history box follow, and for the same reason: a prompt from six weeks ago may
+have been *delete the staging bucket*.
+
+### The files it has open
+
+The palette's Go-to box lists the files the agent in the pane you came from has
+read or written, most recently touched first, marked *Agent wrote* or *Agent
+read*. An agent working for ten minutes has been through thirty files across
+four folders, and the one you now want to look at yourself is somewhere in a
+scrollback you would otherwise have to search.
+
+### What this is not
+
+**It is not a backup, and it is not a journal you can write in.** It is a record
+of what was said and what changed, kept by the agent's own tooling, that this
+app reads. If Claude Code has never run on the machine there is nothing to show,
+and a conversation appears once its first turn has finished rather than when it
+starts.
+
+**The money is an estimate and says so.** A subscription does not bill per
+token; the figure is what the same work would have cost on the API, which is the
+right way to compare two turns and the wrong way to predict a bill. Where Claude
+Code has recorded its own cost for a whole conversation, that figure is kept as
+it was given rather than recomputed.
 
 ## Shell integration
 

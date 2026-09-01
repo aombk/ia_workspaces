@@ -57,6 +57,16 @@ check('images: iaw-img: is granted img-src', () => {
   assert.ok(grants('img-src', 'iaw-img:'), 'img-src does not grant iaw-img:')
 })
 
+check('images: blob: is granted img-src', () => {
+  // The annotation editor loads its picture from a blob it makes itself, rather
+  // than over `iaw-img:`, because a canvas may not export an image that came
+  // from another origin — see `ui/annotate.ts`. Dropped from the policy, the
+  // editor shows a broken-image glyph and every click on it does nothing.
+  //
+  // It grants no reach: a blob is built from bytes the page already holds.
+  assert.ok(grants('img-src', 'blob:'), 'img-src does not grant blob:')
+})
+
 check('documents: iaw-doc: is granted BOTH object-src and frame-src', () => {
   // object-src covers the `<embed>` element; frame-src covers the plugin
   // document Chromium loads inside it. Granting only the first is the bug this

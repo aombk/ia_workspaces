@@ -14,7 +14,10 @@ import { store, tabLabel } from '../state'
 import type { HistoryEntry, VaultEntry } from '../../shared/types'
 import { showGlossary } from './gitWord'
 import { commandsElsewhere } from './relayMonitor'
-import { SCOPES, availableScopes, nextScope, type HistoryScope } from './paneHistory'
+import { SCOPES, availableScopes, type HistoryScope } from './paneHistory'
+import { byRunbookRank, commandFacts, inProject } from '../../shared/runbook'
+import { filesTouched } from './turnMonitor'
+import { typeIntoPane } from './paneInput'
 import type { UiActions } from './actions'
 
 interface Command {
@@ -44,7 +47,53 @@ const scopeBar = () => document.getElementById('palette-scope') as HTMLDivElemen
  * pane" every time and should not have to say so every time. Not a setting —
  * it costs one keystroke to change and forgetting it at a restart is no loss.
  */
-let historyScope: HistoryScope = 'machine'
+/**
+ * What the history box is showing.
+ *
+ * Three of these are rings of history — the same three a pane's Up arrow walks
+ * — and the fourth is a different question about the same commands: not "what
+ * did I run, most recent first" but "what does this project actually run, worst
+ * first". That used to be a tab of its own, which meant the answer to a
+ * question about commands lived somewhere other than the box you open to look
+ * for a command.
+ *
+ * Deliberately not part of `HistoryScope`. That type is saved on panes now and
+ * decides what the Up arrow walks, and "runbook" is not a thing an arrow key
+ * can step through.
+ */
+type HistoryView = HistoryScope | 'runbook'
+
+/**
+ * The views this box can actually show, narrowest first.
+ *
+ * "Everywhere" needs sharing switched on, and the runbook needs a project to be
+ * about — a box opened from no pane has no folder, so there is nothing for it
+ * to rank. Both are dropped from the cycle rather than offered and then found
+ * to be empty.
+ */
+function availableViews(): readonly HistoryView[] {
+  const views: HistoryView[] = [...availableScopes()]
+  if (store.activePane) views.push('runbook')
+  return views
+}
+
+/** The next view along, wrapping. What Tab does. */
+function nextView(view: HistoryView): HistoryView {
+  const views = availableViews()
+  const at = views.indexOf(view)
+  return views[(at + 1) % views.length]
+}
+
+/**
+ * The ring the history box opens on.
+ *
+ * Starts from whatever a terminal would start on, so the box agrees with the
+ * panes rather than having an opinion of its own. Changing it here is for this
+ * search only — the corner control on a pane is where the lasting choice is
+ * made, and a search box quietly rewriting a saved preference is not something
+ * anybody asks for.
+ */
+let historyScope: HistoryView = 'machine'
 
 /** The pane the history box was opened from, and will type into. */
 let historyPane: { id: string } | null = null
@@ -78,7 +127,7 @@ export function initPalette(a: UiActions): void {
     // taking the key costs no navigation.
     if (e.key === 'Tab' && !scopeBar().hidden) {
       e.preventDefault()
-      historyScope = nextScope(historyScope)
+      historyScope = nextView(historyScope)
       void showHistory()
       return
     }
@@ -182,6 +231,17 @@ export async function showVault(): Promise<void> {
   input().focus()
 }
 
+/**
+ * The last segment of a path, on either platform's separator.
+ *
+ * `[\\/]`, not `[\/]`: the second is a class holding one escaped forward
+ * slash, so a Windows path has nothing to split on and the whole path comes
+ * back as the "file name".
+ */
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path
+}
+
 function describeSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
@@ -189,6 +249,12 @@ function describeSize(bytes: number): string {
 }
 
 export async function showHistory(): Promise<void> {
+  // Opens on the ring a terminal would, so the box and the panes agree — but
+  // **only when it is opening**. A scope button and Tab both re-enter here to
+  // redraw, so seeding on every pass overwrote the very choice that triggered
+  // the redraw, and the switch did nothing at all. The box being hidden is what
+  // "opening" means; every other path through here has it already up.
+  if (root().hidden) historyScope = store.settings.historyScope
   let entries: HistoryEntry[] = []
   try {
     entries = await backend().commandHistory()
@@ -201,18 +267,20 @@ export async function showHistory(): Promise<void> {
   // also what "this pane" means, for the same reason.
   historyPane = store.activePane
   if (!historyPane) historyScope = 'machine'
-  // The sticky scope can outlive the setting that made it possible: sharing
-  // switched off between two openings leaves this on a slice with nothing in it.
-  if (!availableScopes().includes(historyScope)) historyScope = 'machine'
+  // The sticky view can outlive the setting that made it possible: sharing
+  // switched off between two openings leaves this on a slice with nothing in
+  // it, and the runbook needs a project to be about.
+  if (!availableViews().includes(historyScope)) historyScope = 'machine'
 
   // Every count, before anything is dropped, so each button says how much is
   // behind it. The useful question when a list looks short is "is that all of
   // them, or all of them *here*", and three numbers answer it without a click.
   const cwd = historyPane ? (store.workspaceOfPane(historyPane.id)?.cwd ?? '') : ''
-  const counts: Record<HistoryScope, number> = {
+  const counts: Record<HistoryView, number> = {
     terminal: historyPane ? entries.filter((e) => e.paneId === historyPane!.id).length : 0,
     machine: entries.length,
     everywhere: entries.length,
+    runbook: entries.filter((e) => inProject(e, cwd)).length,
   }
 
   const elsewhere: HistoryEntry[] = []
@@ -228,7 +296,13 @@ export async function showHistory(): Promise<void> {
   }
   counts.everywhere = entries.length + elsewhere.length
 
-  if (historyScope === 'terminal' && historyPane) {
+  // The runbook is the one view that reorders rather than filters by recency:
+  // what this project runs, worst first. Everything else stays newest-first,
+  // because that is what "history" means.
+  const runbook = historyScope === 'runbook'
+  if (runbook) {
+    entries = entries.filter((entry) => inProject(entry, cwd)).sort(byRunbookRank)
+  } else if (historyScope === 'terminal' && historyPane) {
     entries = entries.filter((entry) => entry.paneId === historyPane!.id)
   } else if (historyScope === 'everywhere') {
     // Appended rather than interleaved: another machine's commands carry no
@@ -239,11 +313,13 @@ export async function showHistory(): Promise<void> {
 
   const pane = historyPane
   commands = entries.map((entry) => ({
-    kind: entry.elsewhere ?? 'History',
+    kind: runbook ? 'Runbook' : (entry.elsewhere ?? 'History'),
     label: entry.command,
-    detail: outcomeOf(entry),
+    // The runbook says how a command has been *going*; the history says where
+    // and when it last ran. Same rows, different question.
+    detail: runbook ? commandFacts(entry) : outcomeOf(entry),
     run: () => {
-      if (pane) void backend().pty.write(pane.id, entry.command)
+      void typeIntoPane(pane?.id, entry.command)
     },
   }))
 
@@ -256,7 +332,9 @@ export async function showHistory(): Promise<void> {
     ? 'Type to find a command — Enter puts it on the prompt'
     : historyScope === 'terminal'
       ? 'Nothing recorded in this terminal — Tab widens the search'
-      : 'Nothing recorded yet'
+      : historyScope === 'runbook'
+        ? 'Nothing has been run in this project yet'
+        : 'Nothing recorded yet'
   refine()
   input().focus()
 }
@@ -302,12 +380,12 @@ function outcomeOf(entry: HistoryEntry): string {
  * is "is that all of them, or all of them *here*", and the two numbers answer
  * it without a click.
  */
-function renderScope(counts: Record<HistoryScope, number>): void {
+function renderScope(counts: Record<HistoryView, number>): void {
   const bar = scopeBar()
   bar.hidden = false
   bar.replaceChildren()
 
-  for (const scope of SCOPES) {
+  for (const scope of [...SCOPES, 'runbook' as const]) {
     const el = document.createElement('button')
     el.type = 'button'
     el.className = 'palette-scope__btn' + (historyScope === scope ? ' on' : '')
@@ -315,12 +393,14 @@ function renderScope(counts: Record<HistoryScope, number>): void {
     // Greyed and struck through rather than removed, in both cases, which says
     // why a slice cannot be picked instead of leaving somebody to wonder where
     // it went: no pane to mean, or the machines are not sharing commands.
-    const shared = availableScopes().includes(scope)
-    el.disabled = (scope === 'terminal' && !historyPane) || !shared
+    const shared = scope === 'runbook' || availableScopes().includes(scope)
+    el.disabled = ((scope === 'terminal' || scope === 'runbook') && !historyPane) || !shared
     if (!shared) {
       el.title = 'Switch on “Share the commands you run between machines” in Settings first.'
     } else if (el.disabled) {
       el.title = 'No terminal was focused when this opened.'
+    } else if (scope === 'runbook') {
+      el.title = 'What this project actually runs, worst first — failing commands before popular ones.'
     }
     el.addEventListener('click', () => {
       if (historyScope === scope) return
@@ -332,15 +412,16 @@ function renderScope(counts: Record<HistoryScope, number>): void {
 
   const hint = document.createElement('span')
   hint.className = 'palette-scope__hint'
-  hint.textContent = 'Tab to widen'
+  hint.textContent = 'Tab to switch'
   bar.appendChild(hint)
 }
 
 /** The three rings, in the words the search box has room for. */
-const SCOPE_LABELS: Record<HistoryScope, string> = {
+const SCOPE_LABELS: Record<HistoryView, string> = {
   terminal: 'this terminal',
   machine: 'this machine',
   everywhere: 'everywhere',
+  runbook: 'runbook',
 }
 
 export function hidePalette(): void {
@@ -371,8 +452,23 @@ function collect(): Command[] {
   out.push({
     kind: 'Find',
     label: 'Command history',
-    detail: 'Everything you have typed — Ctrl+Alt+H',
+    detail: 'Everything you have typed, and this project’s runbook — Ctrl+Alt+H',
     run: () => void showHistory(),
+  })
+  out.push({
+    kind: 'Action',
+    label: 'Clipboard image notes editor\u2026',
+    detail: 'Number places on a screenshot and say what you mean by each',
+    run: () => actions.addImageNotes(),
+  })
+  out.push({
+    kind: 'Find',
+    label: 'Every prompt you have sent',
+    detail: 'Search your own agent history, across every project',
+    run: () => {
+      const active = store.activeWorkspace
+      if (active) actions.openPrompts(active.id)
+    },
   })
   out.push({
     kind: 'Find',
@@ -403,6 +499,28 @@ function collect(): Command[] {
         },
       })
     }
+  }
+
+  // Files the agent in the pane you came from has opened.
+  //
+  // The list nobody can reconstruct by hand: an agent working for ten minutes
+  // has read thirty files across four folders, and the one you now want to look
+  // at yourself is somewhere in a scrollback you would have to search. It is
+  // already written down — every read and every write is in the conversation's
+  // own transcript — so this is a lookup rather than a feature.
+  //
+  // Only the focused pane's agent, and deliberately: two panes' worth of files
+  // interleaved is a list where the folder tells you nothing about which agent
+  // touched it, and "the one I was just watching" is what anybody means.
+  const watching = store.activePane
+  const transcript = watching ? store.pane(watching.id)?.agentSession?.transcript : undefined
+  for (const file of filesTouched(transcript)) {
+    out.push({
+      kind: file.wrote ? 'Agent wrote' : 'Agent read',
+      label: fileName(file.path),
+      detail: file.path,
+      run: () => actions.openReader(file.path),
+    })
   }
 
   if (active) {
@@ -483,14 +601,10 @@ function collect(): Command[] {
       },
       {
         kind: 'Action',
-        label: 'runbook',
-        detail: 'the commands you actually run in this project, and which of them work',
-        run: () => actions.openRunbook(id),
-      },
-      {
-        kind: 'Action',
         label: 'command history',
-        detail: 'everything you have typed at a prompt, to put back on one — Ctrl+Alt+H',
+        detail:
+          'everything you have typed at a prompt, plus the runbook — what this project ' +
+          'actually runs, worst first. Ctrl+Alt+H',
         run: () => void showHistory(),
       },
       {

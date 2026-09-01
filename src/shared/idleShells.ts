@@ -49,8 +49,15 @@ export interface IdlePane {
    * the app and is exactly when taking the shell away would be rudest — the
    * question is on screen, unanswered, and the answer is expected to go back
    * into that shell. `active` is output still arriving.
+   *
+   * `failed` is the one that does **not** hold a shell open. It says the last
+   * turn ended badly, and it stays true until a new turn begins — so treating
+   * it like the others would mean a pane that fell over this morning can never
+   * be reclaimed, which is precisely the pane most worth reclaiming. The
+   * verdict survives the shell: it lives in the agent record, not in the
+   * process.
    */
-  indicator: 'blocked' | 'working' | 'active' | null
+  indicator: 'blocked' | 'working' | 'failed' | 'active' | null
 }
 
 /**
@@ -66,7 +73,7 @@ export function mayRelease(pane: IdlePane, afterMs: number, now: number): boolea
   // Never the pane on screen. Someone is looking at it, and "idle" for a thing
   // being looked at means reading it, not abandoning it.
   if (!pane.deferred || !pane.deferredAt) return false
-  if (pane.indicator !== null) return false
+  if (pane.indicator !== null && pane.indicator !== 'failed') return false
   return now - pane.deferredAt >= afterMs
 }
 

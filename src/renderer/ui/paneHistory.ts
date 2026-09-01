@@ -36,17 +36,21 @@ import { store } from '../state'
 import { commandsElsewhere, setCommandSource, watchRelay } from './relayMonitor'
 import type { HistoryEntry, ShellKind } from '../../shared/types'
 
-/** Which slice of the history one pane's Up arrow walks. */
-export type HistoryScope = 'terminal' | 'machine' | 'everywhere'
-
 /**
- * The three, widening. Clicking the control moves to the next and wraps.
+ * Which slice of the history one pane's Up arrow walks, and the three of them
+ * in widening order — clicking the control moves to the next and wraps.
+ *
+ * Both live in `shared/types` now, because the choice is part of the saved
+ * document: a pane remembers the ring it was put on. Re-exported here so the
+ * places that reason about history still import from the history module.
  *
  * Each ring contains the one before it, which is the whole reason for these
  * names over "this/all/cross": nobody has to wonder whether the widest one also
  * includes what is local.
  */
-export const SCOPES: readonly HistoryScope[] = ['terminal', 'machine', 'everywhere']
+import { SCOPES, type HistoryScope } from '../../shared/types'
+export { SCOPES }
+export type { HistoryScope }
 
 /**
  * How often the cached history is re-read while a terminal has focus.
@@ -83,7 +87,6 @@ const filePanes = new Set<string>()
 /** Anything drawing the history, redrawn when a fresh list lands. */
 const readers = new Set<() => void>()
 
-const scopes = new Map<string, HistoryScope>()
 /** Where each pane is in its walk. -1 is "not walking", 0 is the newest. */
 const cursors = new Map<string, number>()
 let entries: HistoryEntry[] = []
@@ -103,14 +106,27 @@ export function availableScopes(): readonly HistoryScope[] {
 }
 
 /**
- * The scope this pane's Up arrow uses. Every pane starts on this machine.
+ * The ring this pane's Up arrow walks.
  *
- * A pane left on "everywhere" when sharing is switched off comes back to this
- * machine rather than sitting on a ring with nothing in it.
+ * Read from the saved document rather than from memory, which is the whole of
+ * what makes it stick: the pane's own choice if it has one, otherwise the ring
+ * new panes start on. It used to be a `Map` that emptied on every restart, so
+ * the switch was something you set again each morning.
+ *
+ * A pane left on "everywhere" when sharing is switched off falls back rather
+ * than sitting on a ring that does not exist. Its saved value is left alone —
+ * turning sharing back on should return the pane to where it was put, not to a
+ * default it never chose.
  */
 export function paneScope(paneId: string): HistoryScope {
-  const held = scopes.get(paneId) ?? 'machine'
-  return availableScopes().includes(held) ? held : 'machine'
+  const held = store.pane(paneId)?.historyScope ?? store.settings.historyScope
+  return availableScopes().includes(held) ? held : fallbackScope()
+}
+
+/** The widest ring that still exists, for a pane whose choice has gone away. */
+function fallbackScope(): HistoryScope {
+  const rings = availableScopes()
+  return rings.includes('machine') ? 'machine' : rings[0]
 }
 
 /** The next ring out, wrapping. What the corner control does when clicked. */
@@ -120,8 +136,16 @@ export function nextScope(scope: HistoryScope): HistoryScope {
   return rings[(at + 1) % rings.length]
 }
 
+/**
+ * Puts one pane on a ring, and makes that the ring new panes start on.
+ *
+ * Both, deliberately. Flipping the switch is a statement about this pane, and
+ * somebody who has made the same statement three panes running meant it about
+ * the next one too — which is the whole complaint this answers. A pane that was
+ * set differently keeps its own value, because it has one.
+ */
 export function setPaneScope(paneId: string, scope: HistoryScope): void {
-  scopes.set(paneId, scope)
+  store.setPaneHistoryScope(paneId, scope)
   // A walk in progress was through a different list, so its position means
   // nothing in the new one. Starting again is the only honest thing to do.
   cursors.delete(paneId)
@@ -163,7 +187,6 @@ function syncFile(paneId: string): void {
 }
 
 export function forgetPane(paneId: string): void {
-  scopes.delete(paneId)
   cursors.delete(paneId)
   filePanes.delete(paneId)
   paneCwd.delete(paneId)

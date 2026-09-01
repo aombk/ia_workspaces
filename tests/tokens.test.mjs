@@ -44,13 +44,14 @@ function transcript(name) {
 }
 
 /** One assistant turn, in the shape Claude Code writes it. */
-function turn({ session = SESSION, model = 'claude-opus-5', input = 0, output = 0, read = 0, write5m = 0, write1h = 0, cwd = CWD } = {}) {
+function turn({ session = SESSION, model = 'claude-opus-5', input = 0, output = 0, read = 0, write5m = 0, write1h = 0, cwd = CWD, id = undefined } = {}) {
   return `${JSON.stringify({
     type: 'assistant',
     sessionId: session,
     cwd,
     timestamp: new Date().toISOString(),
     message: {
+      ...(id ? { id } : {}),
       model,
       usage: {
         input_tokens: input,
@@ -134,6 +135,57 @@ await check('a half-written last line is not counted until it is finished', asyn
   const after = await readTokenUsage(stateDir)
   assert.equal(after.projects[0].totals.messages, 4, 'and must be counted once it is')
   assert.equal(after.projects[0].totals.output, 229)
+})
+
+await check('one reply is counted once, however many blocks it was written as', async () => {
+  // The bug this exists for, and it was not a rounding error: Claude Code
+  // writes **one line per content block** — the thinking, the text, each tool
+  // call — and stamps every one with the same `message.id` and the same
+  // whole-reply `usage`. Summing the rows counted a reply once per block, which
+  // measured on a real machine was output over-reported by 54% and cache reads
+  // by 40%: a headline figure roughly double the truth, and published to other
+  // machines as well as shown.
+  // Its own folder, so these fixtures cannot disturb the totals the checks
+  // above and below assert on — every transcript here shares one state dir.
+  const here = 'C:\\work\\dedup'
+  const session = '99999999-1111-2222-3333-444444444444'
+  const file = transcript(session)
+  const id = 'msg_01BlocksOfOneReply'
+  const block = (extra) => turn({ session, cwd: here, id, output: 100, read: 500, ...extra })
+  fs.writeFileSync(file, block() + block() + block())
+
+  const report = await readTokenUsage(stateDir)
+  const p = report.projects.find((x) => x.cwd === here)
+  assert.equal(p.totals.output, 100, 'three blocks of one reply are one reply')
+  assert.equal(p.totals.cacheRead, 500)
+  assert.equal(p.totals.messages, 1)
+
+  // A different id is a different reply, and counts.
+  fs.appendFileSync(file, turn({ session, cwd: here, id: 'msg_01Second', output: 7 }))
+  const after = await readTokenUsage(stateDir)
+  const q = after.projects.find((x) => x.cwd === here)
+  assert.equal(q.totals.output, 107)
+  assert.equal(q.totals.messages, 2)
+})
+
+await check('a reply whose blocks straddle two scans is still counted once', async () => {
+  // The reader is incremental, so the guard has to survive between runs: a
+  // reply's blocks can land either side of the point where one scan stopped.
+  const here = 'C:\\work\\straddle'
+  const session = '88888888-1111-2222-3333-444444444444'
+  const file = transcript(session)
+  const id = 'msg_01Straddles'
+  fs.writeFileSync(file, turn({ session, cwd: here, id, output: 50 }))
+  const first = await readTokenUsage(stateDir)
+  assert.equal(first.projects.find((x) => x.cwd === here).totals.output, 50)
+
+  fs.appendFileSync(file, turn({ session, cwd: here, id, output: 50 }))
+  const second = await readTokenUsage(stateDir)
+  assert.equal(
+    second.projects.find((x) => x.cwd === here).totals.output,
+    50,
+    'the second block of a reply already counted must add nothing'
+  )
 })
 
 await check('history copied in from a forked session is not counted twice', async () => {

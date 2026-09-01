@@ -22,6 +22,12 @@ import { CanvasPane } from './canvasPane'
 import { DayPane } from './dayPane'
 import { FocusPane } from './focusPane'
 import { RunbookPane } from './runbookPane'
+import { PromptsPane } from './promptsPane'
+import { lastTurn, watchTurns } from './ui/turnMonitor'
+import { describeTurn } from './ui/turnFacts'
+import { addImageNotes } from './ui/imageNotes'
+import { showToast } from './ui/toast'
+import { typeIntoPane } from './ui/paneInput'
 import { TokensPane } from './tokensPane'
 import { ImagesPane, type ImagesPaneHooks } from './imagesPane'
 import { BrowserPane, DEFAULT_URL } from './browserPane'
@@ -89,6 +95,12 @@ interface Instance {
   blockedBar: HTMLDivElement
   /** What the overlay currently shows, so renders don't rebuild it needlessly. */
   blockedSignature: string
+  /** The facts of the last finished turn, along the bottom of the pane. */
+  turnBar: HTMLDivElement
+  turnSignature: string
+  /** How far through the work the agent says it is, along the top. */
+  progressBar: HTMLDivElement
+  progressSignature: string
   spawned: boolean
   disposed: boolean
   /** Last size sent to the PTY, to avoid redundant resize round-trips. */
@@ -192,6 +204,12 @@ export class TerminalManager {
 
     this.resizeObserver = new ResizeObserver(() => this.fitAll())
     this.resizeObserver.observe(host)
+
+    // A finished turn does not change the store, so nothing else would repaint
+    // the strip that describes it. Both bars are rebuilt only when their own
+    // signature changes, so asking for the whole pass costs a handful of string
+    // comparisons.
+    watchTurns(() => this.applyPaneStatus())
 
     // Minimised or fully covered: the whole window is drawing nothing, so no
     // pane needs a graphics context. Chromium does not take them back on its
@@ -365,7 +383,7 @@ export class TerminalManager {
       if (!paths.length) return
       e.preventDefault()
       e.stopPropagation()
-      void backend().pty.write(paneId, paths.map(quotePath).join(' '))
+      void typeIntoPane(paneId, paths.map(quotePath).join(' '))
     })
 
     // Right-click copies a selection, or pastes when there isn't one — the
@@ -435,6 +453,25 @@ export class TerminalManager {
     blockedBar.hidden = true
     element.appendChild(blockedBar)
 
+    // The same corner, and never at the same time — see `renderTurnBar`. Also
+    // absolute, and for the same reason: a bar that took part in the layout
+    // would resize the terminal under it every time a turn ended, which is a
+    // reflow of the scrollback to announce that the scrollback is finished.
+    const turnBar = document.createElement('div')
+    turnBar.className = 'pane-turn'
+    turnBar.hidden = true
+    element.appendChild(turnBar)
+
+    // The top edge, not the bottom. The bottom is spoken for twice over — the
+    // blocked bar and the turn strip — and a working pane can be blocked, so a
+    // third thing down there would have to negotiate. The top is empty, and a
+    // line filling along it is what every browser has trained people to read as
+    // progress without being told.
+    const progressBar = document.createElement('div')
+    progressBar.className = 'pane-progress'
+    progressBar.hidden = true
+    element.appendChild(progressBar)
+
     const inst: Instance = {
       paneId,
       workspaceId,
@@ -445,6 +482,10 @@ export class TerminalManager {
       webgl,
       blockedBar,
       blockedSignature: '',
+      turnBar,
+      turnSignature: '',
+      progressBar,
+      progressSignature: '',
       spawned: false,
       disposed: false,
       lastCols: 0,
@@ -643,6 +684,20 @@ export class TerminalManager {
     // clipboard itself attaches a grey PNG document. The path is the real
     // image, and every agent resolves one into an attachment.
     //
+    // Before either branch, and only when it has been asked for: a picture on
+    // the clipboard opens the notes editor instead of going straight through.
+    //
+    // Off by default, and the reason is in the branch below rather than in
+    // taste. With this off a screenshot reaches the program as a keystroke and
+    // the program reads the clipboard itself; with it on, the picture is
+    // written to a file and a *path* is typed instead. That is a real change to
+    // what the thing on the other end receives, so it is a decision somebody
+    // makes once rather than a default imposed on every paste.
+    if ((image.file || image.pixels) && store.settings.notesOnPaste) {
+      void this.addNotesToClipboardImage(paneId)
+      return
+    }
+
     // Quoted because a path can contain spaces — a screenshot's name always
     // does — with a trailing space so whatever is typed next stands clear of it.
     if (image.file) {
@@ -822,6 +877,11 @@ export class TerminalManager {
       // opening it costs one read rather than a second poll of anything.
       case 'runbook':
         pane = new RunbookPane(state.id, workspaceIdOf(state.id))
+        break
+      // Across every project rather than about one — but it takes a pane id, so
+      // its "this project" filter knows which workspace it was opened from.
+      case 'prompts':
+        pane = new PromptsPane(state.id)
         break
       // Time, tasks and a timer for one project. Draws from the time monitor's
       // own read and the project's own NOTES.md; nothing else feeds it.
@@ -1132,11 +1192,20 @@ export class TerminalManager {
     showContextMenu(x, y, [
       { label: 'Rename pane…', shortcut: 'F2', onClick: () => this.beginRenamePane(pane.id) },
       'separator',
+      // Pointing at a place in a picture. A menu item rather than a paste
+      // modifier, deliberately: an ordinary paste must go on doing exactly what
+      // it has always done, and there is no chord left that means the same
+      // thing on all three platforms — Ctrl+Shift+V is already paste on two of
+      // them. This is also where somebody looks for it, which a chord is not.
+      {
+        label: 'Clipboard image notes editor\u2026',
+        onClick: () => void this.addNotesToClipboardImage(pane.id),
+      },
       // The commands you have typed. Here as well as on its shortcut because a
       // shortcut nobody can find is a feature nobody has: this is the menu you
       // open when you are looking at a prompt and wondering what you ran.
       {
-        label: 'Command history…',
+        label: 'Command history and runbook…',
         shortcut: 'Ctrl+Alt+H',
         onClick: () => void showHistory(),
       },
@@ -1156,6 +1225,43 @@ export class TerminalManager {
         onClick: () => this.paneHooks?.closePane(pane.id),
       },
     ])
+  }
+
+  /**
+   * Takes the picture on the clipboard, lets you number places on it, and puts
+   * both halves on this pane's prompt.
+   *
+   * The image is materialised the same way an ordinary paste materialises one —
+   * a copied *file* is used where it lies, and raw pixels become a file in the
+   * app's temp folder — so the image-notes editor never has to know which of the
+   * two the clipboard was carrying.
+   *
+   * Typed, not sent, like everything else this app puts on a prompt.
+   */
+  async addNotesToClipboardImage(paneId: string): Promise<void> {
+    let file: string | null = null
+    try {
+      file = await backend().pasteImage()
+    } catch {
+      file = null
+    }
+    if (!file) {
+      // Said out loud rather than silently doing nothing. "Nothing happened" is
+      // indistinguishable from a broken menu item, and the reason is one line.
+      showToast(
+        'Nothing to mark up',
+        'There is no picture on the clipboard. Copy or capture one first.'
+      )
+      return
+    }
+
+    const noted = await addImageNotes(file)
+    if (!noted) return
+
+    // Quoted because a path can contain spaces — a screenshot's name always
+    // does — and with a trailing space so what you type next stands clear of it.
+    const text = noted.text ? `"${noted.file}" ${noted.text} ` : `"${noted.file}" `
+    void typeIntoPane(paneId, text)
   }
 
   /**
@@ -1426,6 +1532,8 @@ export class TerminalManager {
       if (indicator) inst.element.dataset.status = indicator
       else delete inst.element.dataset.status
       this.renderBlockedBar(inst)
+      this.renderTurnBar(inst)
+      this.renderProgress(inst)
     }
     // Panes that draw from store state rather than from a PTY. Each decides for
     // itself whether anything actually changed.
@@ -1477,6 +1585,81 @@ export class TerminalManager {
       // have delivered the answer, not that it worked.
       sent.textContent = 'answer sent'
       inst.blockedBar.appendChild(sent)
+    }
+  }
+
+  /**
+   * How far through the work the agent says it is.
+   *
+   * Declared, never inferred — nothing here can know what fraction of a job is
+   * done, and a bar this app invented would be a guess dressed as a
+   * measurement. An agent reports it with `iaw report-agent --progress N`, and
+   * a pane whose agent never does simply has no bar, which is the honest
+   * rendering of "nobody said".
+   *
+   * Only while the work is running. A bar left at 80% under a finished turn
+   * reads as work still in flight, and the strip below already says what
+   * happened.
+   */
+  private renderProgress(inst: Instance): void {
+    const agent = store.paneAgent(inst.paneId)
+    const pct = agent?.state === 'working' ? agent.progress : undefined
+    const show = typeof pct === 'number'
+
+    const signature = show ? `${Math.round(pct)}` : ''
+    if (signature === inst.progressSignature) return
+    inst.progressSignature = signature
+
+    inst.progressBar.hidden = !show
+    if (!show) return
+    inst.progressBar.style.width = `${Math.max(0, Math.min(100, pct))}%`
+    inst.progressBar.title = `The agent says it is ${Math.round(pct)}% through this turn.`
+  }
+
+  /**
+   * What the last finished turn cost, under the pane it happened in.
+   *
+   * Every figure is read from Claude Code's own transcript — see `main/turns.ts`
+   * — so nothing here is a guess about what the screen said, and nothing is
+   * asked of a model to produce it. The one estimate is the money, which is
+   * marked with a `~` because a subscription does not bill per token and the
+   * figure is what the same work would have cost on the API.
+   *
+   * **It yields to the blocked bar.** They occupy the same strip, and when an
+   * agent is asking you something that question is the only thing that matters
+   * in that corner; a summary of what it did before asking is, at that moment,
+   * in the way. Working panes hide it too — a turn is not finished, and a
+   * half-finished total that climbs while you read it invites the arithmetic to
+   * be checked against a number that has already moved.
+   *
+   * **It says nothing when there is nothing to say.** A pane with no agent, or
+   * an agent that has not completed a turn, gets no bar rather than an empty
+   * one: this is a fact about a turn, and a pane that has had no turns has not
+   * got a blank one.
+   */
+  private renderTurnBar(inst: Instance): void {
+    const pane = store.pane(inst.paneId)
+    const agent = store.paneAgent(inst.paneId)
+    const busy = agent?.state === 'blocked' || agent?.state === 'working'
+    const turn = busy ? null : lastTurn(pane?.agentSession?.transcript)
+    // A turn nothing has replied to yet is still running, whatever the pane has
+    // declared about itself — the strip describes finished work.
+    const show = turn && turn.endedAt !== null && store.settings.showTurnSummary !== false
+
+    const signature = show ? `${turn.session}|${turn.n}|${turn.endedAt}|${turn.totals.output}` : ''
+    if (signature === inst.turnSignature) return
+    inst.turnSignature = signature
+
+    inst.turnBar.replaceChildren()
+    inst.turnBar.hidden = !show
+    if (!show || !turn) return
+
+    for (const part of describeTurn(turn)) {
+      const el = document.createElement('span')
+      el.className = part.quiet ? 'pane-turn__fact quiet' : 'pane-turn__fact'
+      el.textContent = part.text
+      if (part.title) el.title = part.title
+      inst.turnBar.appendChild(el)
     }
   }
 
@@ -1563,8 +1746,10 @@ export class TerminalManager {
   // ---------------------------------------------------------------- teardown
 
   close(paneId: string): void {
-    // The pane's history scope and its place in a walk go with it. A new pane
-    // reusing the id is not this one, and must not inherit "this pane only".
+    // Its place in a walk, the folder it was in, any unflushed write. The ring
+    // it was on is not here any more: that lives on the pane's own record now,
+    // so it is dropped when the pane is, and it survives a restart while the
+    // pane does — which is the point of moving it.
     forgetPane(paneId)
 
     const auxPane = this.aux.get(paneId)

@@ -19,6 +19,8 @@ import type {
   SystemStats,
   UsageReport,
   TokenReport,
+  TurnIndex,
+  OpenViewRequest,
   SharedTokens,
   TokenPublishEntry,
   SessionHostInfo,
@@ -427,6 +429,42 @@ export interface Backend {
    */
   claudeTokens(): Promise<TokenReport>
   /**
+   * Every prompt you have sent this agent, and what it did about each.
+   *
+   * The same transcripts `claudeTokens` counts, read for what was said rather
+   * than for what it cost — see `main/turns.ts`. One scan answers the prompt
+   * search, the list of files a pane's agent has opened, and the facts under a
+   * finished turn, because those are three readings of one record and three
+   * scans of the same 66 MB could disagree with each other.
+   */
+  claudeTurns(): Promise<TurnIndex>
+  /**
+   * Writes a marked-up copy of an image beside the app's other screenshots.
+   *
+   * Deliberately not a general "write these bytes there" call. The only thing
+   * the renderer may say is *which picture this is a copy of*; the folder and
+   * the name are the host's to decide, so nothing running in the page can use
+   * the image-notes editor to put a file wherever it likes. Returns the path it
+   * wrote, which is what gets typed into the pane.
+   */
+  saveNotedImage(from: string, bytes: Uint8Array): Promise<string>
+  /**
+   * One image file's bytes, for the one job that needs to read its pixels.
+   *
+   * Images normally reach the page over the `iaw-media` scheme, and
+   * `imageProtocol.ts` argues that case at length — it streams, it never enters
+   * our heap, and a folder of two hundred photographs costs nothing. The
+   * image-notes editor is the exception, and precisely because of what makes
+   * that scheme good: it is a *different origin*, so a picture served from it
+   * taints the canvas it is drawn on and the canvas can no longer be exported.
+   * Bytes handed over directly become a same-origin blob, which can.
+   *
+   * Deliberately not a general file reader: it refuses anything that is not an
+   * image, and anything larger than the cap. One picture, opened on purpose.
+   * Null when it will not or cannot be read.
+   */
+  readImageBytes(path: string): Promise<Uint8Array | null>
+  /**
    * Publishes this machine's per-project totals to a folder shared between your
    * machines, and returns every machine's.
    *
@@ -578,7 +616,15 @@ export interface Backend {
 
   pty: {
     spawn(req: SpawnRequest): Promise<{ ok: boolean; error?: string }>
-    write(paneId: string, data: string): Promise<void>
+    /**
+     * Sends bytes to a pane's shell. Resolves to whether they reached one.
+     *
+     * False means the pane has no shell to write to — none yet, one that has
+     * exited, or one detached by a lost session host. Typing may ignore that;
+     * anything putting a line on a prompt on the user's behalf should not, or
+     * it silently does nothing and reads as a broken feature.
+     */
+    write(paneId: string, data: string): Promise<boolean>
     resize(paneId: string, cols: number, rows: number): Promise<void>
     kill(paneId: string): Promise<void>
     /**
@@ -665,6 +711,8 @@ export interface Backend {
     openFolder(cb: (folder: string) => void): () => void
     alert(cb: (a: TerminalAlert) => void): () => void
     focusTerminal(cb: (p: { workspaceId: string; paneId: string }) => void): () => void
+    /** `iaw open` asked the window to show something. */
+    openView(cb: (p: OpenViewRequest) => void): () => void
     windowFocus(cb: (focused: boolean) => void): () => void
     /** What git is doing, while it is doing it. See `GitProgress`. */
     gitProgress(cb: (p: GitProgress) => void): () => void

@@ -44,6 +44,7 @@ export type Method =
   | 'send-key'
   | 'read-screen'
   | 'events'
+  | 'open'
 
 export interface ControlRequest {
   method: Method
@@ -66,6 +67,12 @@ export interface ControlRequest {
   model?: string
   contextPct?: number
   tokens?: string
+  /** `report-agent`: how far through the work the agent says it is, 0–100. */
+  progress?: number
+  /** `report-agent`: the work went wrong. */
+  failed?: boolean
+  /** `report-agent`: it is no longer failing, without a new turn having begun. */
+  ok?: boolean
   ttl?: number
   choice?: string
   /** `ask`: what to put in front of the human. */
@@ -89,6 +96,14 @@ export interface ControlRequest {
   categories?: string
   /** `events`: hold the connection open this long waiting for one. */
   follow?: number
+  /** `open`: the file or address to show. */
+  target?: string
+  /** `open`: which pane kind to open, for the app's own panes. */
+  openPane?: string
+  /** `open`: put the file in an editor rather than a read-only view. */
+  edit?: boolean
+  /** `open`: the target is a web address. */
+  url?: boolean
 }
 
 export interface ControlResponse {

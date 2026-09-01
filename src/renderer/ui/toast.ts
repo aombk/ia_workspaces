@@ -13,7 +13,12 @@ export function showToast(
   opts: { kind?: ToastKind; timeout?: number; onClick?: () => void } = {}
 ): void {
   const toast = document.createElement('div')
-  toast.className = 'toast' + (opts.kind && opts.kind !== 'info' ? ` ${opts.kind}` : '')
+  toast.className =
+    'toast' +
+    (opts.kind && opts.kind !== 'info' ? ` ${opts.kind}` : '') +
+    // Marked so the styling can offer a pointer and a hover only where there is
+    // somewhere to go. See `.toast.clickable`.
+    (opts.onClick ? ' clickable' : '')
 
   const titleEl = document.createElement('div')
   titleEl.className = 'toast-title'

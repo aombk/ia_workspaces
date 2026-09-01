@@ -575,6 +575,16 @@ async function render(): Promise<void> {
     section(
       'Behaviour',
       field(
+        'Pasting a picture opens the notes editor',
+        'Off. Paste normally hands a picture straight to whatever is running in the pane — a ' +
+          'copied file as its path, a screenshot as the keystroke that lets the program read ' +
+          'the clipboard itself. On, every pasted picture opens the notes editor first, so you ' +
+          'can number the places you mean before it goes. The editor is always available from a ' +
+          'tab\u2019s right-click menu and the palette; this is only about whether paste is the ' +
+          'way in.',
+        toggle(s.notesOnPaste, (v) => patch({ notesOnPaste: v }))
+      ),
+      field(
         'Folder for new workspaces',
         'Where a workspace made with + starts. Leave blank for your home folder.',
         text(s.newWorkspaceDir, 'your home folder', (v) => patch({ newWorkspaceDir: v }))
@@ -907,6 +917,18 @@ async function render(): Promise<void> {
     )
   )
 
+  body.appendChild(
+    section(
+      'Agents',
+      field(
+        'Turn summary under the pane',
+        'When an agent finishes, a line along the bottom of its pane says what that turn cost \u2014 ' +
+          'the model, the context in use, the files it changed, how long it took. Read from Claude ' +
+          'Code\u2019s own transcripts; nothing is asked of a model to produce it.',
+        toggle(s.showTurnSummary !== false, (v) => patch({ showTurnSummary: v }))
+      )
+    )
+  )
   body.appendChild(section('Claude Code', await claudeSection()))
   body.appendChild(section('Other agents', await agentsSection()))
   body.appendChild(section('About', await aboutSection()))

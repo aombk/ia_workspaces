@@ -46,6 +46,20 @@ export interface AgentReport {
   model?: string
   contextPct?: number
   tokens?: string
+  /** How far through the work the agent says it is, 0–100. */
+  progress?: number
+  /**
+   * The work went wrong.
+   *
+   * Its own fact rather than a flavour of idle, because the two look identical
+   * and mean opposite things: an agent that finished and an agent that fell
+   * over both stop producing output and both drop to a depth of zero. Cleared
+   * by the next run starting — a new turn makes the last one's failure history
+   * — or explicitly by `ok`.
+   */
+  failed?: boolean
+  /** The failure is over without a new turn having started. */
+  ok?: boolean
   /** Milliseconds the metadata stays valid. */
   ttl?: number
 }
@@ -60,6 +74,8 @@ interface Record_ {
   model?: string
   contextPct?: number
   tokens?: string
+  progress?: number
+  failed: boolean
   metaExpiresAt?: number
   lastSeq: number
   updatedAt: number
@@ -135,10 +151,27 @@ export class AgentStateRegistry {
       if (report.runEnd) rec.runDepth = Math.max(0, rec.runDepth - 1)
     }
 
+    // A turn beginning clears the last one's verdict and its progress. Both
+    // describe work that is over, and carrying either into the next turn is how
+    // a pane ends up with a red ring nobody can explain and a bar that starts
+    // at 80%.
+    if (report.runStart) {
+      rec.failed = false
+      rec.progress = undefined
+    }
+    if (report.failed) rec.failed = true
+    if (report.ok || report.unblocked) rec.failed = report.ok ? false : rec.failed
+
     if (report.model !== undefined) rec.model = report.model
     if (report.contextPct !== undefined) rec.contextPct = clampPct(report.contextPct)
     if (report.tokens !== undefined) rec.tokens = report.tokens
-    if (report.model !== undefined || report.contextPct !== undefined || report.tokens !== undefined) {
+    if (report.progress !== undefined) rec.progress = clampPct(report.progress)
+    if (
+      report.model !== undefined ||
+      report.contextPct !== undefined ||
+      report.tokens !== undefined ||
+      report.progress !== undefined
+    ) {
       rec.metaExpiresAt = Date.now() + (report.ttl && report.ttl > 0 ? report.ttl : DEFAULT_METADATA_TTL_MS)
     }
 
@@ -356,6 +389,7 @@ export class AgentStateRegistry {
       model: fresh ? rec.model : undefined,
       contextPct: fresh ? rec.contextPct : undefined,
       tokens: fresh ? rec.tokens : undefined,
+      progress: fresh ? rec.progress : undefined,
     }
   }
 
@@ -376,14 +410,25 @@ function blank(paneId: string): Record_ {
     blockedReason: null,
     choices: [],
     answeredAt: null,
+    failed: false,
     lastSeq: 0,
     updatedAt: Date.now(),
   }
 }
 
+/**
+ * Four facts, in the order they matter to somebody scanning a screen.
+ *
+ * Blocked first: it is the only one that will not resolve without a person.
+ * Then failed, which needs somebody eventually but is not holding anything up.
+ * A pane can be both working and failed — a subagent fell over while the outer
+ * run carries on — and while it is still working that is what it is; the
+ * verdict keeps until the depth reaches zero.
+ */
 function stateOf(rec: Record_): AgentRunState {
   if (rec.awaitingHuman) return 'blocked'
-  return rec.runDepth > 0 ? 'working' : 'idle'
+  if (rec.runDepth > 0) return 'working'
+  return rec.failed ? 'failed' : 'idle'
 }
 
 function clampPct(value: number): number | undefined {

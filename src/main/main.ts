@@ -1,5 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from 'electron'
-import { appendFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync, readFileSync as readBytesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
@@ -7,6 +7,7 @@ import path from 'node:path'
 import { listProcesses } from './processes'
 import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readTokenUsage } from './tokenUsage'
+import { readTurnIndex } from './turns'
 import { startFileDrag } from './fileDrag'
 import { historyDir, writePaneHistory } from './paneHistoryFile'
 import { dropScratch, readScratch, sweepScratch, writeScratch } from './scratchBuffer'
@@ -94,6 +95,7 @@ import {
   MAC_TRAFFIC_LIGHTS,
 } from '../shared/platform'
 import { DEFAULT_THEME_ID, findInterfaceTheme, type InterfaceTheme } from '../shared/themes'
+import { OPENABLE_PANES } from '../shared/types'
 import type {
   ClipboardImage,
   HistoryFilter,
@@ -183,6 +185,9 @@ if (isCliVerb(cliArgs[0])) {
 /** Files a clipboard file-URL is worth treating as a picture. */
 const CLIPBOARD_IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic|avif)$/i
 
+/** The largest picture the image-notes editor will open. See `readImageBytes`. */
+const MAX_MARKUP_BYTES = 64 * 1024 * 1024
+
 /**
  * An image the clipboard *points at*, as opposed to pixels it carries.
  *
@@ -259,6 +264,27 @@ function clipboardFiles(): string[] {
  * screen-capture case, where the pixels are the only copy of the thing and
  * there is no path anybody could paste instead.
  */
+/**
+ * The time, as the part of a filename somebody has to recognise.
+ *
+ * Local, and readable, because this name is not an internal detail: it gets
+ * typed into a pane for an agent to act on and appears in the user's own prompt.
+ * `Date.now()` is unique and sorts correctly and is completely unreadable.
+ *
+ * Seconds, not milliseconds, because the thing it has to prevent is two pastes
+ * landing on one name — the first path has already been typed into a pane, and
+ * overwriting the file under it would hand the agent a different picture than
+ * the one it was told about. Seconds make that essentially impossible by hand.
+ */
+function stamp(): string {
+  const t = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return (
+    `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}` +
+    `-${pad(t.getHours())}${pad(t.getMinutes())}${pad(t.getSeconds())}`
+  )
+}
+
 function clipboardImage(): ClipboardImage {
   const file = clipboardImageFile()
   if (file) return { file, pixels: false }
@@ -857,6 +883,9 @@ function bootApp(): void {
     // The offsets it remembers live beside the workspace document, so a restart
     // reads only what has been appended rather than all of the transcripts again.
     ipcMain.handle(IPC.claudeTokens, () => readTokenUsage(SHARED_DATA_DIR))
+    // The same transcripts, read for what was said. Its own offsets, beside the
+    // token counter's, so neither can hold the other's scan up.
+    ipcMain.handle(IPC.claudeTurns, () => readTurnIndex(SHARED_DATA_DIR))
     // Publishes this machine's per-project totals into the user's shared folder
     // and hands back every machine's. Off — and instant — while no folder is set.
     ipcMain.handle(IPC.shareTokens, (_e, dir: string, entries: PublishEntry[]) =>
@@ -1063,6 +1092,43 @@ function bootApp(): void {
     // an image into a chat, from any Windows capture tool.
     ipcMain.handle(IPC.clipboardImage, () => clipboardImage())
 
+    // One image's bytes, so the image-notes editor can draw it onto a canvas it
+    // is still allowed to export. See `Backend.readImageBytes` for why the
+    // ordinary `iaw-media` route cannot be used for that one job.
+    ipcMain.handle(IPC.readImageBytes, (_e, target: string) => {
+      // The same guard the media protocol uses, and here for the same reason:
+      // this is not what makes it safe — the renderer is ours — but a bug on
+      // our side should surface as a picture that will not open rather than as
+      // a handler that reads whatever it is pointed at.
+      if (!CLIPBOARD_IMAGE_EXT.test(target)) return null
+      try {
+        // A cap, because this one *does* land in the renderer's heap — well
+        // above any screenshot, and well below the size at which a mistake
+        // becomes a problem. A picture past it simply cannot be marked up.
+        if (statSync(target).size > MAX_MARKUP_BYTES) return null
+        return readBytesSync(target)
+      } catch {
+        return null
+      }
+    })
+
+    // A copy of a picture with numbered markers drawn into it, from the
+    // image-notes editor. The renderer hands over bytes and the name of the file
+    // they came from; where it lands is decided here, so the call cannot be
+    // used to write anywhere else.
+    ipcMain.handle(IPC.saveNotedImage, (_e, from: string, bytes: Uint8Array) => {
+      const dir = path.join(os.tmpdir(), 'ia_workspaces')
+      mkdirSync(dir, { recursive: true })
+      // Named after the picture it marks, so the two sit together in a folder
+      // listing and the agent is handed a name that says what it is. The
+      // original's own name is used only for its stem — a path from the
+      // renderer decides nothing about where this goes.
+      const stem = path.basename(from).replace(/\.[^.]*$/, '').slice(0, 80) || 'image'
+      const file = path.join(dir, `${stem}-notes-${stamp()}.png`)
+      writeFileSync(file, Buffer.from(bytes))
+      return file
+    })
+
     ipcMain.handle(IPC.pasteImage, () => {
       // A file the clipboard points at is used where it lies. Copying it into
       // temp would hand the pane a second name for a picture that already has
@@ -1076,22 +1142,9 @@ function bootApp(): void {
         const dir = path.join(os.tmpdir(), 'ia_workspaces')
         mkdirSync(dir, { recursive: true })
         // Named for when it was taken, in the local time the user reads off
-        // their own clock. It used to be `Date.now()`, which is unique and
-        // sorts correctly and is completely unreadable — and this name is not
-        // an internal detail: it gets typed into a pane for an agent to act
-        // on, so it is a string the user sees and has to recognise.
-        //
-        // The suffix stays, in some form. Two pastes must not collide: the
-        // first path has already been typed into a pane, and overwriting the
-        // file under it would hand the agent a different image than the one
-        // the user pasted. Seconds are enough to make that essentially never
-        // happen by hand.
-        const t = new Date()
-        const pad = (n: number) => String(n).padStart(2, '0')
-        const stamp =
-          `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}` +
-          `-${pad(t.getHours())}${pad(t.getMinutes())}${pad(t.getSeconds())}`
-        const file = path.join(dir, `screenshot-${stamp}.png`)
+        // their own clock — see `stamp` for why that matters and why seconds
+        // are the right resolution.
+        const file = path.join(dir, `screenshot-${stamp()}.png`)
         writeFileSync(file, image.toPNG())
         return file
       } catch {
@@ -1266,6 +1319,27 @@ function bootApp(): void {
             ok: true,
             data: req.paneId ? panes.filter((p) => p.id === req.paneId) : panes,
           }
+        }
+        // Opening something is the renderer's job — it owns the tabs, the
+        // panes and the layout. So this is a push rather than a call: the
+        // window is told what to show, and the answer is whether there was a
+        // window to tell. Whether the file turns out to be readable is the
+        // pane's business to report, in the pane, the way it does for a file
+        // opened any other way.
+        case 'open': {
+          if (!win || win.isDestroyed()) return { ok: false, error: 'no window is open' }
+          const kinds = Object.keys(OPENABLE_PANES)
+          if (req.openPane && !kinds.includes(req.openPane)) {
+            return { ok: false, error: `unknown pane kind — try one of: ${kinds.join(', ')}` }
+          }
+          send(IPC.onOpenView, {
+            paneId: req.paneId ?? '',
+            target: req.target ?? '',
+            openPane: req.openPane ?? '',
+            edit: Boolean(req.edit),
+            url: Boolean(req.url),
+          })
+          return { ok: true }
         }
         case 'send':
           return ptys.sendText(req.paneId!, req.text ?? '')
