@@ -215,11 +215,16 @@ export const OPENABLE_PANES: Record<string, PaneKind> = {
  */
 export type EditorMode = 'markdown' | 'code' | 'text' | 'preview' | 'json' | 'csv' | 'hex'
 
+/**
+ * Menu order, and the two markdown views are kept together in it: the one you
+ * type in, then the one you read. They are one file seen two ways, and three
+ * unrelated views sat between them.
+ */
 export const EDITOR_MODES: readonly EditorMode[] = [
   'markdown',
+  'preview',
   'code',
   'text',
-  'preview',
   'json',
   'csv',
   'hex',

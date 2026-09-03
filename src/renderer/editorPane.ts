@@ -32,7 +32,7 @@
 import { backend } from '../backend'
 import { joinPath } from '../shared/platform'
 import { store } from './state'
-import { renderMarkdown, folderOf } from './markdown'
+import { renderMarkdown, toggleTaskLine, folderOf } from './markdown'
 import { copyText } from './ui/clipboard'
 import { showContextMenu, type MenuEntry } from './ui/contextMenu'
 import { showToast } from './ui/toast'
@@ -580,7 +580,51 @@ export class EditorPane implements AuxPane {
         this.rendered.appendChild(emptyNote('Nothing written down yet.'))
         return
       }
-      this.rendered.appendChild(renderMarkdown(text, folderOf(this.path)))
+      this.rendered.appendChild(
+        renderMarkdown(text, folderOf(this.path), {
+          // Only where there is a file to write to. An unsaved buffer previewed
+          // has nowhere to put the tick, and a box that moves and is forgotten
+          // is worse than one that says it cannot be clicked.
+          onToggle: this.path ? (line, checked) => void this.tick(line, checked) : undefined,
+        })
+      )
+    }
+  }
+
+  /**
+   * Ticks a checkbox in the preview.
+   *
+   * Preview is a reading mode — `text` there is what is on disk, not a buffer
+   * somebody is typing into — so the tick is written straight through rather
+   * than dirtying a document nobody has open. The line endings the file uses
+   * are kept, the same way `save` keeps them.
+   *
+   * Against what is on disk *now*, not against the copy on screen: this pane
+   * sits beside agents that rewrite files, and a line that has moved must not
+   * be ticked at its old number. See `toggleTaskLine`, which says so by
+   * returning nothing.
+   */
+  private async tick(line: number, checked: boolean): Promise<void> {
+    if (!this.path) return
+    try {
+      const current = await backend().readText(this.path)
+      const patched = toggleTaskLine(current, line, checked)
+      if (!patched) {
+        showToast('The file changed', 'This checklist moved under you. Showing what is there now.')
+        void this.load()
+        return
+      }
+      await backend().files.writeText(
+        this.path,
+        this.eol === '\r\n' ? toCrlf(patched) : patched
+      )
+      // `saved` is the normalised form — see `save` — and the preview is redrawn
+      // from it, so what the box shows is what the file now says.
+      this.saved = patched.replace(/\r\n?/g, '\n')
+      this.showText(this.saved)
+    } catch (err) {
+      showToast('Could not tick that', messageOf(err), { kind: 'error' })
+      void this.load()
     }
   }
 

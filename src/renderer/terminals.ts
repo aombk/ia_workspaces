@@ -95,7 +95,9 @@ interface Instance {
   blockedBar: HTMLDivElement
   /** What the overlay currently shows, so renders don't rebuild it needlessly. */
   blockedSignature: string
-  /** The facts of the last finished turn, along the bottom of the pane. */
+  /** The pane's top-right corner: the turn summary, then the history control. */
+  corner: HTMLDivElement
+  /** The facts of the last finished turn, in that corner. */
   turnBar: HTMLDivElement
   turnSignature: string
   /** How far through the work the agent says it is, along the top. */
@@ -416,7 +418,15 @@ export class TerminalManager {
       // is written expecting one. Handing it over cost the pane its paste and
       // bought nothing — Claude Code, measured, is sent the report and does
       // nothing with it at all.
-      if (!e.shiftKey && !isMac() && term.modes.mouseTrackingMode !== 'none') return
+      if (!e.shiftKey && !isMac() && term.modes.mouseTrackingMode !== 'none') {
+        // Standing aside, but only over the text. The program has been sent
+        // this click and will paste whatever text the clipboard holds; a
+        // picture is the one thing it can do nothing with, and that half stays
+        // ours — see `pasteImageOnly`, and the pixels branch of `paste` for why
+        // the program cannot be left to read a picture for itself here.
+        void this.pasteImageOnly(term, paneId)
+        return
+      }
       void this.paste(term, paneId)
     })
 
@@ -453,14 +463,23 @@ export class TerminalManager {
     blockedBar.hidden = true
     element.appendChild(blockedBar)
 
-    // The same corner, and never at the same time — see `renderTurnBar`. Also
-    // absolute, and for the same reason: a bar that took part in the layout
-    // would resize the terminal under it every time a turn ended, which is a
-    // reflow of the scrollback to announce that the scrollback is finished.
+    // The opposite corner from the blocked bar, and the top-right one because
+    // it is the part of a terminal that is reliably empty — see `.pane-turn`.
+    // Absolute, like everything else that floats here: a strip that took part
+    // in the layout would resize the terminal under it every time a turn ended,
+    // which is a reflow of the whole scrollback to announce that the scrollback
+    // has stopped moving.
+    //
+    // The corner is the instance's, built once and refilled by `buildNode`,
+    // because the history control beside it is rebuilt with the layout tree and
+    // the strip must not be — a summary already drawn survives a split.
     const turnBar = document.createElement('div')
     turnBar.className = 'pane-turn'
     turnBar.hidden = true
-    element.appendChild(turnBar)
+    const corner = document.createElement('div')
+    corner.className = 'pane-corner'
+    corner.appendChild(turnBar)
+    element.appendChild(corner)
 
     // The top edge, not the bottom. The bottom is spoken for twice over — the
     // blocked bar and the turn strip — and a working pane can be blocked, so a
@@ -482,6 +501,7 @@ export class TerminalManager {
       webgl,
       blockedBar,
       blockedSignature: '',
+      corner,
       turnBar,
       turnSignature: '',
       progressBar,
@@ -721,11 +741,67 @@ export class TerminalManager {
     // Through `pty.write` rather than `term.paste`, because this is a keystroke
     // and not a paste — bracketing it would hide it.
     if (image.pixels) {
+      // Off the Mac, the keystroke is not enough. There the program can read
+      // the pasteboard itself and does; on Windows the same read comes back
+      // with nothing, so `Ctrl+V` on a screenshot did exactly nothing and the
+      // only route in was to save the picture by hand first.
+      //
+      // So the pixels are written to a file and its path is typed — the same
+      // answer the branch above gives a picture that already had one, and the
+      // one an agent resolves into an attachment. The picture is lost to a
+      // program that wanted the bytes, and no terminal program on Windows
+      // wanted them: the clipboard was already unreadable to all of them.
+      if (!isMac()) {
+        const file = await backend()
+          .pasteImage()
+          .catch(() => null)
+        if (file) {
+          term.paste(`"${file}" `)
+          return
+        }
+      }
       void backend().pty.write(paneId, '\x16')
       return
     }
 
     if (text) term.paste(text)
+  }
+
+  /**
+   * The picture on the clipboard, and only ever the picture.
+   *
+   * The right-click inside a full-screen program belongs to the program — see
+   * the handler that calls this — and on Windows that program pastes the
+   * clipboard's text for itself. What it cannot do is anything with a picture:
+   * the same read that fails for `Ctrl+V` fails here, so a screenshot copied
+   * for an agent to look at simply vanished on the way in.
+   *
+   * So this fills the one gap and touches nothing else. Text on the clipboard
+   * is left entirely alone, because the program is already pasting it and two
+   * hands on one prompt is worse than the gap this closes.
+   */
+  private async pasteImageOnly(term: Terminal, paneId: string): Promise<void> {
+    const [text, image] = await Promise.all([
+      navigator.clipboard.readText().catch(() => ''),
+      backend()
+        .clipboardImage()
+        .catch(() => ({ file: null, pixels: false })),
+    ])
+    if (text || (!image.file && !image.pixels)) return
+
+    // The same fork `paste` makes, for the same reason: with notes on, a
+    // picture is something you mark up before it goes anywhere.
+    if (store.settings.notesOnPaste) {
+      void this.addNotesToClipboardImage(paneId)
+      return
+    }
+
+    const file =
+      image.file ??
+      (await backend()
+        .pasteImage()
+        .catch(() => null))
+    if (file) term.paste(`"${file}" `)
   }
 
   // ---------------------------------------------------------------- layout
@@ -987,7 +1063,15 @@ export class TerminalManager {
       // a lone pane has no bar — `buildPaneHeader` above is deliberately only
       // built for a split, on the grounds that a row above one terminal is a
       // wasted row. Floating it keeps one place for the control in both cases.
-      if (!state.kind || state.kind === 'terminal') shell.appendChild(this.buildHistoryCorner(state.id))
+      //
+      // Refilled rather than rebuilt: the corner and the turn summary in it
+      // belong to the instance and outlive this tree, and only the history
+      // control is remade — it reads the pane's folder as it is built, which is
+      // why it is not simply kept too.
+      if (!state.kind || state.kind === 'terminal') {
+        const inst = this.instances.get(state.id)
+        if (inst) inst.corner.replaceChildren(inst.turnBar, this.buildHistoryCorner(state.id))
+      }
       this.wirePaneDrop(shell, tab, state.id)
       return shell
     }
@@ -1617,7 +1701,7 @@ export class TerminalManager {
   }
 
   /**
-   * What the last finished turn cost, under the pane it happened in.
+   * What the last finished turn cost, in the pane's top-right corner.
    *
    * Every figure is read from Claude Code's own transcript — see `main/turns.ts`
    * — so nothing here is a guess about what the screen said, and nothing is
@@ -1625,12 +1709,12 @@ export class TerminalManager {
    * marked with a `~` because a subscription does not bill per token and the
    * figure is what the same work would have cost on the API.
    *
-   * **It yields to the blocked bar.** They occupy the same strip, and when an
-   * agent is asking you something that question is the only thing that matters
-   * in that corner; a summary of what it did before asking is, at that moment,
-   * in the way. Working panes hide it too — a turn is not finished, and a
-   * half-finished total that climbs while you read it invites the arithmetic to
-   * be checked against a number that has already moved.
+   * **It yields to the blocked bar**, which is at the other end of the pane and
+   * still wins. When an agent is asking you something, that question is the
+   * only thing about the pane worth reading; what it did before asking is, at
+   * that moment, in the way. Working panes hide it too — a turn is not
+   * finished, and a half-finished total that climbs while you read it invites
+   * the arithmetic to be checked against a number that has already moved.
    *
    * **It says nothing when there is nothing to say.** A pane with no agent, or
    * an agent that has not completed a turn, gets no bar rather than an empty

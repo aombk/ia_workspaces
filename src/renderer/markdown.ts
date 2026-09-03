@@ -17,6 +17,44 @@
 import { encodeImagePath } from '../shared/images'
 import { renderFlowchart } from './flowchart'
 
+/** How a document that can be written to answers a tick. See `toggleTaskLine`. */
+export interface MarkdownOptions {
+  /**
+   * A checkbox was ticked or cleared, on this line of the source.
+   *
+   * Its absence is what makes a checklist read-only: without it the boxes are
+   * drawn disabled, because a box that moves when clicked and changes nothing
+   * on disk is a worse answer than one that plainly cannot be clicked.
+   */
+  onToggle?: (line: number, checked: boolean) => void
+}
+
+/** A task item's box, wherever the line starts: `- [ ]`, `* [x]`, `2. [ ]`. */
+const TASK_LINE = /^(\s*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\])/
+
+/**
+ * The same document with one box ticked or cleared, or null when that line is
+ * not the task it was drawn from.
+ *
+ * Null is the answer to a file that has changed underneath the reader — an
+ * agent rewriting the very checklist you are ticking is the ordinary case here,
+ * not a rare one — and the caller shows what is now on disk rather than writing
+ * a tick onto whatever line happens to be in that position.
+ *
+ * The source's own line endings survive: a CRLF file patched with a bare `\n`
+ * is a file every line of which reads as changed to whatever shows a diff.
+ */
+export function toggleTaskLine(source: string, line: number, checked: boolean): string | null {
+  const eol = source.includes('\r\n') ? '\r\n' : '\n'
+  const lines = source.replace(/\r\n?/g, '\n').split('\n')
+  const target = lines[line]
+  if (target === undefined || !TASK_LINE.test(target)) return null
+  lines[line] = target.replace(TASK_LINE, (_m, open: string, _box: string, close: string) =>
+    `${open}${checked ? 'x' : ' '}${close}`
+  )
+  return lines.join(eol)
+}
+
 /** The folder part of a file path, for resolving what it points at. */
 export function folderOf(file: string): string {
   const cut = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'))
@@ -161,7 +199,11 @@ function inline(text: string, baseDir = ''): DocumentFragment {
  * image path mean anything. Omitted — for text with no file behind it — images
  * fall back to their alt text rather than pointing at nowhere.
  */
-export function renderMarkdown(source: string, baseDir = ''): DocumentFragment {
+export function renderMarkdown(
+  source: string,
+  baseDir = '',
+  opts: MarkdownOptions = {}
+): DocumentFragment {
   const out = document.createDocumentFragment()
   const lines = source.replace(/\r\n?/g, '\n').split('\n')
   let i = 0
@@ -174,7 +216,37 @@ export function renderMarkdown(source: string, baseDir = ''): DocumentFragment {
       const m = item.exec(lines[i])
       if (!m) break
       const li = document.createElement('li')
-      li.appendChild(inline(m[1], baseDir))
+      // `- [ ] thing`, the one list item that is not prose. Written before this
+      // existed it rendered as a bullet with a literal pair of brackets in
+      // front of it, which is the markup showing through — the reader was the
+      // one place a checklist looked worse than the file it came from.
+      //
+      // The line number is carried on the box and nothing else is: what a tick
+      // means is a question for whoever owns the file, and this module is given
+      // a string. See `toggleTaskLine` for the patch itself.
+      const task = /^\[([ xX])\]\s*(.*)$/.exec(m[1])
+      if (task) {
+        const at = i
+        li.className = 'md-task'
+        const box = document.createElement('input')
+        box.type = 'checkbox'
+        box.className = 'md-check'
+        box.checked = task[1] !== ' '
+        box.disabled = !opts.onToggle
+        if (opts.onToggle) {
+          box.title = box.checked ? 'Mark as not done' : 'Mark as done'
+          box.addEventListener('change', () => opts.onToggle?.(at, box.checked))
+        }
+        const label = document.createElement('span')
+        label.className = 'md-task__text'
+        label.appendChild(inline(task[2], baseDir))
+        li.append(box, label)
+        // On the list rather than the item, because what changes is the shape
+        // of the whole list: no bullets, and the text lines up under itself.
+        list.classList.add('md-tasklist')
+      } else {
+        li.appendChild(inline(m[1], baseDir))
+      }
       list.appendChild(li)
       i++
     }

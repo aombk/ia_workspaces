@@ -1691,6 +1691,52 @@ kbd {
   filter: brightness(1.2);
 }
 
+/* ------------------------------------------------------------- task lists
+
+   `- [ ] thing`, drawn as the box it is written as. No bullet: the box is the
+   marker, and a list with both reads as two markers for one item.
+
+   The box is a real checkbox rather than a drawn glyph, which is what makes it
+   tickable with the keyboard and what gives it the platform's own focus ring.
+   Disabled where nothing can be written back — see `MarkdownOptions.onToggle`
+   — because a box that moves under the pointer and changes no file is a lie
+   told by a stylesheet. */
+
+.reader-body.markdown .md-tasklist,
+.md-tasklist {
+  list-style: none;
+  padding-left: 0.2em;
+}
+
+.md-task {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+}
+
+.md-check {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  /* Baselines and boxes do not agree: the input sits on the text baseline as a
+     glyph would, which leaves it a shade high against the line beside it. */
+  translate: 0 2px;
+  cursor: pointer;
+}
+
+.md-check:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Done is said twice on purpose — struck through and faded — because a
+   checklist is read at a glance and the box alone is 13 pixels of it. */
+.md-check:checked + .md-task__text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
 /* What links here, under the document. The half of a wiki worth keeping: a link
    written in March is only useful in June if the thing linked *to* knows. */
 .reader-backlinks {
@@ -2190,22 +2236,40 @@ kbd {
   color: var(--text-faint);
 }
 
-/* The history control, floating over the terminal's own top-right corner.
-   A lone pane has no header bar — that is deliberate, see `buildPaneHeader` —
-   so this sits over the content instead, faint until the pane is hovered. It
-   must be legible when wanted and close to invisible when not: a control at
-   full strength in the corner of every terminal is in the way of the thing the
-   terminal is for. */
-.pane-history {
+/* The terminal's own top-right corner, and the two things that live in it: the
+   turn summary, then the history control. A lone pane has no header bar — that
+   is deliberate, see `buildPaneHeader` — so both sit over the content instead.
+
+   One row rather than two absolutely-positioned things that have to be told
+   about each other's widths. The strip is first and shrinks, the control is
+   last and does not, so a long summary is cut off at its own left edge and the
+   buttons stay where the hand expects them.
+
+   Inside the pane rather than the shell, so a split's header row is above this
+   corner instead of underneath it. */
+.pane-corner {
   position: absolute;
   top: 2px;
   right: 12px;
   z-index: 3;
   display: flex;
   align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  pointer-events: none;
+}
+
+/* Faint until the pane is hovered. It must be legible when wanted and close to
+   invisible when not: a control at full strength in the corner of every
+   terminal is in the way of the thing the terminal is for. */
+.pane-history {
+  flex: none;
+  display: flex;
+  align-items: center;
   gap: 2px;
   opacity: 0.18;
   transition: opacity 120ms ease;
+  pointer-events: auto;
 }
 
 .pane-shell:hover .pane-history,
@@ -6187,28 +6251,27 @@ thead .csv-cell {
 }
 
 /*
- * The facts of the last finished turn, along the bottom of the pane it happened
- * in. Shares the corner with `.pane-blocked` and never shows at the same time —
- * see `renderTurnBar` for why the question always wins.
+ * The facts of the last finished turn, in the pane's top-right corner, to the
+ * left of the history control it shares `.pane-corner` with.
  *
- * Quieter than the blocked bar in every way it can be: no border, a background
- * that only just separates it from the scrollback, and text a size down. It is
- * a footnote to work that is over, and it sits above a terminal somebody is
- * still reading.
+ * The bottom is where it used to be, and the bottom is where every full-screen
+ * program puts the line it most wants you to read — Claude Code's hint row was
+ * underneath ours. The top-right corner of a terminal is the one part of it
+ * that is reliably empty: text is written from the left and wraps long before
+ * it gets there.
+ *
+ * No background at all, so the scrollback reads through it rather than being
+ * covered by it. That is the whole reason it can float over the grid without
+ * taking a row away from it, and it is why the type is dim: this is a footnote
+ * to work that is over, laid over a terminal somebody is still reading.
  */
 .pane-turn {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 4;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   flex-wrap: nowrap;
+  min-width: 0;
   overflow: hidden;
-  padding: 3px 10px;
-  background: color-mix(in srgb, var(--bg-raised) 88%, transparent);
   color: var(--text-dim);
   font-size: calc(11px * var(--ui-text, 1));
   white-space: nowrap;

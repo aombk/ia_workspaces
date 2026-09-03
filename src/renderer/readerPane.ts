@@ -24,7 +24,7 @@
  */
 import { backend } from '../backend'
 import { store } from './state'
-import { renderMarkdown, folderOf } from './markdown'
+import { renderMarkdown, toggleTaskLine, folderOf } from './markdown'
 import { encodeDocumentPath, isDocumentPath } from '../shared/docs'
 import { encodeMediaPath, isMediaPath, mediaKind } from '../shared/media'
 import { joinPath } from '../shared/platform'
@@ -231,7 +231,11 @@ export class ReaderPane implements AuxPane {
       this.body.replaceChildren()
       if (MARKDOWN.test(this.path)) {
         this.body.classList.add('markdown')
-        this.body.appendChild(renderMarkdown(text, folderOf(this.path)))
+        this.body.appendChild(
+          renderMarkdown(text, folderOf(this.path), {
+            onToggle: (line, checked) => void this.tick(line, checked),
+          })
+        )
         // After the document, and not awaited: a search across the folder is
         // slower than reading one file, and the note should be on screen while
         // it runs rather than after it.
@@ -250,6 +254,40 @@ export class ReaderPane implements AuxPane {
       problem.className = 'reader-error'
       problem.textContent = err instanceof Error ? err.message : String(err)
       this.body.appendChild(problem)
+    }
+  }
+
+  /**
+   * Ticks a checkbox in the file this pane is showing.
+   *
+   * The one write this pane does, and it is worth being plain about why it does
+   * not make the pane an editor. Read-only here means it does not put you in
+   * front of the text with a caret and the whole apparatus that follows — save
+   * semantics, encodings, undo. A checklist is different in kind: the tick *is*
+   * the reading. A list you can only look at is a list you keep somewhere else.
+   *
+   * Read again before writing rather than patching the copy on screen. This is
+   * a workspace where an agent may be rewriting the very file you are ticking,
+   * and the line that was third when the page was drawn may be somebody else's
+   * line now. If it no longer looks like the task it was, nothing is written
+   * and what is on disk is shown instead.
+   */
+  private async tick(line: number, checked: boolean): Promise<void> {
+    try {
+      const current = await backend().readText(this.path)
+      const patched = toggleTaskLine(current, line, checked)
+      if (!patched) {
+        showToast('The file changed', 'This checklist moved under you. Showing what is there now.')
+        void this.load()
+        return
+      }
+      await backend().files.writeText(this.path, patched)
+      // Redrawn from what was written, not from the click: a box that reports a
+      // state the file does not have is the one failure worth avoiding here.
+      void this.load()
+    } catch (err) {
+      showToast('Could not tick that', err instanceof Error ? err.message : String(err))
+      void this.load()
     }
   }
 
