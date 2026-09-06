@@ -1,5 +1,4 @@
 import type { PowerLockState } from '../shared/powerLock'
-import type { BackdropMaterial } from '../shared/themes'
 import type { PlatformKind } from '../shared/platform'
 import type { SshHost } from '../shared/ssh'
 import type { WslAction } from '../shared/wsl'
@@ -16,6 +15,10 @@ import type {
   TerminalMeta,
   SearchHit,
   ProcessInfo,
+  AttachableWindow,
+  ExternalApp,
+  ExternalAppSync,
+  RunningApp,
   SystemStats,
   UsageReport,
   TokenReport,
@@ -264,6 +267,32 @@ export interface Backend {
   search(cwd: string, query: string, caseSensitive: boolean): Promise<SearchHit[]>
   /** Everything running under this app's panes, with its listening ports. */
   processes(): Promise<ProcessInfo[]>
+
+  /**
+   * GUI programs a workspace owns — launched here, and their windows shown,
+   * hidden or snapped to a pane as you move between workspaces.
+   *
+   * `supported` is the gate every menu checks: this is `user32` underneath and
+   * there is no portable equivalent, so on a host that cannot do it the answer
+   * is false and the feature is simply not offered. A host that has not ported
+   * the channels at all rejects instead, which callers read the same way.
+   */
+  apps: {
+    supported(): Promise<boolean>
+    launch(app: ExternalApp, workspaceId: string, cwd: string): Promise<number | null>
+    /** Stop managing it. The window is left exactly where it is, and shown. */
+    release(appId: string): Promise<void>
+    sync(request: ExternalAppSync): Promise<void>
+    running(): Promise<RunningApp[]>
+    /** Why the feature is off here, in one line, or empty when it is on. */
+    reason(): Promise<string>
+    /** Every window on screen, for the picker that binds one to a workspace. */
+    attachable(): Promise<AttachableWindow[]>
+    /** Binds one open window to a workspace. False when it is already bound. */
+    attach(app: ExternalApp, workspaceId: string, hwnd: string, pid: number): Promise<boolean>
+    /** Everything back on screen, whatever workspace it belongs to. */
+    showAll(): Promise<void>
+  }
   /**
    * What is holding the shells, and which ones it holds.
    *
@@ -612,7 +641,7 @@ export interface Backend {
    * Asks the host for a translucent window so theme opacity shows the desktop,
    * and which backdrop material Windows should composite behind it.
    */
-  setTranslucent(translucent: boolean, backdrop: BackdropMaterial): Promise<void>
+  setTranslucent(translucent: boolean): Promise<void>
 
   pty: {
     spawn(req: SpawnRequest): Promise<{ ok: boolean; error?: string }>

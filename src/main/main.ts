@@ -1,10 +1,12 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, screen, shell } from 'electron'
 import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync, readFileSync as readBytesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
+import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import path from 'node:path'
 import { listProcesses } from './processes'
+import { ExternalApps, type AppSyncRequest } from './externalApps'
 import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readTokenUsage } from './tokenUsage'
 import { readTurnIndex } from './turns'
@@ -94,10 +96,16 @@ import {
   platformKind,
   MAC_TRAFFIC_LIGHTS,
 } from '../shared/platform'
-import { DEFAULT_THEME_ID, findInterfaceTheme, type InterfaceTheme } from '../shared/themes'
+import {
+  DEFAULT_THEME_ID,
+  findInterfaceTheme,
+  transparencyOf,
+  type InterfaceTheme,
+} from '../shared/themes'
 import { OPENABLE_PANES } from '../shared/types'
 import type {
   ClipboardImage,
+  ExternalApp,
   HistoryFilter,
   SpawnRequest,
   WeatherRequest,
@@ -340,10 +348,48 @@ function bootApp(): void {
   let timeLog: TimeLog
   let vault: SessionVault
   let control: ControlServer | null = null
+  /**
+   * GUI programs the workspaces own — see `externalApps.ts`.
+   *
+   * Built here rather than lazily because `recover()` has to run before a
+   * window exists: a previous run that died with windows hidden left them off
+   * every screen and out of the taskbar, and putting them back is the first
+   * thing this process owes anyone.
+   */
+  const externalApps = new ExternalApps({
+    dataDir: SHARED_DATA_DIR,
+    descendants: async (pid) => {
+      const rows = await listProcesses(new Map([['app', pid]]))
+      return rows.map((row) => row.pid)
+    },
+    // `tasklist` rather than the process walk above: this asks a different
+    // question — every copy of one executable, wherever it was started from —
+    // and answers in a fraction of the time a CIM query over every process
+    // takes. The name is checked against a narrow pattern first, because it
+    // reaches a command line and it came out of a saved document.
+    pidsNamed: async (executable) => {
+      if (!/^[\w.\- ]+$/.test(executable)) return []
+      return new Promise((resolve) => {
+        execFile(
+          'tasklist.exe',
+          ['/FI', `IMAGENAME eq ${executable}`, '/FO', 'CSV', '/NH'],
+          { windowsHide: true },
+          (error, stdout) => {
+            if (error) return resolve([])
+            const pids: number[] = []
+            for (const line of stdout.split(/\r?\n/)) {
+              const pid = Number(line.split('","')[1])
+              if (Number.isFinite(pid) && pid > 0) pids.push(pid)
+            }
+            resolve(pids)
+          }
+        )
+      })
+    },
+  })
+  externalApps.recover()
   /** Set at window creation; see `wantsTransparentWindow`. */
   let transparentWindow = false
-  /** Window transparency, parked — see `wantsTransparentWindow`. */
-  const TRANSPARENCY_ENABLED: boolean = false
   /** A folder Explorer handed us at launch, held until the UI is ready for it. */
   let pendingFolder: string | null = directoryFromArgv(process.argv.slice(1))
 
@@ -356,27 +402,29 @@ function bootApp(): void {
    *
    * `transparent` is a construction-time flag with no runtime setter, so the
    * decision has to be made from the persisted theme before the window exists.
-   * The acrylic and mica backdrops do not need it — Windows composites those
-   * behind an ordinary window — but "no blur" does: with no material and no
+   * Clear glass is the only translucent look this app offers, and it is the one
+   * that cannot be arranged afterwards: with no compositor material and no
    * transparency there is simply nothing behind the page, and the window comes
-   * up opaque. Switching between no-blur and a material therefore needs a
-   * restart to take full effect.
+   * up opaque. Switching it on or off therefore takes a restart, which the
+   * theme editor offers at the moment the choice is made.
    */
   function wantsTransparentWindow(): boolean {
-    // Off while the feature is parked — see `TRANSPARENCY_ENABLED` in the
-    // renderer's themes.ts, which is the other half of the same switch. A theme
-    // still holding an old `opacity` must not build a transparent window the
-    // page then paints solid: that is a window with an invisible frame and no
-    // way back. Everything below is left ready for when it is picked up again.
-    if (!TRANSPARENCY_ENABLED) return false
-
     const settings = (store.state as { settings?: Record<string, unknown> } | null)?.settings
     if (!settings) return false
-    const themes = (settings.customThemes ?? []) as { id: string; opacity?: number; backdrop?: string }[]
+    const themes = (settings.customThemes ?? []) as {
+      id: string
+      opacity?: number
+      backdrop?: string
+      transparency?: 'off' | 'terminal' | 'app'
+    }[]
     const theme = themes.find((t) => t.id === settings.themeId)
     // Every built-in theme is fully opaque, so an unmatched id means no.
     if (!theme) return false
-    return (theme.opacity ?? 1) < 1 && (theme.backdrop ?? 'none') === 'none'
+    // Scope first: a theme switched off keeps its opacity for when it is
+    // switched back on, and that opacity may not build a clear window in the
+    // meantime — that is the invisible frame with no way out of it.
+    if (transparencyOf(theme) === 'off') return false
+    return (theme.opacity ?? 1) < 1
   }
 
   /**
@@ -967,32 +1015,85 @@ function bootApp(): void {
     // all means starting again. Offered as a button rather than left as an
     // instruction: the setting is three clicks deep and the restart is not the
     // user's idea, it is ours.
+    ipcMain.handle(IPC.appsSupported, () => externalApps.supported)
+    ipcMain.handle(IPC.appsRunning, () => externalApps.list())
+    ipcMain.handle(IPC.appsReason, () => externalApps.reason)
+    ipcMain.handle(IPC.appsAttachable, () => externalApps.attachable())
+    ipcMain.handle(
+      IPC.appsAttach,
+      (_e, app_: ExternalApp, workspaceId: string, hwnd: string, pid: number) =>
+        externalApps.attach(app_.id, workspaceId, app_, hwnd, pid)
+    )
+    ipcMain.handle(IPC.appsShowAll, () => externalApps.showAll())
+    ipcMain.handle(IPC.appsRelease, (_e, appId: string) => externalApps.release(appId))
+    ipcMain.handle(IPC.appsLaunch, (_e, app_: ExternalApp, workspaceId: string, cwd: string) =>
+      externalApps.launch(app_, workspaceId, cwd)
+    )
+
+    /**
+     * Where the snapping panes are, converted from the renderer's coordinates
+     * to the screen's.
+     *
+     * The renderer measures in CSS pixels inside the content area, which is the
+     * only thing it can see. Two steps get from there to what `SetWindowPos`
+     * wants: add the content area's own position on the desktop, then multiply
+     * by the display's scale, because the helper is DPI-aware and therefore
+     * talks in real pixels. Approximate across monitors of *different* scales —
+     * the window is placed by the scale of the display our window is mostly on,
+     * which is the display the pane is on in every case but a half-dragged one.
+     */
+    ipcMain.handle(IPC.appsSync, (_e, request: AppSyncRequest) => {
+      if (!win || win.isDestroyed()) return externalApps.sync({ ...request, rects: {} })
+      const content = win.getContentBounds()
+      // One driver works in points rather than pixels — macOS applies the
+      // display's backing scale itself, and multiplying here as well would put
+      // a window at twice the offset on a Retina screen.
+      const scale = externalApps.logicalPixels
+        ? 1
+        : screen.getDisplayMatching(content).scaleFactor || 1
+      const rects: AppSyncRequest['rects'] = {}
+      for (const [id, rect] of Object.entries(request.rects ?? {})) {
+        rects[id] = {
+          x: Math.round((content.x + rect.x) * scale),
+          y: Math.round((content.y + rect.y) * scale),
+          width: Math.round(rect.width * scale),
+          height: Math.round(rect.height * scale),
+        }
+      }
+      return externalApps.sync({ ...request, rects })
+    })
+
     ipcMain.handle(IPC.relaunch, () => {
       app.relaunch()
       app.quit()
     })
 
-    ipcMain.handle(IPC.setTranslucent, (_e, translucent: boolean, backdrop: string) => {
+    /**
+     * The window's own background colour, for when the page stops painting one.
+     *
+     * That is the whole of it, and the emptiness is the point. This handler used
+     * to also set a Windows backdrop material, and `setBackgroundMaterial` —
+     * called with `'none'`, on a window that asked for no material at all — turns
+     * a window built transparent permanently opaque, compositing the page over
+     * white. A page at 50% then reads as flat grey, which is exactly the
+     * washed-out window this feature was parked for.
+     *
+     * Measured rather than reasoned: two identical transparent frameless
+     * windows, one `setBackgroundMaterial('none')` between them, and only the one
+     * that made the call came up solid. `setBackgroundColor('#00000000')` on its
+     * own was tested the same way and is harmless.
+     *
+     * There is nothing to put back. Acrylic, mica and vibrancy are all *frosted*
+     * looks and this app does not offer one — see `glassGroup` in themeEditor.ts.
+     * If that ever changes, a material has to go on a window that is not
+     * transparent, decided at construction, and never on this one.
+     */
+    ipcMain.handle(IPC.setTranslucent, (_e, translucent: boolean) => {
       if (!win || win.isDestroyed()) return
-      // Windows composites one of a fixed set of backdrop materials behind the
-      // window. There is no pixel radius to set — each material carries its own
-      // blur. Electron exposes no lighter "blur", so that maps onto acrylic.
-      //
-      // A window created transparent already shows the desktop crisply; asking
-      // for a material on top of that would put the blur back.
-      const material =
-        !translucent || transparentWindow || backdrop === 'none'
-          ? 'none'
-          : backdrop === 'mica'
-            ? 'mica'
-            : 'acrylic'
       try {
-        // The window background must go fully transparent too, or an opaque
-        // layer is painted over the backdrop and nothing shows through.
         win.setBackgroundColor(translucent ? '#00000000' : '#141414')
-        win.setBackgroundMaterial(material)
       } catch {
-        /* older Windows: stays opaque, which is a fine degradation */
+        /* the window can go between the guard above and here */
       }
     })
 

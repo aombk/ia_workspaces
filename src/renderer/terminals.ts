@@ -27,6 +27,7 @@ import { lastTurn, watchTurns } from './ui/turnMonitor'
 import { describeTurn } from './ui/turnFacts'
 import { addImageNotes } from './ui/imageNotes'
 import { showToast } from './ui/toast'
+import { syncApps } from './ui/externalApps'
 import { typeIntoPane } from './ui/paneInput'
 import { TokensPane } from './tokensPane'
 import { ImagesPane, type ImagesPaneHooks } from './imagesPane'
@@ -1825,6 +1826,10 @@ export class TerminalManager {
     for (const inst of this.instances.values()) {
       if (inst.element.parentElement && inst.element.parentElement !== this.pool) this.fit(inst)
     }
+    // Every reason a terminal needs refitting — a dragged divider, a resized
+    // window, a docked tree opening — is a reason a window snapped to a pane
+    // has to move with it. Coalesced to a frame at the other end.
+    syncApps()
   }
 
   // ---------------------------------------------------------------- teardown

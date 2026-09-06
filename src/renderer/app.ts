@@ -29,6 +29,7 @@ import {
 import { hideContextMenu, setMenuAccent } from './ui/contextMenu'
 import { confirmDialog, promptDialog } from './ui/confirm'
 import { showToast } from './ui/toast'
+import { checkAppSupport, setRectSource, syncApps } from './ui/externalApps'
 import type { WorkspaceFile } from '../shared/workspaceFile'
 import type { UiActions } from './ui/actions'
 import { initCanvasPanes } from './canvasPane'
@@ -50,7 +51,13 @@ import {
   togglePalette,
 } from './ui/palette'
 import { isNavigation, isPrimary } from './ui/keys'
-import { fallbackCwd, isAbsolutePath, isWindows, joinPath, MAC_TRAFFIC_LIGHTS } from '../shared/platform'
+import {
+  fallbackCwd,
+  isAbsolutePath,
+  isWindows,
+  joinPath,
+  MAC_TRAFFIC_LIGHTS,
+} from '../shared/platform'
 import { isWslPath, wslDistroOf } from '../shared/wsl'
 import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
@@ -228,6 +235,18 @@ export async function start(): Promise<void> {
     render()
   })
 
+  // Where a snapped program's pane is, measured rather than worked out — see
+  // `ui/externalApps.ts`. Given to that module rather than imported by it, so
+  // it depends on nothing that draws.
+  setRectSource((paneId) => {
+    const element = terminals.elementOf(paneId)
+    if (!element?.isConnected) return null
+    const rect = element.getBoundingClientRect()
+    if (rect.width < 1 || rect.height < 1) return null
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  })
+  void checkAppSupport().then(() => syncApps())
+
   // Before the first paint: every opacity decision depends on it.
   setRealTransparency(!backend().window.usesNativeOverlay)
   applyTheme()
@@ -305,7 +324,7 @@ function applyTheme(): void {
   const theme = activeTheme(store.settings)
   applyChrome(theme)
   terminals?.applySettings(store.settings)
-  void backend().setTranslucent(isTranslucent(store.settings), theme.backdrop ?? 'none')
+  void backend().setTranslucent(isTranslucent(store.settings))
   // Native caption buttons sit outside the DOM and cannot inherit the variables
   // applyChrome just set, so the two colours Windows accepts are pushed across.
   backend().window.setOverlayColors(theme.chrome.bg, theme.chrome.textDim)
@@ -333,6 +352,10 @@ function render(): void {
   terminals?.applyPaneStatus()
   syncDockedTree()
   void syncMountedTab()
+  // Last, and after `syncMountedTab`: a workspace switch has just changed which
+  // panes exist, and a rectangle measured before that is a rectangle for a pane
+  // that is on its way off screen.
+  syncApps()
 }
 
 function renderTitlebarContext(): void {
@@ -1492,10 +1515,22 @@ function handleAlert(alert: TerminalAlert): void {
 
   if (n.sound) playSound(n.soundName, n.volume)
 
+  // Which workspace it came from, in the line you actually read.
+  //
+  // Every blocked agent raises the same four words, so three projects running
+  // at once produce three identical notifications and the only thing that
+  // tells them apart — which project is asking — was in the panel, which you
+  // have to open the app to see. Answering that from the toast is the whole
+  // point of a toast.
+  //
+  // The workspace and not `where`: several alerts already name the pane in
+  // their body, and the pane is where the click lands anyway.
+  const heading = workspace?.name ? `${alert.title} · ${workspace.name}` : alert.title
+
   // A desktop toast for a window you're already looking at is just noise —
   // use the in-app toast when we have focus, the OS one when we don't.
   if (document.hasFocus()) {
-    showToast(alert.title, alert.body, {
+    showToast(heading, alert.body, {
       kind:
         alert.trigger === 'bell' || alert.trigger === 'idle' || alert.trigger === 'blocked'
           ? 'warn'
@@ -1504,7 +1539,7 @@ function handleAlert(alert: TerminalAlert): void {
     })
   } else {
     void backend().notify({
-      title: alert.title,
+      title: heading,
       body: alert.body,
       paneId: alert.paneId,
       workspaceId: alert.workspaceId,

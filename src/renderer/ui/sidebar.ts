@@ -7,8 +7,11 @@ import { showToast } from './toast'
 import { wslDistroOf, type WslAction } from '../../shared/wsl'
 import { availableShells, shellLabel, sshHosts, sshMenuLabel } from '../shells'
 import { attachInlineEditor } from './editing'
+import { isPrimary } from './keys'
+import { stepZoom, ZOOM_DEFAULT } from '../auxPane'
 import { beginDrag, draggingTab, draggingWorkspace, endDrag } from './dragState'
 import { relayWarning } from './relayMonitor'
+import { programsMenu, refreshRunningApps } from './appsMenu'
 import type { UiActions } from './actions'
 
 let actions: UiActions
@@ -21,6 +24,8 @@ export function initSidebar(a: UiActions): void {
   document.getElementById('open-settings')!.addEventListener('click', () => actions.openSettings())
   document.getElementById('open-inbox')!.addEventListener('click', () => actions.openInbox(''))
   document.getElementById('collapse-sidebar')!.addEventListener('click', toggleCollapsed)
+
+  wireListZoom(document.getElementById('workspace-list')!)
 
 
   // The empty space under the list is the obvious place to reach for "new
@@ -116,9 +121,67 @@ function initResizer(): void {
   })
 }
 
+/**
+ * Ctrl+scroll over the workspace list scales it.
+ *
+ * The whole list, not its lettering: CSS `zoom` takes the rows, the colour dots,
+ * the nesting indents and the text together, which is the same thing the
+ * gesture does to a file tree and the reason it is the same helper — see
+ * `DomZoom` in auxPane.ts. Sizing the text alone left 20px names in a 34px row.
+ *
+ * On the list rather than the whole sidebar. The header and the buttons under
+ * it are furniture, not content, and the column's width is set by the resizer —
+ * zooming that would have the wheel fighting the drag over the same number.
+ *
+ * `passive: false` so `preventDefault` sticks — without it Chromium zooms the
+ * whole page underneath, which is its default for Ctrl+wheel and the one thing
+ * that must not happen inside an app that is already a web page. Capture, for
+ * the same reason the terminal's is: nothing below should get the chance to
+ * swallow it first.
+ */
+function wireListZoom(list: HTMLElement): void {
+  list.addEventListener(
+    'wheel',
+    (e) => {
+      // Cmd+scroll on a Mac: Ctrl+scroll there is the system's own screen zoom,
+      // and fighting it would be both rude and unwinnable.
+      if (!isPrimary(e)) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.deltaY === 0) return
+      adjustListZoom(e.deltaY < 0 ? 'in' : 'out')
+    },
+    { passive: false, capture: true }
+  )
+}
+
+/**
+ * The shared ladder of stops, held to the range a fixed-width column can use.
+ *
+ * A pane can go to 25% or 500% because it is as wide as you drag it. This one
+ * is a list of names in a narrow column: below 75% they are unreadable and
+ * above 200% every one of them is an ellipsis, so those are the ends. The stops
+ * in between are the app's own, so a notch here is a notch anywhere.
+ */
+function adjustListZoom(direction: 'in' | 'out'): void {
+  const current = store.settings.sidebarZoom || ZOOM_DEFAULT
+  const next = Math.max(0.75, Math.min(2, stepZoom(current, direction)))
+  if (next === current) return
+  store.updateSettings({ sidebarZoom: next })
+}
+
 export function renderSidebar(): void {
+  // Which programs are up, kept fresh for the menu that lists them. Here rather
+  // than in the click handler because a menu is built synchronously, and one
+  // that waited for the host to answer would appear a moment after the click.
+  void refreshRunningApps()
   const list = document.getElementById('workspace-list')!
   const active = store.state.activeWorkspaceId
+  // Cleared rather than set to 1, so an untouched list carries no inline style
+  // at all and is laid out exactly as the stylesheet describes it.
+  const zoom = store.settings.sidebarZoom || ZOOM_DEFAULT
+  if (zoom === ZOOM_DEFAULT) list.style.removeProperty('zoom')
+  else list.style.zoom = String(zoom)
   list.replaceChildren()
 
   for (const row of store.sidebarRows(store.state.sidebarCollapsed)) {
@@ -633,6 +696,10 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
     { label: 'Change folder…', onClick: () => actions.changeWorkspaceFolder(workspaceId) },
     { label: 'New worktree…', onClick: () => actions.newWorktree(workspaceId) },
     { label: 'Reveal in Explorer', onClick: () => actions.openInExplorer(workspace.cwd) },
+    // The programs this workspace opens, and whether their windows come and go
+    // with it. Absent entirely on a host that cannot place another program's
+    // window — see `programsMenu`.
+    ...programsMenu(workspaceId, workspace.cwd),
     // The same submenu the empty space below the list offers. It is about every
     // row rather than this one, and it is here because this is the menu people
     // actually open — right-clicking a workspace is the gesture, and hunting for

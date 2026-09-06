@@ -18,6 +18,10 @@ import type {
   TerminalMeta,
   SearchHit,
   ProcessInfo,
+  AttachableWindow,
+  ExternalApp,
+  ExternalAppSync,
+  RunningApp,
   AgentConfigInfo,
   HistoryEntry,
   VaultEntry,
@@ -100,8 +104,8 @@ const api = {
     }
   },
   gitBranch: (cwd: string): Promise<string | undefined> => ipcRenderer.invoke(IPC.gitBranch, cwd),
-  setTranslucent: (translucent: boolean, backdrop: string): Promise<void> =>
-    ipcRenderer.invoke(IPC.setTranslucent, translucent, backdrop),
+  setTranslucent: (translucent: boolean): Promise<void> =>
+    ipcRenderer.invoke(IPC.setTranslucent, translucent),
   readDir: (dir: string, showHidden: boolean): Promise<FileEntry[]> =>
     ipcRenderer.invoke(IPC.readDir, dir, showHidden),
   listImages: (
@@ -129,6 +133,19 @@ const api = {
   search: (cwd: string, query: string, caseSensitive: boolean): Promise<SearchHit[]> =>
     ipcRenderer.invoke(IPC.search, cwd, query, caseSensitive),
   processes: (): Promise<ProcessInfo[]> => ipcRenderer.invoke(IPC.processes),
+  apps: {
+    supported: (): Promise<boolean> => ipcRenderer.invoke(IPC.appsSupported),
+    launch: (app: ExternalApp, workspaceId: string, cwd: string): Promise<number | null> =>
+      ipcRenderer.invoke(IPC.appsLaunch, app, workspaceId, cwd),
+    release: (appId: string): Promise<void> => ipcRenderer.invoke(IPC.appsRelease, appId),
+    sync: (request: ExternalAppSync): Promise<void> => ipcRenderer.invoke(IPC.appsSync, request),
+    running: (): Promise<RunningApp[]> => ipcRenderer.invoke(IPC.appsRunning),
+    reason: (): Promise<string> => ipcRenderer.invoke(IPC.appsReason),
+    attachable: (): Promise<AttachableWindow[]> => ipcRenderer.invoke(IPC.appsAttachable),
+    attach: (app: ExternalApp, workspaceId: string, hwnd: string, pid: number): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.appsAttach, app, workspaceId, hwnd, pid),
+    showAll: (): Promise<void> => ipcRenderer.invoke(IPC.appsShowAll),
+  },
   sessionHost: (): Promise<SessionHostInfo> => ipcRenderer.invoke(IPC.sessionHost),
   agentHooks: (): Promise<AgentConfigInfo[]> => ipcRenderer.invoke(IPC.agentHooks),
   commandHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.commandHistory),

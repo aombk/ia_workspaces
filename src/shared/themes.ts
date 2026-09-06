@@ -107,6 +107,22 @@ export const BACKDROP_MATERIALS: BackdropMaterial[] = ['none', 'blur', 'acrylic'
  * panel and a dialog do not want the same radius, and one number for all three
  * either rounds the small things too much or leaves the big ones sharp.
  */
+/**
+ * How far a theme's transparency reaches.
+ *
+ *   off       nothing is see-through, whatever `opacity` says
+ *   terminal  the terminal grid and the gutter around it, and nothing else
+ *   app       the chrome as well — sidebar, tab strip, panels, dialogs
+ *
+ * Scope and material are separate questions. `backdrop` says what sits behind
+ * the window; this says how much of the window lets it through. A clear window
+ * with a solid sidebar is a different look from one where the whole app is a
+ * pane of glass, and neither is the other's default.
+ */
+export type Transparency = 'off' | 'terminal' | 'app'
+
+export const TRANSPARENCY_MODES: Transparency[] = ['off', 'terminal', 'app']
+
 export type Roundness = 'full' | 'subtle' | 'square'
 
 export const ROUNDNESS_LEVELS: Roundness[] = ['full', 'subtle', 'square']
@@ -172,6 +188,14 @@ export interface InterfaceTheme {
   opacity: number
   /** Ignored at full opacity, where there is nothing to see behind. */
   backdrop?: BackdropMaterial
+  /**
+   * How much of the app the opacity above reaches.
+   *
+   * Absent means `terminal` on a theme that already carries an opacity — the
+   * only thing it could have meant before this field existed — and `off` on one
+   * that does not. Read it through `transparencyOf` rather than directly.
+   */
+  transparency?: Transparency
   /**
    * Corner rounding. Absent means `full`, so every theme saved before this
    * existed keeps the look it was designed with.
@@ -733,6 +757,7 @@ export function duplicateInterfaceTheme(
     builtin: false,
     opacity: source.opacity ?? 1,
     backdrop: source.backdrop,
+    transparency: source.transparency,
     roundness: source.roundness,
     workspaceDots: source.workspaceDots,
     fontFamily: source.fontFamily,
@@ -770,6 +795,47 @@ export function coerceBackdrop(raw: unknown, fallback: BackdropMaterial = 'none'
   return BACKDROP_MATERIALS.includes(raw as BackdropMaterial) ? (raw as BackdropMaterial) : fallback
 }
 
+/**
+ * The material that will actually be composited behind the window.
+ *
+ * Linux has no portable equivalent — whether anything is composited at all is
+ * the compositor's business — so a theme asking for acrylic there is read as
+ * asking for nothing, and takes the clear-window path instead of a material one
+ * that would never arrive.
+ *
+ * Both halves of the app must agree on this. The main process decides whether
+ * to build the window transparent from it and the renderer decides whether to
+ * paint with alpha from it; the two disagreeing is exactly what a washed-out
+ * grey window is.
+ */
+export function effectiveBackdrop(
+  theme: { backdrop?: BackdropMaterial },
+  materials: boolean
+): BackdropMaterial {
+  return materials ? (theme.backdrop ?? 'none') : 'none'
+}
+
+export function coerceTransparency(
+  raw: unknown,
+  fallback?: Transparency
+): Transparency | undefined {
+  return TRANSPARENCY_MODES.includes(raw as Transparency) ? (raw as Transparency) : fallback
+}
+
+/**
+ * The scope a theme actually has.
+ *
+ * Every read goes through here so the pre-field default lives in one place: a
+ * theme saved when opacity was the only control meant the terminal, because the
+ * terminal was all the opacity ever touched.
+ */
+export function transparencyOf(theme: {
+  opacity?: number
+  transparency?: Transparency
+}): Transparency {
+  return theme.transparency ?? ((theme.opacity ?? 1) < 1 ? 'terminal' : 'off')
+}
+
 /** Readable at both ends: below 9 nothing is legible, above 24 nothing fits. */
 export function clampFontSize(value: number | undefined): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
@@ -805,6 +871,7 @@ export function coerceInterfaceTheme(
     builtin: false,
     opacity,
     backdrop: coerceBackdrop(source.backdrop, fallback.backdrop),
+    transparency: coerceTransparency(source.transparency, fallback.transparency),
     roundness: source.roundness ?? fallback.roundness,
     workspaceDots: source.workspaceDots ?? fallback.workspaceDots,
     // A font stack is free text — it is handed to CSS, which ignores what it

@@ -8,8 +8,9 @@
  *
  * So: click the spot, get a numbered badge, type what you mean. When it goes
  * out, two things travel together — the picture with ①②③ burned into it, and
- * the text `Note 1: …  Note 2: …`. The model reads the note and finds the
- * badge; you never describe a location again.
+ * the text `Note 1 (34% from left, 12% from top): …`. The model reads the note,
+ * and can both see the badge and be told where it is; you never describe a
+ * location again.
  *
  * **Both halves or neither.** A capture tool will happily draw numbers on a
  * screenshot, and several do it better than this. What it cannot do is carry
@@ -25,6 +26,7 @@
  * else this app puts there — see `runbookPane.ts` for the argument.
  */
 import { backend } from '../../backend'
+import { store } from '../state'
 
 /** One thing said about one place. */
 interface Note {
@@ -49,6 +51,61 @@ export interface NotedImage {
   file: string
   /** `Note 1: …` for each, in order, ready to sit beside the path. */
   text: string
+}
+
+/**
+ * The colours a badge can be.
+ *
+ * Not `WORKSPACE_COLORS`, which is the other palette in this app and the wrong
+ * one: those are deliberately muted, because a workspace marker sits in the
+ * chrome all day and must not shout. A badge has the opposite job. It is drawn
+ * *over somebody else's screenshot* and has to be found in it, so these are
+ * saturated and far apart in hue, with a white and a black for the screenshots
+ * that are already colourful.
+ *
+ * Amber first, and the default, because it is the colour a match is marked with
+ * everywhere else here.
+ */
+export const NOTE_COLORS = [
+  '#d29922',
+  '#e0614f',
+  '#4f9d5d',
+  '#3d8f9e',
+  '#8b7fd4',
+  '#c9738f',
+  '#ffffff',
+  '#101010',
+]
+
+/**
+ * The colour that has to survive on top of the badge: its numeral, and its ring.
+ *
+ * Derived rather than chosen, and derived from the one thing that decides it —
+ * how light the badge is. Letting the ring be picked separately would let it be
+ * picked wrong, and a black ring on a black badge is a badge with no edge on a
+ * dark screenshot, which is precisely the case the black badge exists for.
+ *
+ * The weights are the sRGB luminance ones; the 0.55 threshold is where a mid
+ * amber still wants dark numerals.
+ */
+function contrastOn(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+  if (!m) return '#101010'
+  const n = parseInt(m[1], 16)
+  const lum =
+    (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255
+  return lum > 0.55 ? '#101010' : '#f5f5f5'
+}
+
+/** The ring around a badge: its contrast colour, held back so it reads as an edge. */
+function ringOn(hex: string): string {
+  return contrastOn(hex) === '#101010' ? 'rgba(0, 0, 0, 0.65)' : 'rgba(255, 255, 255, 0.72)'
+}
+
+/** The saved choice, falling back to amber for anything unrecognised. */
+function noteColor(): string {
+  const saved = store.settings.imageNoteColor
+  return typeof saved === 'string' && /^#[0-9a-f]{6}$/i.test(saved) ? saved : NOTE_COLORS[0]
 }
 
 /**
@@ -120,8 +177,57 @@ export function addImageNotes(file: string): Promise<NotedImage | null> {
     const hint = document.createElement('p')
     hint.textContent =
       'Click the picture to drop a numbered badge, then write the note that goes with it. ' +
-      'The numbers are drawn into a copy; the notes travel as text beside it.'
+      'The numbers are drawn into a copy; the notes travel as text beside it, ' +
+      'each with where on the picture it points.'
     head.appendChild(hint)
+
+    /**
+     * The badge colour, as variables the whole panel paints from.
+     *
+     * On the panel rather than on each badge: the badges are rebuilt on every
+     * redraw and the spikes live in an SVG that is rebuilt with them, so
+     * setting it per element would mean setting it in three places and
+     * forgetting one. Set here, everything inside follows, including the ghost
+     * under the cursor and the numbers down the side.
+     */
+    let ink = noteColor()
+    function applyInk(): void {
+      panel.style.setProperty('--note-ink', ink)
+      panel.style.setProperty('--note-contrast', contrastOn(ink))
+      panel.style.setProperty('--note-ring', ringOn(ink))
+    }
+    applyInk()
+
+    // In the editor rather than in the theme: this is a decision about *this
+    // screenshot* — an amber badge is invisible on an amber screenshot — and it
+    // is made while looking at the picture it has to be found on. The choice is
+    // remembered all the same, because the next screenshot is usually of the
+    // same thing.
+    const swatches = document.createElement('div')
+    swatches.className = 'image-notes-swatches'
+    const swatchLabel = document.createElement('span')
+    swatchLabel.className = 'image-notes-swatch-label'
+    swatchLabel.textContent = 'Badge colour'
+    swatches.appendChild(swatchLabel)
+    for (const color of NOTE_COLORS) {
+      const swatch = document.createElement('button')
+      swatch.type = 'button'
+      swatch.className = 'image-notes-swatch'
+      swatch.style.background = color
+      swatch.title = color
+      swatch.setAttribute('aria-label', `Badge colour ${color}`)
+      swatch.setAttribute('aria-pressed', String(color === ink))
+      swatch.addEventListener('click', () => {
+        ink = color
+        applyInk()
+        store.updateSettings({ imageNoteColor: color })
+        for (const el of swatches.querySelectorAll('.image-notes-swatch')) {
+          el.setAttribute('aria-pressed', String((el as HTMLElement).title === color))
+        }
+      })
+      swatches.appendChild(swatch)
+    }
+    head.appendChild(swatches)
     panel.appendChild(head)
 
     const main = document.createElement('div')
@@ -479,13 +585,13 @@ export function addImageNotes(file: string): Promise<NotedImage | null> {
       void (async () => {
         attach.disabled = true
         try {
-          close(await burn(file, shot, notes))
+          close(await burn(file, shot, notes, ink))
         } catch {
           // Writing the copy failed — a full disk, a temp folder that is not
           // writable. Better to hand back the picture the user actually has
           // than to lose the gesture entirely, so the original goes through
           // with the notes and without the badges.
-          close({ file, text: noteText(notes) })
+          close({ file, text: noteText(notes, shot.naturalWidth, shot.naturalHeight) })
         }
       })()
     })
@@ -504,9 +610,12 @@ export function addImageNotes(file: string): Promise<NotedImage | null> {
 async function burn(
   file: string,
   shot: HTMLImageElement,
-  notes: Note[]
+  notes: Note[],
+  ink: string
 ): Promise<NotedImage> {
   if (!notes.length) return { file, text: '' }
+  const contrast = contrastOn(ink)
+  const ring = ringOn(ink)
 
   const canvas = document.createElement('canvas')
   canvas.width = shot.naturalWidth
@@ -527,25 +636,25 @@ async function burn(
       ctx.moveTo(note.x, note.y)
       for (const p of points) ctx.lineTo(p.x, p.y)
       ctx.closePath()
-      ctx.fillStyle = '#d29922'
+      ctx.fillStyle = ink
       ctx.fill()
       ctx.lineWidth = Math.max(2, Math.round(r * 0.16))
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.65)'
+      ctx.strokeStyle = ring
       ctx.stroke()
     }
 
-    // A ring of the page's own colour around a filled disc, so the badge is
-    // visible on a dark screenshot and on a light one without either being
-    // guessed at.
+    // A contrasting ring around a filled disc, so the badge has an edge on a
+    // dark screenshot and on a light one whichever colour it was given — see
+    // `contrastOn`.
     ctx.beginPath()
     ctx.arc(note.x, note.y, r, 0, Math.PI * 2)
-    ctx.fillStyle = '#d29922'
+    ctx.fillStyle = ink
     ctx.fill()
     ctx.lineWidth = Math.max(2, Math.round(r * 0.16))
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.65)'
+    ctx.strokeStyle = ring
     ctx.stroke()
 
-    ctx.fillStyle = '#101010'
+    ctx.fillStyle = contrast
     ctx.font = `600 ${Math.round(r * 1.25)}px system-ui, -apple-system, "Segoe UI", sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
@@ -556,7 +665,7 @@ async function burn(
   if (!blob) throw new Error('nothing to write')
   const bytes = new Uint8Array(await blob.arrayBuffer())
   const written = await backend().saveNotedImage(file, bytes)
-  return { file: written, text: noteText(notes) }
+  return { file: written, text: noteText(notes, canvas.width, canvas.height) }
 }
 
 /**
@@ -572,11 +681,45 @@ async function burn(
  * — which is a thing somebody deliberately did — and a badge on the picture
  * that the text never mentions reads as a mistake.
  */
-function noteText(notes: Note[]): string {
+function noteText(notes: Note[], width: number, height: number): string {
   return notes
     .map((item, i) => {
       const text = item.note.trim()
-      return text ? `Note ${i + 1}: ${text.replace(/\s+$/, '')}` : `Note ${i + 1}.`
+      const at = position(item, width, height)
+      const head = at ? `Note ${i + 1} (${at})` : `Note ${i + 1}`
+      return text ? `${head}: ${text.replace(/\s+$/, '')}` : `${head}.`
     })
     .join(' ')
+}
+
+/**
+ * Where a note points, in words a reader cannot mistake for something else.
+ *
+ * The badge is in the picture and the model can see it, so this is not the only
+ * way a note can be found — but "the amber circle marked 2" is a search and this
+ * is an answer. It matters most where the search is hardest: a dense screenshot,
+ * a badge over a busy region, two badges close together.
+ *
+ * Percentages rather than pixels, so a picture cropped, scaled or re-exported on
+ * the way does not silently move every note.
+ *
+ * `from left` and `from top` rather than a bare pair of numbers, and rather than
+ * the shorter `across` and `down` this said first. The note sits on a line whose
+ * only other content is the image's path, so naming the axes is what makes this
+ * a location on that image rather than two numbers about anything at all — and
+ * `34% across` has a second reading, *spanning* 34% of the width, which is a
+ * different claim about a different thing. `from left` has only the one.
+ *
+ * The *target* when a spike was dragged, not the badge — the tip of the arrow,
+ * not its tail. The badge was moved clear precisely because it was covering the
+ * thing, which makes its own position the one place in the picture the note is
+ * deliberately not about.
+ */
+function position(note: Note, width: number, height: number): string | null {
+  if (!width || !height) return null
+  const x = note.tx ?? note.x
+  const y = note.ty ?? note.y
+  const across = Math.round((x / width) * 100)
+  const down = Math.round((y / height) * 100)
+  return `${across}% from left, ${down}% from top`
 }

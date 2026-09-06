@@ -119,6 +119,17 @@ export const IPC = {
   setClaudeIntegration: 'claude:setIntegration',
   /** Synchronous: the renderer needs it before it first paints. */
   usesNativeOverlay: 'window:usesNativeOverlay',
+  // GUI programs a workspace owns — see `main/externalApps.ts`.
+  appsSupported: 'apps:supported',
+  appsLaunch: 'apps:launch',
+  appsRelease: 'apps:release',
+  appsSync: 'apps:sync',
+  appsRunning: 'apps:running',
+  appsAttachable: 'apps:attachable',
+  appsAttach: 'apps:attach',
+  appsReason: 'apps:reason',
+  appsShowAll: 'apps:showAll',
+
   relaunch: 'app:relaunch',
   setOverlayColors: 'window:overlayColors',
   windowMinimize: 'window:minimize',

@@ -5,6 +5,7 @@ import {
   CHROME_KEYS,
   RADIUS_SCALE,
   clampOpacity,
+  transparencyOf,
   findInterfaceTheme,
   findTerminalTheme,
   roundnessOf,
@@ -13,6 +14,7 @@ import {
   DEFAULT_MONITOR,
   type InterfaceTheme,
   type TerminalTheme,
+  type Transparency,
 } from '../shared/themes'
 import type { Settings } from '../shared/types'
 
@@ -53,19 +55,14 @@ export function setRealTransparency(available: boolean): void {
 }
 
 /**
- * Transparency is off, everywhere, whatever a theme stores.
+ * The chrome colours that go see-through when the whole app does.
  *
- * It never landed convincingly — the window came up washed out as often as
- * clear, and only after a restart — so the controls are gone from the settings
- * panel and this is the matching half: a theme saved with `opacity` below 1,
- * from before the controls went, paints solid rather than reviving a look
- * nobody can now turn off.
- *
- * Everything else is left standing on purpose. The field, its clamping, the
- * backdrop plumbing and the real-transparency handshake below all still work;
- * flipping this constant back to `true` is what it takes to have another go.
+ * Backgrounds only. Alpha on a border or a label makes the lettering harder to
+ * read against a moving desktop without making the app any more see-through:
+ * the surfaces are what carry the look, and the text on them has to stay
+ * legible or this is a setting nobody leaves on.
  */
-const TRANSPARENCY_ENABLED: boolean = false
+const GLASS_KEYS = new Set(['bg', 'bgRaised', 'bgHover', 'bgActive'])
 
 /**
  * The opacity actually worth applying.
@@ -77,15 +74,33 @@ const TRANSPARENCY_ENABLED: boolean = false
  * result looked broken rather than unapplied, which is worse than doing
  * nothing — so until the restart, nothing is what happens.
  *
- * A *material* backdrop is unaffected: Windows composites acrylic and mica
- * behind an ordinary window, so those work without the transparent flag.
  */
 function effectiveOpacity(theme: InterfaceTheme): number {
-  if (!TRANSPARENCY_ENABLED) return 1
+  if (transparencyOf(theme) === 'off') return 1
   const opacity = clampOpacity(theme.opacity ?? 1)
   if (opacity >= 1) return 1
-  const wantsReal = (theme.backdrop ?? 'none') === 'none'
-  return wantsReal && !realTransparency ? 1 : opacity
+  return needsRealTransparency(theme) && !realTransparency ? 1 : opacity
+}
+
+/** The scope the window can actually honour — `off` whenever the opacity is. */
+function effectiveScope(theme: InterfaceTheme): Transparency {
+  return effectiveOpacity(theme) < 1 ? transparencyOf(theme) : 'off'
+}
+
+/**
+ * Whether this look can only come from a window that was built transparent.
+ *
+ * True of every translucent theme, because clear glass is the only translucent
+ * look on offer: there is nothing behind the page but the desktop, and an
+ * ordinary window comes up opaque however much alpha the page has.
+ */
+export function needsRealTransparency(theme: InterfaceTheme): boolean {
+  return transparencyOf(theme) !== 'off' && clampOpacity(theme.opacity ?? 1) < 1
+}
+
+/** Whether this window was built transparent. Fixed until the app restarts. */
+export function hasRealTransparency(): boolean {
+  return realTransparency
 }
 
 export function interfaceThemesFor(settings: Settings): InterfaceTheme[] {
@@ -121,13 +136,23 @@ export function activeTerminalTheme(settings: Settings): TerminalTheme {
 export function applyChrome(theme: InterfaceTheme): void {
   const root = document.documentElement
   const opacity = effectiveOpacity(theme)
+  const scope = effectiveScope(theme)
 
-  // Chrome stays fully opaque. Making the sidebar and tab strip translucent
-  // too meant they composited over the desktop *as well as* over the
-  // translucent page behind them, which read as doubled transparency and made
-  // the UI hard to look at. Only the terminal grid goes see-through.
+  // At `terminal` scope the chrome stays fully opaque and only the grid goes
+  // see-through — the sidebar and tab strip composited over the desktop *as
+  // well as* over the translucent page behind them read as doubled
+  // transparency, so the one translucent layer is the terminal's.
+  //
+  // At `app` scope that doubling is the point, and the alpha goes on the
+  // surface colours themselves rather than into a stylesheet rule: every rule
+  // in styles.css already paints from these variables, so there is no list of
+  // panels to keep up to date and nothing that can be missed off it.
   for (const key of CHROME_KEYS) {
-    root.style.setProperty(CSS_VAR[key], theme.chrome[key])
+    const colour = theme.chrome[key]
+    root.style.setProperty(
+      CSS_VAR[key],
+      scope === 'app' && GLASS_KEYS.has(key) ? withAlpha(colour, opacity) : colour
+    )
   }
 
   // The monitor's own three, so a graph line and the number it belongs to are
@@ -149,7 +174,7 @@ export function applyChrome(theme: InterfaceTheme): void {
   root.style.setProperty('--opacity', String(opacity))
   // The page itself must stop painting, or there is nothing for the terminal's
   // alpha to reveal.
-  root.classList.toggle('translucent', opacity < 1)
+  root.classList.toggle('translucent', scope !== 'off')
 
   // All three tiers, every time. Setting only the ones that differ would leave
   // a stale value behind when moving from `full` back to `square`.

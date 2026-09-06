@@ -116,6 +116,150 @@ export interface Workspace {
    * a scratch workspace of shells rarely wants one, a project usually does.
    */
   treeVisible?: boolean
+  /**
+   * GUI programs this workspace opens, and what happens to their windows.
+   *
+   * Per workspace because that is what the feature is *for*: the plugin host
+   * and the editor belong to one project, and switching to the next one should
+   * take them off the screen with it. See `ExternalApp`.
+   */
+  apps?: ExternalApp[]
+}
+
+/**
+ * How a launched program's window behaves once it is up.
+ *
+ * `follow` is visibility only: the window stays where you dragged it, at
+ * whatever size you gave it, and is simply not on screen while its workspace is
+ * not the active one.
+ *
+ * `snap` is `follow` plus a position — the window is kept over one pane's
+ * rectangle, so it reads as part of the layout without being embedded in it.
+ * It is a separate top-level window throughout, which is what keeps this
+ * supportable: nothing is reparented, and a program that dislikes being moved
+ * is still a program in a window somebody moved.
+ *
+ * `free` launches it and never touches it again — the behaviour of every other
+ * program you start from a terminal.
+ */
+export type ExternalAppMode = 'follow' | 'snap' | 'free'
+
+/**
+ * How a window leaves the screen when its workspace is not the active one.
+ *
+ * `minimize` is the default and the safe one: the window is still in the
+ * taskbar, so a bug here costs you a click rather than a window. `hide` is what
+ * people actually want — the taskbar clears too — at the price that a window
+ * hidden by an app that then dies is a window with nothing left to show it. See
+ * `externalApps.ts` for the two things that pay that price back.
+ */
+export type ExternalAppAway = 'minimize' | 'hide'
+
+/**
+ * A GUI program a workspace owns.
+ *
+ * Two ways in, and the second is the one that makes this useful. **Launching**
+ * runs a command; the entry owns whatever it starts. **Attaching** takes a
+ * window that is already open and binds *that instance* to this workspace,
+ * which is the only way to say "this Projucer belongs here and that one belongs
+ * there" — a path to an executable cannot tell two copies apart.
+ *
+ * `command` is present on a launcher, `attached` on an attachment; an entry has
+ * one or the other.
+ */
+export interface ExternalApp {
+  id: string
+  /** What it is called in the menu. Defaults to the window's or program's name. */
+  name: string
+  /** Launch entries: the executable. */
+  command?: string
+  /** Arguments, as they would be typed. Split on spaces outside quotes. */
+  args?: string
+  /** Where it starts. Absent means the workspace's own folder. */
+  cwd?: string
+  /**
+   * Attach entries: how to find the window again.
+   *
+   * A window handle is worthless across restarts — the program has a new one,
+   * or is not running at all — so what is stored is what a person would use to
+   * recognise it: the program, and the title it had. On the next start the
+   * entry is dormant until that pair matches exactly one window on screen, and
+   * ambiguity is left for the user rather than guessed at.
+   */
+  attached?: {
+    executable: string
+    title: string
+  }
+  mode: ExternalAppMode
+  away: ExternalAppAway
+  /** `snap`: the pane whose rectangle the window is kept over. */
+  paneId?: string
+  /**
+   * Which windows count as this program's.
+   *
+   * `pid` is the honest one: the process we started, and everything under it.
+   * It is also wrong for a single-instance program, where the thing you launch
+   * hands the request to a copy that was already running and exits — measured
+   * on Notepad, where the launched process owns no window at all.
+   *
+   * `name` covers that by claiming any window belonging to a process with the
+   * same executable name. It is opt-in, and it should be: a second copy of that
+   * program, opened for something else entirely, is claimed too.
+   */
+  adopt?: 'pid' | 'name'
+}
+
+/** A rectangle, in whichever pixels the sender and the receiver agreed on. */
+export interface PixelRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * What the renderer tells the host whenever the screen changes.
+ *
+ * One message rather than three, because the three facts are only useful
+ * together: which workspace is on screen decides what is hidden, the rectangles
+ * decide where the snapped ones go, and the configuration decides which is
+ * which. Sent on a workspace switch, a tab switch and a layout change.
+ */
+export interface ExternalAppSync {
+  activeWorkspaceId: string | null
+  /** By app id, in CSS pixels inside the window's content area. */
+  rects: Record<string, PixelRect>
+  /** By app id, as configured right now — a mode change needs no relaunch. */
+  apps: Record<string, ExternalApp>
+  /**
+   * Which workspace each app belongs to, by app id.
+   *
+   * Beside the apps rather than inside them, because it is a fact about where
+   * the entry is filed rather than about the program, and the entry is written
+   * to a workspace file where saying it twice would be a way to disagree with
+   * itself. The host needs it to re-attach a window after a restart.
+   */
+  owners: Record<string, string>
+}
+
+/** A program the host is managing right now. */
+export interface RunningApp {
+  appId: string
+  workspaceId: string
+  /** Zero for an attached window whose process we never started. */
+  pid: number
+  /** Top-level windows found so far. Empty until the program draws one. */
+  windows: number
+  /** Off screen right now because its workspace is not the active one. */
+  away: boolean
+}
+
+/** A window on screen, as offered by the attach picker. */
+export interface AttachableWindow {
+  hwnd: string
+  pid: number
+  title: string
+  executable: string
 }
 
 /** A pane holds either a shell or the file tree. */
@@ -1561,6 +1705,20 @@ export interface Settings {
    */
   notesOnPaste: boolean
   /**
+   * The badge colour in the image-notes editor, as `#rrggbb`.
+   *
+   * Remembered rather than asked for every time, because the next screenshot is
+   * usually of the same thing — but chosen *in that editor* rather than in
+   * Settings or in a theme, because it is a decision about one picture: an
+   * amber badge cannot be found on an amber screenshot, and that is only ever
+   * obvious while looking at the screenshot.
+   *
+   * Only the fill is stored. The ring and the numeral are derived from it, so
+   * there is no way to save a black badge with a black edge — see
+   * `contrastOn` in imageNotes.ts.
+   */
+  imageNoteColor: string
+  /**
    * Whether a finished agent turn leaves its facts along the bottom of the pane.
    *
    * On, because the numbers are already on the disk and the strip is the only
@@ -1703,6 +1861,25 @@ export interface Settings {
   /** Ctrl+C copies when there is a selection instead of sending SIGINT. */
   copyOnSelectionCtrlC: boolean
   confirmCloseRunning: boolean
+  /**
+   * How large the workspace list is drawn, 1 being the built-in size.
+   *
+   * A zoom, not a font size: the rows, the colour dots, the nesting indents and
+   * the text all scale together, because a 20px name in a 34px row is a list
+   * that has grown out of its own furniture. Exactly what Ctrl+scroll does to a
+   * file tree, and on the same ladder of stops, so one notch means one notch
+   * wherever the pointer is.
+   *
+   * Its own setting rather than the theme's `fontSize`, which is the terminals',
+   * or its `uiScale`, which is the whole interface. This is one list that some
+   * people want to read across the room and others want out of the way, and
+   * neither of those is an opinion about the rest of the app.
+   *
+   * Persisted, unlike a pane's zoom, because the sidebar is not reopened — it
+   * is simply always there, and a size you set once should still be set
+   * tomorrow.
+   */
+  sidebarZoom: number
   /** Show the current git branch beside each workspace. */
   showGitBranch: boolean
   /**
@@ -2618,6 +2795,7 @@ export const DEFAULT_SETTINGS: Settings = {
   shellIntegration: true,
   showTurnSummary: true,
   notesOnPaste: false,
+  imageNoteColor: '#d29922',
   historyScope: 'terminal',
   themeId: 'graphite',
   customThemes: [],
@@ -2647,6 +2825,7 @@ export const DEFAULT_SETTINGS: Settings = {
   browserHome: '',
   copyOnSelectionCtrlC: true,
   confirmCloseRunning: true,
+  sidebarZoom: 1,
   showGitBranch: true,
   showTabCount: false,
   showRelayWarning: true,

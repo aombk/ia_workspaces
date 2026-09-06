@@ -20,6 +20,16 @@ export interface MenuItem {
   checked?: boolean
   /** Opens to the right instead of doing something. */
   submenu?: MenuEntry[]
+  /**
+   * Builds that submenu when it is opened, rather than when its parent is.
+   *
+   * For lists that are about the world rather than about the app: the windows
+   * currently on screen, say. Assembling one with the parent menu would ask the
+   * host a question on every right-click and then show an answer that was true
+   * a moment ago. `submenu` is what shows while this runs, so give it a single
+   * disabled row saying so.
+   */
+  onOpen?: () => Promise<MenuEntry[]>
   onClick?(): void
 }
 
@@ -160,7 +170,18 @@ function fill(menu: HTMLDivElement, entries: MenuEntry[], depth: number): void {
       const open = () => {
         if (entry.disabled) return
         closeChildren(depth)
-        openSubmenu(button, entry.submenu!, depth + 1)
+        const menu = openSubmenu(button, entry.submenu!, depth + 1)
+        if (!entry.onOpen) return
+        // Refilled in place when the answer arrives, and only if this submenu
+        // is still the open one — a slow host must not repaint a menu the
+        // pointer has already moved away from.
+        void entry.onOpen().then((entries) => {
+          if (!menu.isConnected || !children.includes(menu)) return
+          menu.replaceChildren()
+          fill(menu, entries, depth + 1)
+          paint(menu)
+          place(button, menu)
+        })
       }
       // Pointer in: open. Click: open too, for anyone who clicks a category
       // rather than resting on it.
@@ -188,7 +209,7 @@ function fill(menu: HTMLDivElement, entries: MenuEntry[], depth: number): void {
 }
 
 /** Opens a submenu beside its parent item, flipping left when there is no room. */
-function openSubmenu(parent: HTMLElement, entries: MenuEntry[], depth: number): void {
+function openSubmenu(parent: HTMLElement, entries: MenuEntry[], depth: number): HTMLDivElement {
   const menu = document.createElement('div')
   menu.className = 'context-menu'
   menu.style.position = 'fixed'
@@ -196,7 +217,18 @@ function openSubmenu(parent: HTMLElement, entries: MenuEntry[], depth: number): 
   children.push(menu)
   fill(menu, entries, depth)
   paint(menu)
+  place(parent, menu)
+  return menu
+}
 
+/**
+ * Puts a submenu beside its parent item, flipping left when there is no room.
+ *
+ * Separate from opening it because a lazily filled menu is placed twice: once
+ * as the one-line "Looking…" it starts as, and again when it has grown to the
+ * size of the real list.
+ */
+function place(parent: HTMLElement, menu: HTMLDivElement): void {
   const anchor = parent.getBoundingClientRect()
   const rect = menu.getBoundingClientRect()
   // Overlap the parent's border by a couple of pixels: a gap between the two

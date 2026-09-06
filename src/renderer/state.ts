@@ -45,6 +45,7 @@ import {
   subtreeOf,
   type WorkspaceFile,
 } from '../shared/workspaceFile'
+import type { ExternalApp } from '../shared/types'
 import type { InterfaceTheme, TerminalTheme } from '../shared/themes'
 
 /**
@@ -522,6 +523,43 @@ class WorkspaceState {
     if (!w) return
     w.color = color
     this.commit()
+  }
+
+  /**
+   * The GUI programs a workspace opens.
+   *
+   * Stored on the workspace rather than in settings because that is what makes
+   * them a property of the project: the plugin host belongs to the plugin, and
+   * a workspace saved to a file and opened on another machine should still know
+   * what it runs. See `ExternalApp`.
+   */
+  addApp(workspaceId: string, app: ExternalApp): void {
+    const w = this.data.workspaces.find((x) => x.id === workspaceId)
+    if (!w) return
+    w.apps = [...(w.apps ?? []), app]
+    this.commit()
+  }
+
+  updateApp(workspaceId: string, appId: string, patch: Partial<ExternalApp>): void {
+    const w = this.data.workspaces.find((x) => x.id === workspaceId)
+    const app = w?.apps?.find((a) => a.id === appId)
+    if (!w || !app) return
+    Object.assign(app, patch)
+    this.commit()
+  }
+
+  removeApp(workspaceId: string, appId: string): void {
+    const w = this.data.workspaces.find((x) => x.id === workspaceId)
+    if (!w?.apps) return
+    w.apps = w.apps.filter((a) => a.id !== appId)
+    this.commit()
+  }
+
+  /** Every configured program in every workspace, for the host's sync call. */
+  allApps(): Array<{ workspaceId: string; app: ExternalApp }> {
+    return this.data.workspaces.flatMap((w) =>
+      (w.apps ?? []).map((app) => ({ workspaceId: w.id, app }))
+    )
   }
 
   setWorkspaceBranch(id: string, branch: string | undefined): void {
@@ -2029,6 +2067,7 @@ function normalize(raw: unknown): PersistedState {
           ? sanitizeCwd(rawWorkspace.treeCwd, cwd)
           : undefined,
       color: String(rawWorkspace.color ?? WORKSPACE_COLORS[index % WORKSPACE_COLORS.length]),
+      apps: readApps(rawWorkspace.apps),
       tabs,
       treeVisible:
         typeof rawWorkspace.treeVisible === 'boolean'
@@ -2111,6 +2150,52 @@ function pruneLayout(node: PaneNode | undefined, known: Set<string>): PaneNode |
  * on the way out — a workspace file is editable, and shared with two other
  * builds that may write a shape this one has not seen.
  */
+/**
+ * The programs a workspace opens, read back from a document.
+ *
+ * Validated rather than trusted, like everything else here: a workspace file can
+ * be handed to you by somebody else, and a mode this build does not know is read
+ * as the harmless one rather than passed to the host.
+ *
+ * **Nothing launches itself.** Opening a workspace that lists programs starts
+ * none of them — a document that could run a program by being opened is a
+ * document worth being afraid of. Every launch is a menu item somebody clicked.
+ */
+function readApps(raw: unknown): ExternalApp[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const apps: ExternalApp[] = []
+  for (const entry of raw) {
+    const app = (entry ?? {}) as Partial<ExternalApp>
+    const launches = typeof app.command === 'string' && app.command.trim()
+    const attached =
+      app.attached && typeof app.attached === 'object'
+        ? {
+            executable: String((app.attached as { executable?: unknown }).executable ?? ''),
+            title: String((app.attached as { title?: unknown }).title ?? ''),
+          }
+        : undefined
+    // An entry is one or the other. Neither means a row that can do nothing,
+    // which is a row worth dropping rather than showing.
+    if (!launches && !attached?.title) continue
+    apps.push({
+      id: typeof app.id === 'string' && app.id ? app.id : crypto.randomUUID(),
+      name:
+        typeof app.name === 'string' && app.name
+          ? app.name
+          : (attached?.title ?? String(app.command)),
+      command: launches ? String(app.command) : undefined,
+      attached,
+      args: typeof app.args === 'string' ? app.args : undefined,
+      cwd: typeof app.cwd === 'string' ? app.cwd : undefined,
+      mode: app.mode === 'snap' || app.mode === 'free' ? app.mode : 'follow',
+      away: app.away === 'hide' ? 'hide' : 'minimize',
+      paneId: typeof app.paneId === 'string' ? app.paneId : undefined,
+      adopt: app.adopt === 'name' ? 'name' : 'pid',
+    })
+  }
+  return apps.length ? apps : undefined
+}
+
 function readAgentSession(raw: unknown): AgentSession | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const { tool, id, at, transcript } = raw as Record<string, unknown>

@@ -400,6 +400,9 @@ html.mac-caption .titlebar-drag {
   flex: none;
 }
 
+/* Ctrl+scroll over the list scales it, and does so with CSS `zoom` on the list
+   itself — so nothing here knows about it and every size below stays the one
+   number it was designed as. See `wireListZoom` in sidebar.ts. */
 .workspace-name {
   flex: 1;
   overflow: hidden;
@@ -6106,9 +6109,14 @@ thead .csv-cell {
 }
 
 /*
- * A badge on the picture. Amber, the colour a match is marked with everywhere
- * else in this app, and the same colour it is burned into the copy with — what
- * you place is what comes out.
+ * A badge on the picture, in whichever colour the swatches above are set to —
+ * and the same colour it is burned into the copy with, so what you place is
+ * what comes out. Amber to begin with, the colour a match is marked with
+ * everywhere else in this app.
+ *
+ * The three variables are set on the panel, once, by `applyInk`. Nothing here
+ * names a colour, so the ghost under the cursor, the badges on the picture, the
+ * spikes in their SVG and the numbers down the side cannot drift apart.
  */
 .image-notes-badge {
   position: absolute;
@@ -6116,10 +6124,10 @@ thead .csv-cell {
   min-width: 22px;
   height: 22px;
   padding: 0 5px;
-  border: 2px solid rgba(0, 0, 0, 0.65);
+  border: 2px solid var(--note-ring, rgba(0, 0, 0, 0.65));
   border-radius: 999px;
-  background: #d29922;
-  color: #101010;
+  background: var(--note-ink, #d29922);
+  color: var(--note-contrast, #101010);
   font: inherit;
   font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
@@ -6158,8 +6166,8 @@ thead .csv-cell {
 }
 
 .image-notes-spike {
-  fill: #d29922;
-  stroke: rgba(0, 0, 0, 0.65);
+  fill: var(--note-ink, #d29922);
+  stroke: var(--note-ring, rgba(0, 0, 0, 0.65));
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
 }
@@ -6193,10 +6201,49 @@ thead .csv-cell {
   width: 20px;
   height: 20px;
   border-radius: 999px;
-  background: #d29922;
-  color: #101010;
+  background: var(--note-ink, #d29922);
+  color: var(--note-contrast, #101010);
   font-size: calc(11px * var(--ui-text, 1));
   font-weight: 600;
+}
+
+/*
+ * The badge colour, chosen in the editor rather than in Settings — see
+ * `imageNoteColor`. A row of swatches rather than a colour input: the answer is
+ * always "one that stands out on *this* screenshot", which is a glance and a
+ * click, not a hue to dial in.
+ */
+.image-notes-swatches {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.image-notes-swatch-label {
+  margin-right: 3px;
+  font-size: calc(11px * var(--ui-text, 1));
+  color: var(--text-dim);
+}
+
+.image-notes-swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.image-notes-swatch:hover {
+  border-color: var(--text-dim);
+}
+
+/* The chosen one, ringed in the interface's own accent so the mark reads as
+   this app's rather than as part of the swatch's colour. */
+.image-notes-swatch[aria-pressed='true'] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .image-notes-note {
@@ -6949,8 +6996,13 @@ thead .csv-cell {
 /* ------------------------------------------------------- window translucency
 
    With a translucent theme the page must stop painting so the terminal's own
-   alpha reveals the desktop. Everything else — sidebar, tab strip, status bar,
-   panels — keeps its solid chrome colour, so only the terminal is see-through.
+   alpha reveals what is behind the window.
+
+   How far that reaches is the theme's `transparency` scope, and it is settled
+   before any of this: at `terminal` scope the chrome variables below are solid
+   colours and only the terminal is see-through, at `app` scope they already
+   carry the theme's alpha and every rule painting from them follows. Which is
+   why there is no second class here — see `applyChrome` in themes.ts.
 */
 html.translucent,
 html.translucent body,

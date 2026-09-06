@@ -3,7 +3,9 @@ import { store } from '../state'
 import {
   fromGhosttyTheme,
   fromWindowsTerminalScheme,
+  hasRealTransparency,
   interfaceThemesFor,
+  needsRealTransparency,
   terminalThemesFor,
 } from '../themes'
 import { confirmDialog } from './confirm'
@@ -14,7 +16,10 @@ import {
   COLOR_LABELS,
   TERMINAL_CORE_KEYS,
   roundnessOf,
+  transparencyOf,
   type Roundness,
+  type Transparency,
+  MIN_OPACITY,
   coerceInterfaceTheme,
   coerceTerminalTheme,
   duplicateInterfaceTheme,
@@ -23,6 +28,7 @@ import {
   UI_FONT_FALLBACK,
   UI_FONT_SIZE,
   clampFontSize,
+  clampOpacity,
   clampScale,
   type InterfaceTheme,
   type TerminalTheme,
@@ -321,6 +327,7 @@ function renderEditor(container: HTMLElement): void {
   // it could never affect.
   if (kind === 'interface') {
     container.appendChild(colorGroup('Window colours', CHROME_KEYS as string[], 'chrome', theme))
+    container.appendChild(glassGroup(theme as InterfaceTheme))
     container.appendChild(shapeGroup(theme as InterfaceTheme))
   } else {
     container.appendChild(colorGroup('Terminal', TERMINAL_CORE_KEYS as string[], 'terminal', theme))
@@ -356,6 +363,106 @@ function renderEditor(container: HTMLElement): void {
     )
   )
   container.appendChild(actions)
+}
+
+/**
+ * How much of the window you can see through, and onto what.
+ *
+ * Clear glass only. The compositors will all also *frost* a window — Windows
+ * has acrylic and mica, macOS has vibrancy — and none of it is offered here:
+ * the point of a see-through window is seeing what is behind it, and a blur
+ * that turns the desktop into coloured fog costs the transparency to gain a
+ * texture. The plumbing for those materials is still under this (see
+ * `effectiveBackdrop` and the vibrancy branch in main.ts) and every theme this
+ * editor writes pins it off.
+ *
+ * So the only question left is *scope*: which surfaces paint with alpha. That
+ * is a stylesheet decision and behaves identically on all three platforms.
+ *
+ * Clear glass is also the one look that needs a window built transparent, and
+ * that flag cannot be set after construction — which is why this is the one
+ * setting in this editor that offers a restart, at the moment it is chosen
+ * rather than as a note underneath it.
+ */
+function glassGroup(theme: InterfaceTheme): HTMLElement {
+  const section = document.createElement('div')
+  section.className = 'theme-group'
+
+  const heading = document.createElement('h4')
+  heading.textContent = 'Transparency'
+  section.appendChild(heading)
+
+  const scope = transparencyOf(theme)
+
+  section.appendChild(
+    selectField(
+      'See through',
+      'Terminals only keeps the sidebar, tabs and panels solid, so the reading ' +
+        'surface is the only one that moves. The whole app puts every surface ' +
+        'on glass.',
+      [
+        ['off', 'Nothing'],
+        ['terminal', 'Terminals only'],
+        ['app', 'The whole app'],
+      ],
+      scope,
+      (value) => {
+        const next = value as Transparency
+        // Switching it on while the amount is still 100% would apply the
+        // change and show nothing, which reads as a broken switch rather than
+        // an unfinished setting. Seed a visible starting point, once: turning
+        // it off leaves the amount alone, so it comes back as it was left.
+        const seed = next !== 'off' && clampOpacity(theme.opacity ?? 1) >= 1 ? { opacity: 0.85 } : {}
+        // `none` every time, not just when it is missing: a theme imported with
+        // a material in it would otherwise come up frosted, which is not a look
+        // this app offers. See the group's own note.
+        patchGlass(theme, { transparency: next, backdrop: 'none', ...seed })
+      }
+    )
+  )
+
+  // Nothing below this means anything at full opacity, and a row of controls
+  // that cannot do anything is worse than a row that is not there: it reads as
+  // the feature being broken rather than switched off.
+  if (scope === 'off') return section
+
+  section.appendChild(
+    numberField(
+      'Amount',
+      `Percent. Lower is more see-through; ${Math.round(MIN_OPACITY * 100)}% is the floor, below which ` +
+        'nothing on the glass is legible.',
+      Math.round(clampOpacity(theme.opacity ?? 1) * 100),
+      Math.round(MIN_OPACITY * 100),
+      100,
+      5,
+      (value) => patchGlass(theme, { opacity: clampOpacity(value / 100) })
+    )
+  )
+
+  return section
+}
+
+/**
+ * Saves a transparency change, and offers the restart if it needs one.
+ *
+ * The comparison is against the window that is actually running, not against
+ * the theme's previous value: a user who turns clear off and on again is back
+ * where the window already is and has nothing to restart for.
+ */
+function patchGlass(theme: InterfaceTheme, changes: Partial<InterfaceTheme>): void {
+  patch(changes as Record<string, unknown>)
+  const next = { ...theme, ...changes }
+  if (needsRealTransparency(next) === hasRealTransparency()) return
+  void confirmDialog({
+    title: 'Restart to apply?',
+    body:
+      'A clear window has to be built clear, which only happens as the app ' +
+      'starts. The theme is saved either way — declining just means the look ' +
+      'arrives next time.',
+    confirmLabel: 'Restart',
+  }).then((ok) => {
+    if (ok) void backend().relaunch()
+  })
 }
 
 /**

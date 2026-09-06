@@ -41,7 +41,7 @@ export function createElectronBackend(): Backend {
     latestRelease: () => api.latestRelease(),
     pathForFile: (file) => api.pathForFile(file),
     gitBranch: (cwd) => api.gitBranch(cwd),
-    setTranslucent: (translucent, backdrop) => api.setTranslucent(translucent, backdrop),
+    setTranslucent: (translucent) => api.setTranslucent(translucent),
     readDir: (dir, showHidden) => api.readDir(dir, showHidden),
     listByExtension: (dir, suffixes) => api.listByExtension(dir, suffixes),
     listImages: (dir, recursive, showHidden) => api.listImages(dir, recursive, showHidden),
@@ -54,6 +54,7 @@ export function createElectronBackend(): Backend {
     compareFiles: (left, right) => api.compareFiles(left, right),
     search: (cwd, query, caseSensitive) => api.search(cwd, query, caseSensitive),
     processes: () => api.processes(),
+    apps: api.apps,
     sessionHost: () => api.sessionHost(),
     commandHistory: () => api.commandHistory(),
     vault: {
