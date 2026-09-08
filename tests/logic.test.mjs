@@ -31,6 +31,7 @@ await build({
     programWheel: 'src/renderer/programWheel.ts',
     agentSessions: 'src/main/agentSessions.ts',
     version: 'src/shared/version.ts',
+    screenplay: 'src/shared/screenplay.ts',
   },
   bundle: true,
   platform: 'node',
@@ -1540,3 +1541,93 @@ console.log('Session vault')
 }
 
 console.log(`\n${passed} checks passed`)
+
+// ---------------------------------------------------------------- screenplay
+
+const { isSceneHeading, outlineOf } = await import(`file://${out}/screenplay.js`)
+
+const SCRIPT = [
+  'Title: The Long Walk',
+  'Author: Nobody',
+  '',
+  'INT. KITCHEN - DAY',
+  '',
+  'He puts the kettle on.',
+  '',
+  'BOB',
+  'I said no.',
+  '',
+  'ANNA (V.O.)',
+  'You always say no.',
+  '',
+  'BOB',
+  '(quietly)',
+  'Not always.',
+  '',
+  'THE END',
+  '',
+  'EXT. STREET - NIGHT',
+  '',
+  '/* cut for now',
+  'GHOST',
+  'I am not in this film.',
+  'back in */',
+  '',
+].join('\n')
+
+check('outlineOf finds the scenes, forced ones included', () => {
+  const { scenes } = outlineOf(`${SCRIPT}\n.BLACK\n`)
+  assert.deepEqual(
+    scenes.map((s) => s.heading),
+    ['INT. KITCHEN - DAY', 'EXT. STREET - NIGHT', 'BLACK']
+  )
+})
+
+check('outlineOf counts cues, not lines, and sorts by who talks most', () => {
+  const { characters } = outlineOf(SCRIPT)
+  assert.deepEqual(
+    characters.map((c) => [c.name, c.cues]),
+    [
+      ['BOB', 2],
+      ['ANNA', 1],
+    ]
+  )
+})
+
+check('outlineOf ignores a shout with nothing under it', () => {
+  const { characters } = outlineOf(SCRIPT)
+  assert.ok(!characters.some((c) => c.name === 'THE END'))
+})
+
+check('outlineOf leaves the boneyard out of the cast', () => {
+  const { characters } = outlineOf(SCRIPT)
+  assert.ok(!characters.some((c) => c.name === 'GHOST'))
+})
+
+check('outlineOf points at the line the name is on', () => {
+  const { characters } = outlineOf(SCRIPT)
+  const bob = characters.find((c) => c.name === 'BOB')
+  assert.equal(SCRIPT.split('\n')[bob.line], 'BOB')
+})
+
+check('isSceneHeading takes both orders of the combined slug', () => {
+  for (const slug of [
+    'INT. KITCHEN - DAY',
+    'EXT. STREET - NIGHT',
+    'EST. TOWN - DAY',
+    'INT./EXT. CAR - DAY',
+    'INT/EXT CAR - DAY',
+    // These two were refused: the pattern allowed INT before /EXT and not the
+    // reverse, so half the combined slugs were missing from the outline too.
+    'EXT./INT. CAR - DAY',
+    'EXT/INT CAR - DAY',
+    'I/E CAR - DAY',
+  ]) {
+    assert.ok(isSceneHeading(slug), slug)
+  }
+})
+
+check('outlineOf keeps the shouting elements out of the cast', () => {
+  const script = ['>THE END<', 'under it', '', '~LA LA LA', 'under it', ''].join('\n')
+  assert.deepEqual(outlineOf(script).characters, [])
+})

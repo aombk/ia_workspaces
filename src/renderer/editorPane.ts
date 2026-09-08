@@ -40,7 +40,8 @@ import { confirmDialog } from './ui/confirm'
 import { beginEditing, endEditing } from './ui/editing'
 import { LiveText, type Highlighter } from './ui/liveText'
 import { dominantEol, normalizeNewlines, toCrlf } from '../shared/eol'
-import { code, json, markdown, plain } from './ui/highlight'
+import { code, json, markdown, plain, screenplay } from './ui/highlight'
+import { FOUNTAIN_ELEMENTS, outlineOf, type FountainElement } from '../shared/screenplay'
 import { CsvGrid } from './ui/csvGrid'
 import { HexView, decode, encode } from './ui/hexView'
 import { FindBar } from './ui/findBar'
@@ -52,6 +53,7 @@ import {
   findFrom,
   joinLines,
   moveLines,
+  ordered,
   removeDuplicateLines,
   removeEmptyLines,
   replaceAll,
@@ -120,7 +122,17 @@ function sameStamp(
 }
 
 /** Every text view is this one surface; the rest are their own thing. */
-const TEXT_MODES: readonly EditorMode[] = ['markdown', 'code', 'json', 'text']
+const TEXT_MODES: readonly EditorMode[] = ['markdown', 'code', 'json', 'text', 'screenplay']
+
+/**
+ * How many scenes the outline menu will list.
+ *
+ * The context menu does not scroll, so a feature-length script would run off
+ * the bottom of the screen and take the last act with it. Cut here, with the
+ * count said out loud, rather than silently showing part of a list that looks
+ * whole. Find is the tool for the ones past this.
+ */
+const OUTLINE_LIMIT = 80
 
 
 export class EditorPane implements AuxPane {
@@ -137,6 +149,10 @@ export class EditorPane implements AuxPane {
   private readonly saveBtn: HTMLButtonElement
   /** Per tab, because it is a property of the file you have open, not of you. */
   private readonly autoBtn: HTMLButtonElement
+  /** Scenes and cast. Only in a screenplay, where those exist. */
+  private readonly outlineBtn: HTMLButtonElement
+  /** The elements of a screenplay, and what each one is for. */
+  private readonly insertBtn: HTMLButtonElement
   private mode: EditorMode = 'markdown'
   private path = ''
   private disposed = false
@@ -222,6 +238,20 @@ export class EditorPane implements AuxPane {
 
     this.autoBtn = this.headButton('Autosave', '', () => this.toggleAutosave())
     head.appendChild(this.autoBtn)
+
+    this.outlineBtn = this.headButton(
+      'Outline',
+      'The scenes and the cast, read out of the script',
+      () => this.openOutline()
+    )
+    head.appendChild(this.outlineBtn)
+
+    this.insertBtn = this.headButton(
+      'Insert',
+      'The parts of a screenplay, what they type, and when to use each one',
+      () => this.openInsert()
+    )
+    head.appendChild(this.insertBtn)
 
     head.appendChild(this.headButton('Open…', 'Open another file in this tab', () => void this.chooseFile()))
     head.appendChild(
@@ -361,6 +391,153 @@ export class EditorPane implements AuxPane {
   /** A file dropped on this pane's *tab*, which cannot reach in here itself. */
   private readonly onOpenEvent = (e: CustomEvent<{ paneId: string; file: string }>) => {
     if (e.detail?.paneId === this.paneId) void this.openFile(e.detail.file)
+  }
+
+  /**
+   * The parts of a screenplay, as a menu that teaches while it types.
+   *
+   * Three columns of answer to three questions somebody who has never written a
+   * script is entitled to ask. The label says what it is called. The right-hand
+   * column shows what it puts in the file, so the syntax is read every time it
+   * is used and stops being something to remember. The tooltip says when you
+   * would want it, which is the one a reference card never covers.
+   *
+   * A menu rather than a row of buttons, and one slot rather than fourteen: the
+   * toolbar keeps its shape whatever file is open, and nothing here appears or
+   * moves under the pointer.
+   */
+  private openInsert(): void {
+    const entries: MenuEntry[] = []
+    for (const element of FOUNTAIN_ELEMENTS) {
+      if (element.group && entries.length) entries.push('separator')
+      entries.push({
+        label: element.label,
+        shortcut: element.syntax,
+        hint: element.hint,
+        onClick: () => this.insertElement(element),
+      })
+    }
+    const at = this.insertBtn.getBoundingClientRect()
+    showContextMenu(at.left, at.bottom + 2, entries)
+  }
+
+  /**
+   * Puts an element in, and leaves the part you have to change selected.
+   *
+   * Two shapes, because screenplay elements come in two. Emphasis and notes go
+   * *around* what you already wrote — that is the whole gesture, and with
+   * nothing selected they still open and close so the caret lands between them.
+   * Everything else is a line you did not have, so it arrives as an example
+   * with its placeholder selected: the first thing you type replaces `PLACE`,
+   * and there is no moment where the file holds a word nobody meant.
+   */
+  private insertElement(element: FountainElement): void {
+    const text = this.live.value
+    const { from, to } = ordered(this.live.selection())
+    this.live.focus()
+
+    if (element.around) {
+      const [open, close] = element.around
+      const inner = text.slice(from, to)
+      this.live.apply({
+        text: text.slice(0, from) + open + inner + close + text.slice(to),
+        from: from + open.length,
+        to: from + open.length + inner.length,
+      })
+      return
+    }
+
+    const snippet = element.snippet ?? ''
+    const at = element.place ? snippet.indexOf(element.place) : -1
+    const start = at >= 0 ? from + at : from + snippet.length
+    this.live.apply({
+      text: text.slice(0, from) + snippet + text.slice(to),
+      from: start,
+      to: at >= 0 ? start + element.place!.length : start,
+    })
+  }
+
+  /**
+   * The scenes and the cast, computed from the text in the editor right now.
+   *
+   * Never stored. A scene list saved beside the file is a scene list that
+   * disagrees with it the moment somebody edits a slug line in a terminal, and
+   * this app is mostly terminals — so it is read fresh on every open of the
+   * menu, from the buffer rather than from the disk, because the buffer is what
+   * you are looking at.
+   *
+   * Two submenus rather than one long list, which is this menu's own rule: what
+   * shares a verb goes behind a label that says so. It also keeps the parent to
+   * two rows whatever the script is doing.
+   */
+  private openOutline(): void {
+    const { scenes, characters } = outlineOf(this.live.value)
+    const entries: MenuEntry[] = []
+
+    if (scenes.length) {
+      const shown: MenuEntry[] = scenes.slice(0, OUTLINE_LIMIT).map((scene) => ({
+        label: scene.heading,
+        onClick: () => this.goToLine(scene.line),
+      }))
+      if (scenes.length > OUTLINE_LIMIT) {
+        shown.push({
+          label: `${scenes.length - OUTLINE_LIMIT} more — use Find`,
+          disabled: true,
+          onClick: () => {},
+        })
+      }
+      entries.push({ label: `Scenes (${scenes.length})`, submenu: shown })
+    }
+
+    if (characters.length) {
+      entries.push({
+        label: `Characters (${characters.length})`,
+        // The number is how many times they are cued, not how many lines they
+        // say — it is the one that answers "whose script is this".
+        submenu: characters.map((person) => ({
+          label: person.name,
+          shortcut: String(person.cues),
+          onClick: () => this.goToLine(person.line),
+        })),
+      })
+    }
+
+    if (!entries.length) {
+      entries.push({
+        label: 'No scenes or dialogue yet',
+        disabled: true,
+        onClick: () => {},
+      })
+    }
+
+    // Under the button rather than at the pointer: this one is opened by a
+    // click on a known control, not by a right-click on a place.
+    const at = this.outlineBtn.getBoundingClientRect()
+    showContextMenu(at.left, at.bottom + 2, entries)
+  }
+
+  /**
+   * Puts the caret on a line and selects it.
+   *
+   * Selected rather than merely scrolled to: arriving somewhere in a script
+   * that repeats its own slug lines, with nothing marked, is arriving somewhere
+   * you cannot be sure is the right somewhere.
+   */
+  private goToLine(index: number): void {
+    const text = this.live.value
+    let from = 0
+    for (let i = 0; i < index; i++) {
+      const nl = text.indexOf('\n', from)
+      if (nl === -1) {
+        from = text.length
+        break
+      }
+      from = nl + 1
+    }
+    const nl = text.indexOf('\n', from)
+    this.live.focus()
+    this.live.select({ from, to: nl === -1 ? text.length : nl })
+    this.live.scrollToSelection()
   }
 
   private headButton(label: string, title: string, onClick: () => void): HTMLButtonElement {
@@ -507,6 +684,10 @@ export class EditorPane implements AuxPane {
     this.grid.element.hidden = blocked || this.mode !== 'csv'
     this.hex.element.hidden = blocked || this.mode !== 'hex'
     if (!this.isText) this.find.hide()
+    // A button that greys out rather than one that comes and goes: the toolbar
+    // keeps its shape when the same file is reopened as plain text.
+    this.outlineBtn.disabled = blocked || this.mode !== 'screenplay'
+    this.insertBtn.disabled = this.outlineBtn.disabled
     if (this.isText) this.live.setHighlighter(this.highlighter())
     this.grid.setDelimiter(delimiterFor(this.path))
     this.applyView()
@@ -517,7 +698,9 @@ export class EditorPane implements AuxPane {
     const pane = store.pane(this.paneId)
     // Wrap defaults on for prose and off for code: a wrapped line of markdown
     // is a paragraph, a wrapped line of code is a lie about its indentation.
-    const wrap = pane?.wordWrap ?? (this.mode === 'markdown' || this.mode === 'text')
+    const wrap =
+      pane?.wordWrap ??
+      (this.mode === 'markdown' || this.mode === 'text' || this.mode === 'screenplay')
     this.live.element.classList.toggle('no-wrap', !wrap)
     this.live.element.classList.toggle('numbered', this.numbersOn)
     this.live.element.classList.toggle('ruled', this.guideOn)
@@ -546,6 +729,7 @@ export class EditorPane implements AuxPane {
 
   private highlighter(): Highlighter {
     if (this.mode === 'markdown') return markdown
+    if (this.mode === 'screenplay') return screenplay
     if (this.mode === 'text') return plain
     const grammar = grammarFor(this.path)
     if (!grammar) return plain
@@ -648,7 +832,7 @@ export class EditorPane implements AuxPane {
 
   /** The line-comment marker for this file, or none for prose. */
   private commentMarker(): string {
-    if (this.mode === 'markdown' || this.mode === 'text') return ''
+    if (this.mode === 'markdown' || this.mode === 'text' || this.mode === 'screenplay') return ''
     return grammarFor(this.path)?.line[0] ?? ''
   }
 

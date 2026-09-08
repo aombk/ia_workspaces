@@ -4998,6 +4998,109 @@ circle.lane-7 { fill: #ff9e64; }
   cursor: pointer;
 }
 
+/* ------------------------------------------------------------- screenplay
+
+   Fountain, in the live editor. Colour and weight only — no indents and no
+   centring, because this is the view you *type* in and a caret that lands
+   somewhere other than where it looks belongs to a formatter, not an editor.
+   The margins a screenplay is read with are a page's business.
+
+   The one exception is dialogue, which is indented because that indent is how
+   you find the speech in a wall of text at a glance, and it is small enough
+   that the caret still lands where the eye says. */
+.fx-scene {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.fx-character {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.fx-dialogue {
+  padding-left: 2.5em;
+}
+
+.fx-paren {
+  padding-left: 2em;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.fx-transition {
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: none;
+}
+
+.fx-section {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.fx-section1 {
+  font-size: 1.35em;
+}
+
+.fx-section2 {
+  font-size: 1.15em;
+}
+
+/* A synopsis is the writer talking to themselves about the scene, not the
+   film — same treatment as a note, which is the same thing at a smaller
+   scale. */
+.fx-synopsis,
+.fx-boneyard {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.fx-title {
+  color: var(--text-dim);
+}
+
+/* Centred text is left where it is rather than centred, which is the rule the
+   rest of this view follows: a caret has to land where it looks like it will,
+   and the page's own layout is the reader's business. Marked like a transition,
+   because that is what it usually is — a title card, or the last two words. */
+.fx-centred {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.fx-lyric {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.fx-pagebreak {
+  color: var(--text-faint);
+}
+
+.fx-note {
+  color: var(--text-faint);
+}
+
+.fx-mark {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+/* The marks stay on screen and go dim; only what they wrap changes. Watching
+   the emphasis take effect as you type it is half of learning the syntax. */
+.fx-em {
+  font-style: italic;
+}
+
+.fx-strong {
+  font-weight: 700;
+}
+
+.fx-underline {
+  text-decoration: underline;
+}
+
 .md-checked .md-done {
   color: var(--ok, var(--accent));
 }

@@ -357,7 +357,15 @@ export const OPENABLE_PANES: Record<string, PaneKind> = {
  * three that are not the file's own text: a rendered document, a grid, and
  * bytes.
  */
-export type EditorMode = 'markdown' | 'code' | 'text' | 'preview' | 'json' | 'csv' | 'hex'
+export type EditorMode =
+  | 'markdown'
+  | 'code'
+  | 'text'
+  | 'preview'
+  | 'json'
+  | 'csv'
+  | 'hex'
+  | 'screenplay'
 
 /**
  * Menu order, and the two markdown views are kept together in it: the one you
@@ -367,6 +375,7 @@ export type EditorMode = 'markdown' | 'code' | 'text' | 'preview' | 'json' | 'cs
 export const EDITOR_MODES: readonly EditorMode[] = [
   'markdown',
   'preview',
+  'screenplay',
   'code',
   'text',
   'json',
@@ -379,6 +388,7 @@ export const EDITOR_MODE_LABELS: Record<EditorMode, string> = {
   code: 'Code',
   text: 'Plain text',
   preview: 'Rendered markdown',
+  screenplay: 'Screenplay (Fountain)',
   json: 'JSON',
   csv: 'Table (CSV/TSV)',
   hex: 'Hex',

@@ -14,6 +14,15 @@
 export interface MenuItem {
   label: string
   shortcut?: string
+  /**
+   * A sentence on hover, for a menu that has to teach as well as do.
+   *
+   * The label says what the item is called and the shortcut column says what it
+   * types; this is for the third question — when you would want it. Only worth
+   * having where the answer is not obvious from the name, which in most of this
+   * app is nowhere, and in the screenplay menu is every row.
+   */
+  hint?: string
   danger?: boolean
   disabled?: boolean
   /** Drawn with a state dot: filled when this is the one in effect, hollow otherwise. */
@@ -144,6 +153,7 @@ function fill(menu: HTMLDivElement, entries: MenuEntry[], depth: number): void {
     const button = document.createElement('button')
     if (entry.danger) button.classList.add('danger')
     button.disabled = Boolean(entry.disabled)
+    if (entry.hint) button.title = entry.hint
 
     // A dot rather than a tick, and present on every item in a group that has
     // any — an unchecked one draws a hollow ring, so the labels beside them all

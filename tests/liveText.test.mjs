@@ -30,7 +30,7 @@ await build({
   outdir: out,
 })
 
-const { markdown, code, json, plain } = await import(`file://${out}/highlight.js`)
+const { markdown, code, json, plain, screenplay } = await import(`file://${out}/highlight.js`)
 const { parse, serialise } = await import(`file://${out}/csvGrid.js`)
 const { modeForFile, grammarFor, extensionOf, delimiterFor } = await import(
   `file://${out}/editorModes.js`
@@ -350,3 +350,122 @@ check('toCrlf does not double an existing \\r\\n', () => {
 })
 
 console.log(`\n${passed} checks passed`)
+
+// --------------------------------------------------------------- screenplay
+
+const SCREENPLAY_LINES = [
+  '',
+  '   ',
+  'Title: The Long Walk',
+  'INT. KITCHEN - DAY',
+  '.A FORCED SLUG',
+  'EXT./INT. CAR - NIGHT',
+  'BOB',
+  'BOB (V.O.)',
+  'BOB ^',
+  '@McAvoy',
+  '(quietly, to himself)',
+  'He puts the kettle on. [[check this against the treatment]]',
+  '!THE END',
+  'CUT TO:',
+  '> FADE OUT <',
+  '# Act One',
+  '= She finally says it.',
+  '/* cut for now',
+  'still cut',
+  'back in */',
+  'plain action with no markup at all',
+]
+
+check('screenplay runs concatenate back to the source line', () => {
+  for (const line of [...SCREENPLAY_LINES, ...MARKDOWN_LINES]) {
+    // Every carry the highlighter can hand itself: boneyard, dialogue, action.
+    for (const carry of [0, 1, 2, 4]) {
+      const { runs } = screenplay(line, carry)
+      assert.equal(runs.map((r) => r.text).join(''), line, `lost text in: ${JSON.stringify(line)}`)
+    }
+  }
+})
+
+check('screenplay tells a cue from a shout in the action', () => {
+  // After a blank line, capitals are somebody speaking.
+  assert.equal(screenplay('BOB', 0).cls, 'fx-character')
+  // Straight after action, the same line is the action still shouting.
+  const action = screenplay('He turns.', 0)
+  assert.equal(screenplay('BOB', action.carry).cls, 'fx-action')
+})
+
+check('screenplay keeps a dialogue block open until a blank line', () => {
+  const cue = screenplay('BOB', 0)
+  const speech = screenplay('I said no.', cue.carry)
+  assert.equal(speech.cls, 'fx-dialogue')
+  assert.equal(screenplay('(beat)', speech.carry).cls, 'fx-paren')
+  assert.equal(screenplay('', speech.carry).carry, 0)
+})
+
+check('screenplay holds the boneyard across lines', () => {
+  const open = screenplay('/* cut this', 0)
+  assert.equal(open.cls, 'fx-boneyard')
+  const inside = screenplay('INT. KITCHEN - DAY', open.carry)
+  assert.equal(inside.cls, 'fx-boneyard')
+  assert.equal(screenplay('done */', inside.carry).carry, 0)
+})
+
+check('screenplay marks emphasis without losing the delimiters', () => {
+  const runs = screenplay('She is *not* leaving.', 4).runs
+  assert.equal(runs.map((r) => r.text).join(''), 'She is *not* leaving.')
+  assert.ok(runs.some((r) => r.cls === 'fx-em' && r.text === 'not'))
+  // Bold is tried before italic, or the second pair of stars is orphaned.
+  const bold = screenplay('**LOUDLY**', 4).runs
+  assert.equal(bold.map((r) => r.text).join(''), '**LOUDLY**')
+  assert.ok(bold.some((r) => r.cls === 'fx-strong' && r.text === 'LOUDLY'))
+})
+
+check('screenplay dims a note wherever it sits on the line', () => {
+  const runs = screenplay('He waits. [[is this too long?]]', 4).runs
+  assert.equal(runs.map((r) => r.text).join(''), 'He waits. [[is this too long?]]')
+  assert.ok(runs.some((r) => r.cls === 'fx-note' && r.text === '[[is this too long?]]'))
+})
+
+check('screenplay marks sections and synopses', () => {
+  assert.equal(screenplay('# Act One', 0).cls, 'fx-section fx-section1')
+  assert.equal(screenplay('= What this scene is for.', 0).cls, 'fx-synopsis')
+})
+
+// The six the spec has and this did not, each one measured before it was fixed.
+
+check('screenplay opens no dialogue on the other shouting elements', () => {
+  // A cue opens a block, so mistaking one of these for a name did not cost a
+  // colour on one line — it took every line under it as something being said.
+  for (const line of ['>THE END<', '~LA LA LA', '===']) {
+    assert.equal(screenplay(line, 0).carry & 2, 0, `dialogue opened by ${line}`)
+  }
+})
+
+check('screenplay tells a page break from a synopsis', () => {
+  assert.equal(screenplay('===', 0).cls, 'fx-pagebreak')
+  assert.equal(screenplay('====', 0).cls, 'fx-pagebreak')
+  assert.equal(screenplay('= a note to self', 0).cls, 'fx-synopsis')
+})
+
+check('screenplay marks centred text and lyrics as themselves', () => {
+  assert.equal(screenplay('>THE END<', 0).cls, 'fx-centred')
+  assert.equal(screenplay('~Willy Wonka, Willy Wonka', 0).cls, 'fx-lyric')
+})
+
+check('screenplay carries the title page down its indented lines', () => {
+  const key = screenplay('Title:', 0)
+  assert.equal(key.cls, 'fx-title')
+  const value = screenplay('    _**BRICK & STEEL**_', key.carry)
+  assert.equal(value.cls, 'fx-title')
+  // And a blank line is the end of it, or the whole script is a title page.
+  assert.equal(screenplay('', value.carry).carry, 0)
+})
+
+check('screenplay leaves an escaped mark alone', () => {
+  const BS = String.fromCharCode(92)
+  const line = 'a ' + BS + '*x' + BS + '* b'
+  const { runs } = screenplay(line, 4)
+  assert.equal(runs.map((r) => r.text).join(''), line)
+  assert.ok(!runs.some((r) => r.cls === 'fx-em'), 'escaped star still opened an italic')
+})

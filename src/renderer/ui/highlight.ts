@@ -9,6 +9,17 @@
  */
 import type { Highlighter, Run, StyledLine } from './liveText'
 import type { Grammar } from '../../shared/editorModes'
+import {
+  isCentred,
+  isCharacterCue,
+  isForcedAction,
+  isLyric,
+  isPageBreak,
+  isParenthetical,
+  isSceneHeading,
+  isTitleKey,
+  isTransition,
+} from '../../shared/screenplay'
 
 /** Carry values. Zero always means "nothing spans into this line". */
 const PLAIN = 0
@@ -107,6 +118,210 @@ export const markdown: Highlighter = (src, carry): StyledLine => {
   }
 
   return { cls: 'md-para', runs: inline(src), carry: PLAIN }
+}
+
+// ----------------------------------------------------------------- screenplay
+
+/** Inside `/* … *​/`: Fountain's boneyard, the draft's cutting-room floor. */
+const IN_BONEYARD = 1
+/** Under a character cue, where every line is something they say. */
+const IN_DIALOGUE = 2
+/** The previous line was action, which is the one place a cue cannot follow. */
+const AFTER_ACTION = 4
+/** Still in the title page, where an indented line continues the key above. */
+const IN_TITLE = 8
+
+/**
+ * The inline half of Fountain: notes, and the three emphasis marks.
+ *
+ * Split out rather than styled a line at a time because all four turn up in the
+ * middle of something else — a note parked at the end of a line of action, a
+ * word in italics inside a speech — and colouring the whole line would say the
+ * line was the note.
+ *
+ * Every delimiter is kept and dimmed rather than dropped, exactly as the
+ * markdown highlighter does it and for the same reason: what is on screen has
+ * to be what is in the file, character for character, or a click puts the caret
+ * somewhere other than where it looks. `tests/liveText.test.mjs` holds it to it.
+ *
+ * Bold before italic in the alternation, or `**word**` matches as an italic
+ * wrapping an empty string and the second pair of stars is left behind.
+ *
+ * A backslash escape comes first of all, and consuming it here is the whole
+ * mechanism: `\*` is taken as two plain characters, so the star it hides is
+ * never available to open a run. Fountain's own way of writing about a
+ * multiplication sign in a line of action.
+ */
+const INLINE_FX = /(\\.)|(\[\[[^\]]*\]\])|(\*\*)([^*]+?)\3|(\*)([^*]+?)\5|(_)([^_]+?)\7/g
+
+function inlineFx(src: string, cls?: string): Run[] {
+  if (!src) return []
+  const runs: Run[] = []
+  let last = 0
+  for (const m of src.matchAll(INLINE_FX)) {
+    if (m.index > last) runs.push({ text: src.slice(last, m.index), cls })
+    if (m[1]) {
+      // Kept whole, backslash included: the file says `\*` and so must the
+      // screen, or the caret stops agreeing with the text.
+      runs.push({ text: m[1], cls })
+    } else if (m[2]) {
+      runs.push({ text: m[2], cls: 'fx-note' })
+    } else if (m[3]) {
+      runs.push(
+        { text: m[3], cls: 'fx-mark' },
+        { text: m[4], cls: 'fx-strong' },
+        { text: m[3], cls: 'fx-mark' }
+      )
+    } else if (m[5]) {
+      runs.push(
+        { text: m[5], cls: 'fx-mark' },
+        { text: m[6], cls: 'fx-em' },
+        { text: m[5], cls: 'fx-mark' }
+      )
+    } else {
+      runs.push(
+        { text: m[7], cls: 'fx-mark' },
+        { text: m[8], cls: 'fx-underline' },
+        { text: m[7], cls: 'fx-mark' }
+      )
+    }
+    last = m.index + m[0].length
+  }
+  if (last < src.length) runs.push({ text: src.slice(last), cls })
+  return runs
+}
+
+/**
+ * Fountain, one line at a time.
+ *
+ * The format is defined by context — a name is a character cue *because* a
+ * blank line is above it and dialogue is below — and this is handed a line and
+ * a number. What it can see backwards it keeps in the carry: whether a dialogue
+ * block is open, whether the line above was action, whether the boneyard is.
+ *
+ * What it cannot see is forwards, and that is a real limit rather than a bug to
+ * fix later: a lone shouted line with a blank under it is action in the spec
+ * and a character cue here. `outlineOf` gets this right, because it holds the
+ * whole file — so the cast list down the side is the authority, not the colour.
+ * Where the colour is wrong the fix is Fountain's own: `!` forces action.
+ *
+ * The inline marks — notes and the three emphases — are `inlineFx`'s, and every
+ * branch here runs its text through it: a note or an italic can turn up in any
+ * of them.
+ */
+export const screenplay: Highlighter = (src, carry): StyledLine => {
+  const text = src.trim()
+
+  if (carry & IN_BONEYARD) {
+    const closes = src.includes('*/')
+    return {
+      cls: 'fx-boneyard',
+      runs: src ? [{ text: src, cls: 'fx-note' }] : [],
+      carry: closes ? PLAIN : IN_BONEYARD,
+    }
+  }
+  if (text.startsWith('/*')) {
+    return {
+      cls: 'fx-boneyard',
+      runs: [{ text: src, cls: 'fx-note' }],
+      carry: text.includes('*/') ? PLAIN : IN_BONEYARD,
+    }
+  }
+
+  // A blank line closes whatever was open. It is the only punctuation this
+  // format really has.
+  if (!text) return { cls: 'fx-blank', runs: src ? [{ text: src }] : [], carry: PLAIN }
+
+  // An indented line under a title key is the rest of that key's value —
+  // `Title:` on its own with the title beneath it is how most scripts open.
+  // Without this the indented line was judged on its own and, being in
+  // capitals often enough, opened a dialogue block on the second line of the
+  // file that then swallowed `Credit:` as something a character said.
+  if (carry & IN_TITLE && /^\s+\S/.test(src)) {
+    return { cls: 'fx-title', runs: inlineFx(src), carry: IN_TITLE }
+  }
+
+  if (isTitleKey(text)) {
+    const at = src.indexOf(':')
+    return {
+      cls: 'fx-title',
+      runs: [
+        { text: src.slice(0, at + 1), cls: 'fx-mark' },
+        ...inlineFx(src.slice(at + 1)),
+      ],
+      carry: IN_TITLE,
+    }
+  }
+
+  // Before the synopsis, which is the same character and one of them.
+  if (isPageBreak(text)) {
+    return { cls: 'fx-pagebreak', runs: [{ text: src, cls: 'fx-mark' }], carry: PLAIN }
+  }
+
+  const section = /^(\s*#{1,6}\s*)(.*)$/.exec(src)
+  if (section) {
+    return {
+      cls: `fx-section fx-section${section[1].trim().length}`,
+      runs: [{ text: section[1], cls: 'fx-mark' }, ...inlineFx(section[2])],
+      carry: PLAIN,
+    }
+  }
+
+  const synopsis = /^(\s*=\s*)(.*)$/.exec(src)
+  if (synopsis) {
+    return {
+      cls: 'fx-synopsis',
+      runs: [{ text: synopsis[1], cls: 'fx-mark' }, ...inlineFx(synopsis[2])],
+      carry: PLAIN,
+    }
+  }
+
+  // Both of these shout, and both used to be read as somebody speaking — which
+  // is not a wrong colour on one line but a dialogue block opened under it.
+  if (isLyric(text)) {
+    const at = src.indexOf('~')
+    return {
+      cls: 'fx-lyric',
+      runs: [{ text: src.slice(0, at + 1), cls: 'fx-mark' }, ...inlineFx(src.slice(at + 1))],
+      carry: PLAIN,
+    }
+  }
+
+  if (isCentred(text)) {
+    return { cls: 'fx-centred', runs: inlineFx(src), carry: PLAIN }
+  }
+
+  if (isForcedAction(text)) {
+    const at = src.indexOf('!')
+    return {
+      cls: 'fx-action',
+      runs: [{ text: src.slice(0, at + 1), cls: 'fx-mark' }, ...inlineFx(src.slice(at + 1))],
+      carry: AFTER_ACTION,
+    }
+  }
+
+  if (isSceneHeading(text)) {
+    return { cls: 'fx-scene', runs: inlineFx(src), carry: PLAIN }
+  }
+
+  if (isTransition(text)) {
+    return { cls: 'fx-transition', runs: inlineFx(src), carry: PLAIN }
+  }
+
+  if (carry & IN_DIALOGUE) {
+    if (isParenthetical(text)) {
+      return { cls: 'fx-paren', runs: inlineFx(src), carry: IN_DIALOGUE }
+    }
+    return { cls: 'fx-dialogue', runs: inlineFx(src), carry: IN_DIALOGUE }
+  }
+
+  // Only where a blank line, a slug or the top of the file is above: after a
+  // line of action, capitals are somebody shouting, not somebody speaking.
+  if (!(carry & AFTER_ACTION) && isCharacterCue(text)) {
+    return { cls: 'fx-character', runs: inlineFx(src), carry: IN_DIALOGUE }
+  }
+
+  return { cls: 'fx-action', runs: inlineFx(src), carry: AFTER_ACTION }
 }
 
 // ----------------------------------------------------------------------- code

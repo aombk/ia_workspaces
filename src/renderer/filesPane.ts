@@ -1630,14 +1630,14 @@ export class FilesPane {
         },
       },
       {
+        // One door, not two. Permanent deletion is on the Shift the hint names
+        // — see the key handler — and it used to be a second red row directly
+        // under this one, which is how a slip becomes an unrecoverable slip.
+        // Explorer settled this the same way, and for the same reason.
         label: `Delete ${describe(this.actOn(entry).map((e) => e.path))}…`,
+        shortcut: 'Del / Shift+Del',
         danger: true,
         onClick: () => void this.doDelete(this.actOn(entry)),
-      },
-      {
-        label: `Delete permanently ${describe(this.actOn(entry).map((e) => e.path))}…`,
-        danger: true,
-        onClick: () => void this.doDelete(this.actOn(entry), true),
       },
       'separator',
       {

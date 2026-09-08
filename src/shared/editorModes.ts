@@ -182,6 +182,9 @@ export function grammarFor(path: string): Grammar | null {
 }
 
 const MARKDOWN = new Set(['md', 'markdown', 'mdx', 'mdown'])
+// `.spmd` is what Fountain was called before it was called Fountain. Files
+// written then are the same format and still open.
+const FOUNTAIN = new Set(['fountain', 'spmd'])
 const TABLES = new Set(['csv', 'tsv'])
 const BINARY = new Set([
   'exe', 'dll', 'so', 'dylib', 'bin', 'dat', 'ico', 'png', 'jpg', 'jpeg', 'gif',
@@ -194,6 +197,7 @@ export function modeForFile(path: string): EditorMode {
   const ext = extensionOf(path)
   if (!path) return 'markdown'
   if (MARKDOWN.has(ext)) return 'markdown'
+  if (FOUNTAIN.has(ext)) return 'screenplay'
   if (ext === 'json') return 'json'
   if (TABLES.has(ext)) return 'csv'
   if (BINARY.has(ext)) return 'hex'
