@@ -1520,11 +1520,11 @@ export class FilesPane {
     const subject = this.actOn(entry)
 
     if (subject.length) {
-      const what = describe(subject.map((e) => e.path))
       const paths = subject.map((e) => e.path)
+      const count = countLabel(paths)
       items.push(
-        { label: `Cut ${what}`, shortcut: 'Ctrl+X', onClick: () => this.clip(paths, 'cut') },
-        { label: `Copy ${what}`, shortcut: 'Ctrl+C', onClick: () => this.clip(paths, 'copy') }
+        { label: `Cut${count}`, shortcut: 'Ctrl+X', onClick: () => this.clip(paths, 'cut') },
+        { label: `Copy${count}`, shortcut: 'Ctrl+C', onClick: () => this.clip(paths, 'copy') }
       )
     }
     items.push({
@@ -1634,7 +1634,7 @@ export class FilesPane {
         // — see the key handler — and it used to be a second red row directly
         // under this one, which is how a slip becomes an unrecoverable slip.
         // Explorer settled this the same way, and for the same reason.
-        label: `Delete ${describe(this.actOn(entry).map((e) => e.path))}…`,
+        label: `Delete${countLabel(this.actOn(entry).map((e) => e.path))}…`,
         shortcut: 'Del / Shift+Del',
         danger: true,
         onClick: () => void this.doDelete(this.actOn(entry)),
@@ -1900,6 +1900,25 @@ function messageOf(err: unknown): string {
  * makes the menu unreadable, and the selection is already on screen saying
  * which five they are.
  */
+/**
+ * What follows a verb in the row menu, which for a single file is nothing.
+ *
+ * The row the menu belongs to is under the pointer and highlighted while the
+ * menu is open, so naming it again in Cut, Copy and Delete made three labels
+ * longer without making any of them clearer — and a column of them, each ending
+ * in the same long filename, is harder to read than the verbs alone.
+ *
+ * A count is not the same kind of repetition. How many things a verb is about
+ * is the one thing the selection behind the menu does not say at a glance, and
+ * it is the difference between deleting a file and deleting eleven.
+ *
+ * `describe` is still what the toasts use: those appear away from the tree,
+ * after the menu has gone, where the name is all the reader has.
+ */
+function countLabel(paths: readonly string[]): string {
+  return paths.length > 1 ? ` ${paths.length} items` : ''
+}
+
 function describe(paths: readonly string[]): string {
   if (paths.length === 1) return folderLeaf(paths[0])
   return `${paths.length} items`

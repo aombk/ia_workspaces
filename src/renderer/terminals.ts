@@ -2,8 +2,8 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { useEmojiWidth } from './emojiWidth'
 import { backend } from '../backend'
 import { mayRelease } from '../shared/idleShells'
 import { hasFilePath, pathsFromDrop, quotePath } from './ui/fileDrag'
@@ -292,9 +292,11 @@ export class TerminalManager {
     term.loadAddon(search)
     term.loadAddon(new WebLinksAddon((_e, uri) => void backend().openExternal(uri)))
 
-    const unicode = new Unicode11Addon()
-    term.loadAddon(unicode)
-    term.unicode.activeVersion = '11'
+    // Unicode 11 widths, and emoji presentation sequences counted the way the
+    // programs inside the terminal count them. Without the second half, a line
+    // carrying `⚠️` is laid out wider than it is stored and a partial repaint
+    // lands on the wrong cells — see `emojiWidth.ts`.
+    useEmojiWidth(term)
 
     // Must be in the document before open() or xterm measures a zero cell.
     this.pool.appendChild(element)

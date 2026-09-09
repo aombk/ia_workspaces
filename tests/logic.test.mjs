@@ -32,6 +32,7 @@ await build({
     agentSessions: 'src/main/agentSessions.ts',
     version: 'src/shared/version.ts',
     screenplay: 'src/shared/screenplay.ts',
+    emojiWidth: 'src/renderer/emojiWidth.ts',
   },
   bundle: true,
   platform: 'node',
@@ -1630,4 +1631,70 @@ check('isSceneHeading takes both orders of the combined slug', () => {
 check('outlineOf keeps the shouting elements out of the cast', () => {
   const script = ['>THE END<', 'under it', '', '~LA LA LA', 'under it', ''].join('\n')
   assert.deepEqual(outlineOf(script).characters, [])
+})
+
+// ---------------------------------------------------------------- emoji width
+
+import xtermHeadless from '@xterm/headless'
+import unicode11 from '@xterm/addon-unicode11'
+
+const { emojiWidthProvider, EMOJI_WIDTH_VERSION } = await import(`file://${out}/emojiWidth.js`)
+
+/** Columns the cursor has advanced after writing `text`, with or without the fix. */
+function columns(text, fixed) {
+  const term = new xtermHeadless.Terminal({ cols: 200, rows: 10, allowProposedApi: true })
+  if (fixed) {
+    term.unicode.register(emojiWidthProvider())
+    term.unicode.activeVersion = EMOJI_WIDTH_VERSION
+  } else {
+    term.loadAddon(new unicode11.Unicode11Addon())
+    term.unicode.activeVersion = '11'
+  }
+  return new Promise((done) => term.write(text, () => done(term.buffer.active.cursorX)))
+}
+
+check('an emoji presentation sequence takes two cells', async () => {
+  // Both sides were measured before this existed: xterm said 1, `string-width`
+  // — which every Node CLI lays its output out with — said 2. That one column
+  // per emoji is what shifted a repainted line onto the wrong cells.
+  for (const [name, seq] of [
+    ['warning', '\u26A0\uFE0F'],
+    ['info', '\u2139\uFE0F'],
+    ['gear', '\u2699\uFE0F'],
+    ['pencil', '\u270F\uFE0F'],
+  ]) {
+    assert.equal(await columns(seq, false), 1, `${name} was already right`)
+    assert.equal(await columns(seq, true), 2, name)
+  }
+})
+
+check('everything else keeps the width Unicode 11 gave it', async () => {
+  for (const [name, text] of [
+    ['plain letter', 'a'],
+    ['bare warning, no selector', '\u26A0'],
+    ['emoji codepoint', '\u{1F680}'],
+    ['sparkles', '\u2728'],
+    ['CJK', '\u6F22'],
+    ['combining accent', 'e\u0301'],
+    ['a whole word', 'sliders'],
+  ]) {
+    assert.equal(await columns(text, true), await columns(text, false), name)
+  }
+})
+
+check('the packed property layout this depends on still holds', async () => {
+  // `charProperties` returns a number xterm packs itself and the public API
+  // gives no way to read — bit 0 joins, bits 1-2 are the width. emojiWidth.ts
+  // reproduces that, so it is checked here against the real provider rather
+  // than trusted. If xterm ever repacks these, this fails before a terminal does.
+  let inner = null
+  new unicode11.Unicode11Addon().activate({ unicode: { register: (p) => (inner = p) } })
+  assert.ok(inner, 'the addon registered no provider')
+
+  const plain = inner.charProperties(0x61, 0)
+  assert.equal((plain >> 1) & 3, 1, 'a is one cell')
+  assert.equal(plain & 1, 0, 'a joins nothing')
+
+  const wide = inner.charProperties(0x1f680, 0)
+  assert.equal((wide >> 1) & 3, 2, 'a rocket is two cells')
 })
