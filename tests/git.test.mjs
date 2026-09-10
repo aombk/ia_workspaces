@@ -29,6 +29,7 @@ await build({
     words: 'src/shared/gitWords.ts',
     patch: 'src/shared/diffPatch.ts',
     hosts: 'src/shared/gitHosts.ts',
+    draft: 'src/shared/draftMessage.ts',
   },
   bundle: true,
   platform: 'node',
@@ -41,6 +42,7 @@ const Graph = await import(`file://${out}/graph.js`)
 const Words = await import(`file://${out}/words.js`)
 const Patch = await import(`file://${out}/patch.js`)
 const Hosts = await import(`file://${out}/hosts.js`)
+const Draft = await import(`file://${out}/draft.js`)
 
 let passed = 0
 const check = (name, fn) => {
@@ -855,6 +857,263 @@ await checkAsync('pointing a project at a copy online refuses to move one alread
   const res = await G.setOrigin(repo2, 'https://github.com/someone/else.git')
   assert.equal(res.ok, false, 'repointing by accident sends the next push somewhere forgotten')
   assert.match(res.hint, /already points at/)
+})
+
+// ----------------------------------------------- the message, drafted for you
+
+// A repository of its own, because these checks care about exactly which files
+// are picked, and the two above have been picked over by thirty other checks.
+const repo3 = path.join(out, 'repo3')
+fs.mkdirSync(repo3)
+const git3 = (...args) =>
+  execFileSync('git', args, { cwd: repo3, encoding: 'utf8', windowsHide: true }).trim()
+
+git3('init', '--initial-branch=main')
+git3('config', 'user.email', 'test@example.com')
+git3('config', 'user.name', 'Test Person')
+git3('config', 'commit.gpgsign', 'false')
+
+/** A message as a reader takes it in, with the folding of long lines undone. */
+const flat = (message) => message.replace(/\s+/g, ' ')
+
+/** What the pane does: the picked files, and the patch they will be saved as. */
+const draftNow = async () => {
+  const status = await G.repoStatus(repo3)
+  return Draft.draftMessage(status.files, await G.pickedDiff(repo3))
+}
+
+const write = (repoPath, text) => {
+  const full = path.join(repo3, repoPath)
+  fs.mkdirSync(path.dirname(full), { recursive: true })
+  fs.writeFileSync(full, text)
+}
+
+await checkAsync('nothing picked drafts nothing at all', async () => {
+  write('src/one.ts', 'export function one() {}\n')
+  assert.equal(await draftNow(), '', 'a message for a save that would be refused is worse than none')
+})
+
+await checkAsync('a new file is described by the sentence at the top of it', async () => {
+  write(
+    'src/one.ts',
+    ['/**', ' * The one thing this file is for.', ' */', 'export function one() {}', ''].join('\n')
+  )
+  await G.pick(repo3, ['src/one.ts'])
+  const [subject, blank, ...body] = (await draftNow()).split('\n')
+  assert.equal(subject, 'add one.ts: the one thing this file is for')
+  assert.equal(blank, '', 'a subject and a body are separated by a blank line, as git expects')
+  assert.deepEqual(body, ['- one'], 'and it still says what the file now holds')
+})
+
+await checkAsync('a changed file that is not picked stays out of the message', async () => {
+  write('src/two.ts', 'export function two() {}\n')
+  const message = await draftNow()
+  assert.equal(message.includes('two'), false, 'the message describes the save, not the folder')
+})
+
+await checkAsync('several files each say what they now hold, biggest first', async () => {
+  write('src/one.ts', `export function one() {}\n${'// filler\n'.repeat(20)}`)
+  write('src/deep/three.ts', 'export const three = 3\n')
+  await G.pick(repo3, ['src/one.ts', 'src/two.ts', 'src/deep/three.ts'])
+  const lines = (await draftNow()).split('\n')
+  assert.equal(lines[0], 'add one.ts: one (+2 more files)', 'the headline is a name, not a count')
+  assert.equal(lines[2], '- add one.ts (+21 -0): one', 'the biggest change is the first line')
+  assert.equal(
+    lines.some((l) => l === '- add deep/three.ts (+1 -0): three'),
+    true,
+    'paths are shortened against the folder the subject already named'
+  )
+})
+
+await checkAsync('a method added to a class that already existed is named', async () => {
+  git3('commit', '-m', 'first')
+  write(
+    'src/pane.ts',
+    ['export class Pane {', '  private async draft(): Promise<void> {', '  }', '}', ''].join('\n')
+  )
+  await G.pick(repo3, ['src/pane.ts'])
+  git3('commit', '-m', 'a class')
+  write(
+    'src/pane.ts',
+    [
+      'export class Pane {',
+      '  private async draft(): Promise<void> {',
+      '    if (this.busy()) {',
+      '    }',
+      '  }',
+      '  private clearMessage(): void {',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+  )
+  await G.pick(repo3, ['src/pane.ts'])
+  const message = await draftNow()
+  assert.equal(
+    flat(message).includes('clearMessage'),
+    true,
+    'nothing new is exported, so a reader that only knew about exports said nothing at all'
+  )
+  assert.equal(message.includes('if'), false, 'a call with a brace after it is not a definition')
+})
+
+await checkAsync('a patch that adds tests is described by their names', async () => {
+  git3('commit', '-m', 'the method')
+  write(
+    'tests/thing.test.mjs',
+    [
+      "check('a rename says both names', () => {})",
+      "check('a delete is named by the side it has', () => {})",
+      "check('an apostrophe in git's own words survives', () => {})",
+      '',
+    ].join('\n')
+  )
+  await G.pick(repo3, ['tests/thing.test.mjs'])
+  const message = await draftNow()
+  assert.equal(flat(message).includes('3 new checks'), true)
+  assert.equal(
+    flat(message).includes('"a rename says both names"'),
+    true,
+    'a test name is already a sentence about behaviour, and worth quoting as one'
+  )
+  assert.equal(
+    flat(message).includes('"a delete is named by the side it has"'),
+    true,
+    'the second is quoted too, and the rest are the count'
+  )
+})
+
+await checkAsync('a dependency that appeared is named as one', async () => {
+  git3('commit', '-m', 'the tests')
+  write('package.json', '{\n  "version": "1.2.0",\n  "dependencies": {}\n}\n')
+  await G.pick(repo3, ['package.json'])
+  git3('commit', '-m', 'a manifest')
+  write(
+    'package.json',
+    '{\n  "version": "1.2.1",\n  "dependencies": {\n    "left-pad": "^1.3.0"\n  }\n}\n'
+  )
+  await G.pick(repo3, ['package.json'])
+  const [subject, , ...body] = (await draftNow()).split('\n')
+  assert.equal(subject, 'version 1.2.1', 'a bump is the one change whose message is just a number')
+  assert.deepEqual(
+    body,
+    ['- adds left-pad'],
+    'the version field is version-shaped too, and is not itself a dependency'
+  )
+})
+
+await checkAsync('a rename says both names and does not invent a change', async () => {
+  git3('commit', '-m', 'a dependency')
+  git3('mv', 'src/two.ts', 'src/five.ts')
+  const message = await draftNow()
+  assert.equal(message, 'rename src/two.ts to src/five.ts')
+  assert.equal(message.includes(': two'), false, 'a name that only moved is not a name that arrived')
+})
+
+await checkAsync('a mixture of kinds is described as an update', async () => {
+  git3('commit', '-m', 'a rename')
+  write('src/one.ts', 'export function one() {}\nexport function six() {}\n')
+  fs.rmSync(path.join(repo3, 'src/five.ts'))
+  await G.pick(repo3, ['src/one.ts', 'src/five.ts'])
+  const lines = (await draftNow()).split('\n')
+  assert.equal(lines[0].startsWith('update one.ts: six'), true, 'the name that arrived is the headline')
+  assert.equal(
+    lines.some((l) => l.startsWith('- remove five.ts')),
+    true,
+    "git's D is a removal in words"
+  )
+})
+
+check('a file is described by what it exports, not by its private helpers', () => {
+  // The helper is written above the export, which is the ordinary way round and
+  // the case a first-match-wins reading gets wrong every time.
+  const diff = [
+    'diff --git a/src/thing.ts b/src/thing.ts',
+    '--- a/src/thing.ts',
+    '+++ b/src/thing.ts',
+    '@@ -0,0 +1,3 @@',
+    '+function truncate(value) {}',
+    '+',
+    '+export function draftMessage() {}',
+  ].join('\n')
+  assert.deepEqual(Draft.readDiff(diff).get('src/thing.ts').adds, ['draftMessage'])
+})
+
+check('a patch with nothing exported is still described by a name', () => {
+  const diff = [
+    'diff --git a/tools/clean.mjs b/tools/clean.mjs',
+    '--- a/tools/clean.mjs',
+    '+++ b/tools/clean.mjs',
+    '@@ -1,0 +1,1 @@',
+    '+function sweep() {}',
+  ].join('\n')
+  assert.deepEqual(Draft.readDiff(diff).get('tools/clean.mjs').adds, ['sweep'])
+})
+
+check('the sentence at the top is only read from a file that is new', () => {
+  // The same doc comment, arriving in the middle of a file that already exists.
+  const diff = [
+    'diff --git a/src/thing.ts b/src/thing.ts',
+    '--- a/src/thing.ts',
+    '+++ b/src/thing.ts',
+    '@@ -40,0 +41,3 @@',
+    '+/**',
+    '+ * What this one helper does.',
+    '+ */',
+  ].join('\n')
+  assert.equal(
+    Draft.readDiff(diff).get('src/thing.ts').purpose,
+    '',
+    'a comment forty lines in is about the lines around it, not about the file'
+  )
+})
+
+check('the patch is split per file, and a delete is named by the side it has', () => {
+  const diff = [
+    'diff --git a/gone.txt b/gone.txt',
+    'deleted file mode 100644',
+    '--- a/gone.txt',
+    '+++ /dev/null',
+    '@@ -1,2 +0,0 @@',
+    '-one',
+    '-two',
+    'diff --git a/logo.png b/logo.png',
+    'Binary files a/logo.png and b/logo.png differ',
+  ].join('\n')
+  const parsed = Draft.readDiff(diff)
+  assert.equal(parsed.get('gone.txt').minus, 2, 'a file with no +++ path is still a file')
+  assert.equal(parsed.get('gone.txt').plus, 0)
+  assert.equal(parsed.get('logo.png').binary, true, 'counting lines in a PNG would be a lie')
+})
+
+check('a long line is folded where git log can read it', () => {
+  const names = Array.from({ length: 8 }, (_, i) => `+export function name${i}Long() {}`)
+  const diff = [
+    'diff --git a/src/wide.ts b/src/wide.ts',
+    '--- a/src/wide.ts',
+    '+++ b/src/wide.ts',
+    '@@ -0,0 +1,8 @@',
+    ...names,
+    'diff --git a/src/other.ts b/src/other.ts',
+    '--- a/src/other.ts',
+    '+++ b/src/other.ts',
+    '@@ -1,0 +1,1 @@',
+    '+export const other = 1',
+  ].join('\n')
+  const files = [
+    { repoPath: 'src/wide.ts', path: '', picked: 'A', changed: '', untracked: false, conflicted: false },
+    { repoPath: 'src/other.ts', path: '', picked: 'A', changed: '', untracked: false, conflicted: false },
+  ]
+  const lines = Draft.draftMessage(files, diff).split('\n')
+  assert.ok(
+    lines.every((line) => line.length <= 72),
+    `a body line ran past what a terminal shows: ${lines.find((l) => l.length > 72)}`
+  )
+  assert.equal(
+    lines.some((line) => line.startsWith('  ')),
+    true,
+    'a folded line continues under the text of its bullet, not under the dash'
+  )
 })
 
 console.log(`\n${passed} checks passed`)

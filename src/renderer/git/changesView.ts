@@ -40,6 +40,7 @@ import {
   type Hunk,
   type PatchLine,
 } from '../../shared/diffPatch'
+import { draftMessage } from '../../shared/draftMessage'
 import { hostLabel } from '../../shared/gitHosts'
 import type { ChangedFile, RepoStatus } from '../../shared/types'
 import { confirmDialog } from '../ui/confirm'
@@ -62,6 +63,7 @@ export class ChangesView implements GitView {
   private readonly diffEl: HTMLDivElement
   private readonly footEl: HTMLDivElement
   private readonly messageEl: HTMLTextAreaElement
+  private readonly draftBtn: HTMLButtonElement
   private readonly saveBtn: HTMLButtonElement
   private readonly sendBtn: HTMLButtonElement
   private readonly footNoteEl: HTMLDivElement
@@ -82,6 +84,15 @@ export class ChangesView implements GitView {
   private answered = false
   /** Bumped per request so a slow diff can't overwrite a newer one. */
   private token = 0
+  /**
+   * The last draft this pane wrote into the message box, verbatim.
+   *
+   * Kept so a second press of *draft* can tell a draft nobody has touched from
+   * a sentence somebody typed, and only ask before overwriting the second.
+   */
+  private lastDraft = ''
+  /** True between the press that would overwrite typing and the one that does. */
+  private confirmingDraft = false
 
   constructor(private readonly ctx: GitContext) {
     this.element = document.createElement('div')
@@ -113,7 +124,12 @@ export class ChangesView implements GitView {
     this.messageEl.rows = 2
     this.messageEl.spellcheck = false
     this.messageEl.placeholder = 'What did you change? One line is plenty.'
-    this.messageEl.addEventListener('input', () => this.updateFoot())
+    this.messageEl.addEventListener('input', () => {
+      // Typing is an answer to "replace what you typed?" — the answer being
+      // that there is now something else here, so ask again next time.
+      this.confirmingDraft = false
+      this.updateFoot()
+    })
     this.messageEl.addEventListener('keydown', (e) => {
       // Ctrl+Enter saves, the convention every commit box has. Enter alone
       // stays a newline: a message is allowed to be more than one line, and a
@@ -127,6 +143,16 @@ export class ChangesView implements GitView {
 
     const buttons = document.createElement('div')
     buttons.className = 'diff-foot__buttons'
+
+    // First in the row because it happens before the save, and never in the
+    // primary style: the message is the part you write, and a button offering
+    // to start it should not look like the one that finishes.
+    this.draftBtn = gitButton('write a first message from what is picked', 'git diff --cached', {
+      className: 'diff-btn',
+    })
+    this.draftBtn.addEventListener('click', () => void this.draft())
+    explain(this.draftBtn, 'diff', 'staged')
+    buttons.appendChild(this.draftBtn)
 
     this.saveBtn = gitButton('save what you picked', 'git commit', { className: 'diff-btn primary' })
     this.saveBtn.addEventListener('click', () => void this.save())
@@ -670,6 +696,59 @@ export class ChangesView implements GitView {
     this.ticked.clear()
   }
 
+  /**
+   * Fills the message box with what the patch says, for you to edit.
+   *
+   * Fills it rather than suggesting it: what was wanted here is a message that
+   * is already written when you arrive, and a placeholder you have to accept is
+   * a thing to do before the thing you came to do. The box stays a box — every
+   * word of it is yours to change, and nothing is saved until you press save.
+   *
+   * The one thing it will not do is quietly take away a sentence you wrote. If
+   * the box holds anything other than a draft this pane put there, the first
+   * press asks and the second replaces.
+   */
+  private async draft(): Promise<void> {
+    const status = this.snapshot?.status
+    if (!status) return
+
+    const typed = this.messageEl.value
+    if (typed.trim() && typed !== this.lastDraft && !this.confirmingDraft) {
+      this.confirmingDraft = true
+      this.updateFoot()
+      return
+    }
+
+    const diff = await backend().git.pickedDiff(this.ctx.root())
+    // Read from `status.files` rather than from the snapshot at press time, so a
+    // file picked while the diff was in flight is in the message it describes.
+    const message = draftMessage(this.snapshot?.status.files ?? status.files, diff)
+    if (!message) return
+
+    this.messageEl.value = message
+    this.lastDraft = message
+    this.confirmingDraft = false
+    // Grown to fit, up to a point: a two-row box showing the first line of a
+    // ten-line draft hides the very thing it just wrote. Capped because the box
+    // shares the pane with the patch, and drag-resizable either way.
+    this.messageEl.rows = Math.min(10, message.split('\n').length + 1)
+    // The cursor lands at the end of the subject, which is the line worth
+    // rewriting — the list under it is already what it is.
+    const subjectEnd = message.indexOf('\n') === -1 ? message.length : message.indexOf('\n')
+    this.messageEl.focus()
+    this.messageEl.setSelectionRange(subjectEnd, subjectEnd)
+    this.messageEl.scrollTop = 0
+    this.updateFoot()
+  }
+
+  /** After a save has taken the message, the box goes back to how it started. */
+  private clearMessage(): void {
+    this.messageEl.value = ''
+    this.messageEl.rows = 2
+    this.lastDraft = ''
+    this.confirmingDraft = false
+  }
+
   private async save(): Promise<void> {
     const message = this.messageEl.value.trim()
     if (!message) return
@@ -677,7 +756,7 @@ export class ChangesView implements GitView {
       const res = await backend().git.save(this.ctx.root(), message)
       // Only cleared on success: a message thrown away because git refused for
       // a reason you then fixed is a message you have to write again.
-      if (res.ok) this.messageEl.value = ''
+      if (res.ok) this.clearMessage()
       return res
     }, 'Saved — on this machine. Nowhere else has it until you send it.', 'Saving')
   }
@@ -739,7 +818,7 @@ export class ChangesView implements GitView {
     if (!ok) return
     await this.ctx.run(async () => {
       const res = await backend().git.amend(this.ctx.root(), message)
-      if (res.ok) this.messageEl.value = ''
+      if (res.ok) this.clearMessage()
       return res
     }, 'Added. It is one save, not two.', 'Adding to the last save')
   }
@@ -762,6 +841,19 @@ export class ChangesView implements GitView {
     const busy = this.ctx.busy()
 
     setButtonLabel(
+      this.draftBtn,
+      this.confirmingDraft
+        ? 'press again to replace what you typed'
+        : picked
+          ? `write a first message from ${picked} picked file${picked === 1 ? '' : 's'}`
+          : 'write a first message from what is picked'
+    )
+    // Nothing picked means nothing to describe. Conflicts are not a reason to
+    // withhold it — a message can be written while git waits — but an
+    // in-progress merge or rebase is, for the same reason saving is.
+    this.draftBtn.disabled = busy || picked === 0 || !!status?.inProgress
+
+    setButtonLabel(
       this.saveBtn,
       picked ? `save ${picked} picked file${picked === 1 ? '' : 's'}` : 'save what you picked'
     )
@@ -782,8 +874,12 @@ export class ChangesView implements GitView {
     } else if (conflicts) {
       this.footNoteEl.textContent =
         'Sort the files git is asking about first. Nothing is lost while they sit there.'
+    } else if (this.confirmingDraft) {
+      this.footNoteEl.textContent =
+        'That would replace the message you typed. Press again to let it, or carry on typing to keep what you have.'
     } else if (picked && !hasMessage) {
-      this.footNoteEl.textContent = 'A save needs a line saying what it is.'
+      this.footNoteEl.textContent =
+        'A save needs a line saying what it is — write one, or start from what changed and edit it.'
     } else if (picked) {
       this.footNoteEl.append(text('Saving keeps it on this machine only — that is all a '))
       this.footNoteEl.appendChild(gitWordFirst('commit'))
