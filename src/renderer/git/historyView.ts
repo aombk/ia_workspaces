@@ -52,6 +52,8 @@ export class HistoryView implements GitView {
   private readonly textInput: HTMLInputElement
   private readonly authorInput: HTMLInputElement
   private readonly contentInput: HTMLInputElement
+  private readonly unsentToggle: HTMLInputElement
+  private readonly unsentCount: HTMLSpanElement
   private readonly filterNote: HTMLDivElement
 
   private snapshot: RepoSnapshot | null = null
@@ -61,6 +63,16 @@ export class HistoryView implements GitView {
   private selected: string | null = null
   private limit = PAGE
   private filter: HistoryFilter = {}
+  /**
+   * Show only the saves that are on this disk and nowhere else.
+   *
+   * Not part of `HistoryFilter`, and that is the point: the other three are
+   * flags handed to `git log`, and this one is an answer the pane already has.
+   * `status.unsent` arrives with every refresh, so narrowing to it is a filter
+   * over the list in hand — no second call, and no way for the badges and the
+   * list to disagree about which saves they mean.
+   */
+  private unsentOnly = false
   private disposed = false
   /** True once this view has been looked at, so it never fetches unseen. */
   private awake = false
@@ -84,6 +96,26 @@ export class HistoryView implements GitView {
     this.textInput = this.searchBox('Words in the message', 'what the save says it did')
     this.authorInput = this.searchBox('Who saved it', 'a name or an email')
     this.contentInput = this.searchBox('Code that appeared or vanished', 'text from a file, not a message')
+
+    // Always in the row, disabled when it cannot mean anything, rather than
+    // appearing and disappearing with the repository — the search boxes beside
+    // it do not move when a remote is added.
+    const toggleWrap = document.createElement('label')
+    toggleWrap.className = 'history-search__toggle'
+    this.unsentToggle = document.createElement('input')
+    this.unsentToggle.type = 'checkbox'
+    this.unsentToggle.addEventListener('change', () => this.setUnsentOnly(this.unsentToggle.checked))
+    toggleWrap.appendChild(this.unsentToggle)
+    // The same words as the badge on the rows themselves, deliberately: a
+    // filter named differently from the thing it filters to reads as a second
+    // feature.
+    const toggleText = document.createElement('span')
+    toggleText.textContent = 'On this machine only'
+    toggleWrap.appendChild(toggleText)
+    this.unsentCount = document.createElement('span')
+    this.unsentCount.className = 'history-search__count'
+    toggleWrap.appendChild(this.unsentCount)
+    this.searchEl.appendChild(toggleWrap)
 
     this.filterNote = document.createElement('div')
     this.filterNote.className = 'history-filter-note'
@@ -224,7 +256,7 @@ export class HistoryView implements GitView {
       // A filtered list is a handful of saves plucked out of the middle of the
       // project, and the lines joining them are not there — so the picture is
       // only laid out when it would be telling the truth.
-      this.rows = this.hasFilter() ? [] : layoutGraph(commits)
+      this.rows = this.isNarrowed() ? [] : layoutGraph(commits)
     } catch {
       /* leave the last good picture up rather than blanking it */
       return
@@ -236,8 +268,46 @@ export class HistoryView implements GitView {
     return `${unsent}:${this.branches.map((b) => `${b.name}${b.head}`).join(',')}`
   }
 
+  /** What `git log` is asked for. The unsent toggle is not part of it. */
   private hasFilter(): boolean {
     return !!(this.filter.text || this.filter.author || this.filter.content || this.filter.path)
+  }
+
+  /**
+   * Whether the list on screen is a narrowed one, whoever narrowed it.
+   *
+   * Kept apart from `hasFilter` because the two answer different questions.
+   * That one decides what to ask git for; this one decides what the pane may
+   * claim to be showing — and the graph is the reason it matters. Lines between
+   * saves cannot be drawn through saves that are not in the list, so the
+   * picture goes away for *any* narrowing, including one git was never told
+   * about.
+   */
+  private isNarrowed(): boolean {
+    return this.hasFilter() || this.unsentOnly
+  }
+
+  /** The saves the list is actually showing. */
+  private visible(): Commit[] {
+    if (!this.unsentOnly) return this.commits
+    const unsent = new Set(this.snapshot?.status.unsent ?? [])
+    return this.commits.filter((commit) => unsent.has(commit.sha))
+  }
+
+  /**
+   * Turns the narrowing on or off.
+   *
+   * No refetch: the saves are already here and so is the set to keep. The graph
+   * is laid out again rather than left stale, and a selection that is no longer
+   * in the list is dropped — a detail pane describing a save you can no longer
+   * see in it is a pane describing something else.
+   */
+  private setUnsentOnly(on: boolean): void {
+    this.unsentOnly = on
+    this.unsentToggle.checked = on
+    this.rows = this.isNarrowed() ? [] : layoutGraph(this.commits)
+    if (this.selected && !this.visible().some((c) => c.sha === this.selected)) this.selected = null
+    this.render()
   }
 
   // ------------------------------------------------------------------ draw
@@ -250,21 +320,24 @@ export class HistoryView implements GitView {
   }
 
   private renderFilterNote(): void {
+    this.renderUnsentToggle()
     this.filterNote.replaceChildren()
-    if (!this.hasFilter()) {
+    if (!this.isNarrowed()) {
       this.filterNote.hidden = true
       return
     }
     this.filterNote.hidden = false
 
     const parts: string[] = []
+    if (this.unsentOnly) parts.push('only saves this machine has and the copy online does not')
     if (this.filter.path) parts.push(`only saves that touched ${this.filter.path}`)
     if (this.filter.text) parts.push(`message mentioning “${this.filter.text}”`)
     if (this.filter.author) parts.push(`saved by “${this.filter.author}”`)
     if (this.filter.content) parts.push(`where “${this.filter.content}” appeared or vanished`)
 
+    const shown = this.visible().length
     const label = document.createElement('span')
-    label.textContent = `Showing ${this.commits.length} save${this.commits.length === 1 ? '' : 's'}: ${parts.join(', ')}. The picture is hidden while the list is narrowed — the lines between these saves are not all here.`
+    label.textContent = `Showing ${shown} save${shown === 1 ? '' : 's'}: ${parts.join(', ')}. The picture is hidden while the list is narrowed — the lines between these saves are not all here.`
     this.filterNote.appendChild(label)
 
     const clear = document.createElement('button')
@@ -275,10 +348,41 @@ export class HistoryView implements GitView {
       this.textInput.value = ''
       this.authorInput.value = ''
       this.contentInput.value = ''
+      this.unsentOnly = false
+      this.unsentToggle.checked = false
       this.limit = PAGE
       void this.fetch(true)
     })
     this.filterNote.appendChild(clear)
+  }
+
+  /**
+   * The toggle's count, and whether it can be used at all.
+   *
+   * Without a copy online nothing has been sent, so "not sent" is every save
+   * and the filter would be the list it started from. The pane says that in a
+   * sentence of its own; the control greys out and says why rather than
+   * offering a narrowing that narrows nothing.
+   */
+  private renderUnsentToggle(): void {
+    const status = this.snapshot?.status
+    const count = status?.unsent.length ?? 0
+    const usable = Boolean(status?.hasRemote)
+    this.unsentToggle.disabled = !usable
+    this.unsentCount.textContent = usable && count ? String(count) : ''
+    this.unsentCount.hidden = !this.unsentCount.textContent
+    const wrap = this.unsentToggle.parentElement
+    if (wrap) {
+      wrap.classList.toggle('disabled', !usable)
+      wrap.title = usable
+        ? 'Show only the saves that exist on this disk and not on the copy online — the ones a send (git push) would carry.'
+        : 'There is no copy online yet, so no save has been sent and every one of them is on this machine only.'
+    }
+    // A remote can go away, or the last unsent save can be pushed from a
+    // terminal while this is narrowed to it. Leaving the box ticked over a list
+    // that is now empty for a reason nothing on screen explains is worse than
+    // quietly widening back out.
+    if (this.unsentOnly && !usable) this.unsentOnly = this.unsentToggle.checked = false
   }
 
   private renderBranches(): void {
@@ -330,12 +434,15 @@ export class HistoryView implements GitView {
 
   private renderList(): void {
     this.listEl.replaceChildren()
-    if (!this.commits.length) {
+    const commits = this.visible()
+    if (!commits.length) {
       const empty = document.createElement('div')
       empty.className = 'diff-empty'
-      empty.textContent = this.hasFilter()
-        ? 'No saves match what you are looking for.'
-        : 'No saves yet. Once you pick some files and save them in Changes, they appear here.'
+      empty.textContent = this.unsentOnly
+        ? 'Every save here is on the copy online. Nothing is waiting to be sent.'
+        : this.hasFilter()
+          ? 'No saves match what you are looking for.'
+          : 'No saves yet. Once you pick some files and save them in Changes, they appear here.'
       this.listEl.appendChild(empty)
       return
     }
@@ -345,7 +452,7 @@ export class HistoryView implements GitView {
     const lanes = Math.min(MAX_LANES, graphWidth(this.rows))
     const graphW = lanes * LANE_W + 8
 
-    this.commits.forEach((commit, index) => {
+    commits.forEach((commit, index) => {
       const el = document.createElement('button')
       el.className = 'history-row' + (commit.sha === this.selected ? ' active' : '')
 

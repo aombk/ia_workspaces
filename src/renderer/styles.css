@@ -7916,6 +7916,37 @@ html.translucent .titlebar {
   letter-spacing: 0;
 }
 
+/* A checkbox in a row of text boxes. `flex: none` so it takes its own width and
+   leaves the three searches theirs, and pinned to the end of the row so it sits
+   on the inputs' line rather than floating up beside their captions. */
+.history-search__toggle {
+  flex: none;
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 5px;
+  font-size: calc(11px * var(--ui-text, 1));
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* Greyed rather than gone: see `renderUnsentToggle`. */
+.history-search__toggle.disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.history-search__count {
+  padding: 1px 6px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-hover);
+  color: var(--text);
+  font-size: calc(10px * var(--ui-text, 1));
+  font-variant-numeric: tabular-nums;
+}
+
 /* Says what the list has been narrowed to, and — the part that matters — that
    the picture is missing because the lines between these saves are not here. */
 .history-filter-note {
