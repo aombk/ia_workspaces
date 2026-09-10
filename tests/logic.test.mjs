@@ -14,6 +14,7 @@ await build({
   entryPoints: {
     activityMonitor: 'src/main/activityMonitor.ts',
     agentState: 'src/main/agentState.ts',
+    powerLock: 'src/shared/powerLock.ts',
     scrollback: 'src/main/scrollback.ts',
     replaySafe: 'src/main/replaySafe.ts',
     replayRender: 'src/main/replayRender.ts',
@@ -43,6 +44,7 @@ await build({
 
 const { ActivityMonitor } = await import(`file://${out}/activityMonitor.js`)
 const { AgentStateRegistry, keyBytes, encodeKey } = await import(`file://${out}/agentState.js`)
+const { STALE_REPORT_MS } = await import(`file://${out}/powerLock.js`)
 const { RingBuffer, ScrollbackStore, stripEscapes, splitHeader } = await import(`file://${out}/scrollback.js`)
 const { stripInteractive, sanitizeReplay, REPLAY_RESET } = await import(`file://${out}/replaySafe.js`)
 const { renderReplay } = await import(`file://${out}/replayRender.js`)
@@ -171,6 +173,47 @@ console.log('AgentStateRegistry')
     assert.equal(r.snapshot('a').runDepth, 1)
     r.report('a', { runEnd: true, seq: 6 })
     assert.equal(r.snapshot('a').runDepth, 0)
+  })
+
+  check('an interrupted turn does not leave the count one deeper forever', () => {
+    // `Stop` is what brings the refcount down, and it does not fire for a turn
+    // somebody interrupted. Before this, every Ctrl+C left the pane one deeper
+    // and reading 'working' for the rest of the session — a real pane in this
+    // project was found sitting at nine, holding a wake lock for an agent that
+    // had not existed for hours.
+    let clock = 1_700_000_000_000
+    const t = new AgentStateRegistry(() => {}, () => clock)
+
+    t.report('a', { runStart: true })
+    assert.equal(t.snapshot('a').runDepth, 1)
+
+    // The turn is interrupted: no `runEnd` ever arrives, and the pane goes
+    // quiet for longer than a run is believed without a word.
+    clock += STALE_REPORT_MS + 1
+    t.report('a', { runStart: true })
+    assert.equal(t.snapshot('a').runDepth, 1, 'the new turn rebases rather than piling on')
+
+    clock += STALE_REPORT_MS + 1
+    t.report('a', { runStart: true })
+    t.report('a', { runEnd: true })
+    assert.equal(t.snapshot('a').state, 'idle', 'and one runEnd is still enough to finish it')
+  })
+
+  check('rebasing does not break a subagent inside a live turn', () => {
+    // The nesting this refcount exists for. A subagent starting a second
+    // inside its parent's turn is a report arriving while the pane is anything
+    // but silent, so it counts up as it always did.
+    let clock = 1_700_000_000_000
+    const t = new AgentStateRegistry(() => {}, () => clock)
+
+    t.report('a', { runStart: true })
+    clock += 1000
+    t.report('a', { runStart: true })
+    assert.equal(t.snapshot('a').runDepth, 2)
+    t.report('a', { runEnd: true })
+    assert.equal(t.snapshot('a').state, 'working', 'the outer run is still running')
+    t.report('a', { runEnd: true })
+    assert.equal(t.snapshot('a').state, 'idle')
   })
 
   check('blocked beats a running turn', () => {

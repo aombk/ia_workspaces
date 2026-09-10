@@ -2737,6 +2737,15 @@ export interface PaneAgentState {
   state: AgentRunState
   /** True while the agent is parked on a human. */
   awaitingHuman: boolean
+  /**
+   * When this pane's terminal last produced a byte, if anything is watching.
+   *
+   * Not something an agent declares — it is measured from the PTY, and it is
+   * the second of the two clocks the wake lock reads. A turn that goes twenty
+   * minutes between hooks is still visibly alive here. See
+   * `shared/powerLock.ts`.
+   */
+  lastOutputAt?: number
   /** Refcount, so a nested subagent finishing can't clear the outer run. */
   runDepth: number
   blockedReason: string | null

@@ -19,6 +19,8 @@
 interface PaneState {
   bytes: number
   windowStart: number
+  /** When this pane last produced a byte, or 0 if it never has. */
+  lastByteAt: number
   active: boolean
   /** An active→idle already fired; suppressed until a fresh burst re-arms. */
   notified: boolean
@@ -57,6 +59,7 @@ export class ActivityMonitor {
   start(paneId: string): void {
     this.panes.set(paneId, {
       bytes: 0,
+      lastByteAt: 0,
       windowStart: Date.now(),
       active: false,
       notified: false,
@@ -93,6 +96,7 @@ export class ActivityMonitor {
     if (!s) return
 
     const now = Date.now()
+    s.lastByteAt = now
     if (now - s.windowStart > ACTIVE_WINDOW_MS) {
       s.bytes = 0
       s.windowStart = now
@@ -137,6 +141,19 @@ export class ActivityMonitor {
 
   isActive(paneId: string): boolean {
     return this.panes.get(paneId)?.active ?? false
+  }
+
+  /**
+   * When this pane last produced a byte, or 0 if it never has.
+   *
+   * Separate from `isActive`, which is about *sustained* output and is what the
+   * "command finished" alert wants. The wake lock wants the opposite end of the
+   * same signal: not "is this busy" but "is this alive at all", where one byte
+   * is as good as a thousand. An agent thinking quietly still prints a spinner;
+   * an agent that has hung prints nothing. See `shared/powerLock.ts`.
+   */
+  lastOutputAt(paneId: string): number {
+    return this.panes.get(paneId)?.lastByteAt ?? 0
   }
 
   stop(paneId: string): void {

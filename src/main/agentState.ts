@@ -1,3 +1,4 @@
+import { STALE_REPORT_MS } from '../shared/powerLock'
 import type { AgentChoice, AgentRunState, PaneAgentState } from '../shared/types'
 
 /**
@@ -106,14 +107,23 @@ interface Waiter {
 export class AgentStateRegistry {
   private readonly records = new Map<string, Record_>()
 
-  constructor(private readonly onChange: (state: PaneAgentState) => void) {}
+  constructor(
+    private readonly onChange: (state: PaneAgentState) => void,
+    /**
+     * Injected for the same reason `PowerLock` takes one: the rules that turn
+     * on elapsed time — a metadata TTL, a run that has gone silent — are the
+     * ones worth testing, and a test that has to wait five real minutes to
+     * reach the interesting branch is a test nobody writes.
+     */
+    private readonly now: () => number = () => Date.now()
+  ) {}
 
   /**
    * Applies a report. Returns false when the report was rejected — a stale
    * `seq`, or a set of choices with nothing to send.
    */
   report(paneId: string, report: AgentReport): boolean {
-    const rec = this.records.get(paneId) ?? blank(paneId)
+    const rec = this.records.get(paneId) ?? blank(paneId, this.now())
 
     // Replayed hook events arrive out of order; only refcount changes are
     // order-sensitive, so that is all the sequence number guards.
@@ -147,7 +157,22 @@ export class AgentStateRegistry {
     if (report.runDepth !== undefined) {
       rec.runDepth = Math.max(0, Math.floor(report.runDepth))
     } else {
-      if (report.runStart) rec.runDepth += 1
+      // A refcount only comes back down when its matching `runEnd` arrives, and
+      // for Claude Code that rides on `Stop`, which does not fire for a turn
+      // that was interrupted. So every Ctrl+C used to leak one, permanently:
+      // the pane read `'working'` for the rest of the session, and a real pane
+      // in this project was found sitting at nine.
+      //
+      // A run that has not been heard from since before the staleness window is
+      // over, whatever its `runEnd` did — that is the same judgement the wake
+      // lock already makes about it, made once here instead. So a `runStart`
+      // arriving after that much silence rebases the count rather than piling
+      // onto it. Nesting still works: a subagent starting inside a live turn is
+      // a report arriving while the pane is anything but silent.
+      if (report.runStart) {
+        const silent = this.now() - rec.updatedAt > STALE_REPORT_MS
+        rec.runDepth = silent ? 1 : rec.runDepth + 1
+      }
       if (report.runEnd) rec.runDepth = Math.max(0, rec.runDepth - 1)
     }
 
@@ -172,10 +197,10 @@ export class AgentStateRegistry {
       report.tokens !== undefined ||
       report.progress !== undefined
     ) {
-      rec.metaExpiresAt = Date.now() + (report.ttl && report.ttl > 0 ? report.ttl : DEFAULT_METADATA_TTL_MS)
+      rec.metaExpiresAt = this.now() + (report.ttl && report.ttl > 0 ? report.ttl : DEFAULT_METADATA_TTL_MS)
     }
 
-    rec.updatedAt = Date.now()
+    rec.updatedAt = this.now()
     this.records.set(paneId, rec)
     this.onChange(this.snapshot(paneId))
     return true
@@ -198,14 +223,14 @@ export class AgentStateRegistry {
     const clean = sanitizeChoices(choices)
     if (!clean.length) return false
 
-    const rec = this.records.get(paneId) ?? blank(paneId)
+    const rec = this.records.get(paneId) ?? blank(paneId, this.now())
     const displaced = rec.waiter
     rec.awaitingHuman = true
     rec.blockedReason = question || null
     rec.choices = clean
     rec.answeredAt = null
     rec.waiter = waiter
-    rec.updatedAt = Date.now()
+    rec.updatedAt = this.now()
     this.records.set(paneId, rec)
     displaced?.settle({ id: '', label: '' })
     this.onChange(this.snapshot(paneId))
@@ -239,7 +264,7 @@ export class AgentStateRegistry {
     rec.awaitingHuman = false
     rec.blockedReason = null
     rec.choices = []
-    rec.answeredAt = Date.now()
+    rec.answeredAt = this.now()
     waiter.settle(choice)
     this.onChange(this.snapshot(paneId))
     return choice
@@ -269,7 +294,7 @@ export class AgentStateRegistry {
     rec.awaitingHuman = false
     rec.blockedReason = null
     rec.choices = []
-    rec.updatedAt = Date.now()
+    rec.updatedAt = this.now()
     // Owed an answer even though this one did not come through the ask: a
     // caller parked on this pane would otherwise hold its connection open
     // until its own deadline.
@@ -291,7 +316,7 @@ export class AgentStateRegistry {
     rec.awaitingHuman = false
     rec.blockedReason = null
     rec.choices = []
-    rec.updatedAt = Date.now()
+    rec.updatedAt = this.now()
     // Settled, not merely dropped: the caller is owed an answer even when the
     // answer is "nobody picked one", and a waiter released without one would
     // sit on its connection until its own deadline ran out.
@@ -333,7 +358,7 @@ export class AgentStateRegistry {
   markAnswered(paneId: string): void {
     const rec = this.records.get(paneId)
     if (!rec) return
-    rec.answeredAt = Date.now()
+    rec.answeredAt = this.now()
     this.onChange(this.snapshot(paneId))
   }
 
@@ -356,7 +381,7 @@ export class AgentStateRegistry {
       // News of a closure is news, and it is current. The state is `unknown`
       // so nothing counts it as working regardless, but dating it now rather
       // than at the epoch keeps "when did we last hear about this pane" true.
-      updatedAt: Date.now(),
+      updatedAt: this.now(),
     })
   }
 
@@ -376,7 +401,7 @@ export class AgentStateRegistry {
         updatedAt: 0,
       }
     }
-    const fresh = !rec.metaExpiresAt || rec.metaExpiresAt > Date.now()
+    const fresh = !rec.metaExpiresAt || rec.metaExpiresAt > this.now()
     return {
       paneId,
       state: stateOf(rec),
@@ -402,7 +427,7 @@ export class AgentStateRegistry {
   }
 }
 
-function blank(paneId: string): Record_ {
+function blank(paneId: string, now: number): Record_ {
   return {
     paneId,
     awaitingHuman: false,
@@ -412,7 +437,7 @@ function blank(paneId: string): Record_ {
     answeredAt: null,
     failed: false,
     lastSeq: 0,
-    updatedAt: Date.now(),
+    updatedAt: now,
   }
 }
 

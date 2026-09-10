@@ -1031,7 +1031,15 @@ export class PtyManager {
   }
 
   agentState(paneId?: string): PaneAgentState[] {
-    return paneId ? [this.agents.snapshot(paneId)] : this.agents.all()
+    const states = paneId ? [this.agents.snapshot(paneId)] : this.agents.all()
+    // Stamped on the way out rather than kept in the registry: the registry
+    // holds what agents have *said*, and this is a fact about a terminal that
+    // nobody said anything about. The wake lock needs both — see
+    // `shared/powerLock.ts` — and everything else can ignore it.
+    return states.map((state) => ({
+      ...state,
+      lastOutputAt: this.activity.lastOutputAt(state.paneId) || undefined,
+    }))
   }
 
   /**

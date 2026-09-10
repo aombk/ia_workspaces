@@ -29,6 +29,20 @@
  * agent state change would be the last evaluation, and a crashed agent would
  * hold the lock until the app was quit: precisely the failure the staleness
  * rule exists to prevent.
+ *
+ * ## Why the timer is not always running
+ *
+ * Because for almost the whole life of the app there is nothing for it to
+ * notice. A timer that ticks every fifteen seconds from launch to quit spends
+ * the overwhelming majority of those ticks filtering an empty array on a
+ * machine where no agent has run for hours — and the entire point of this file
+ * is not wasting a laptop's power on things that do not need doing.
+ *
+ * So it runs only while something could actually change under it: the gate is
+ * open — the feature is on, and the power source allows it — and at least one
+ * pane still claims to be working. Nothing claiming to work means nothing to
+ * expire, and the report that starts the next run is itself an event that
+ * arms this again.
  */
 import { powerMonitor, powerSaveBlocker } from 'electron'
 import { shouldHoldAwake, type AwakeVerdict, type KeepAwakeMode } from '../shared/powerLock'
@@ -37,15 +51,19 @@ import type { PaneAgentState } from '../shared/types'
 /**
  * How often the verdict is recomputed with nothing else prompting it.
  *
- * Fifteen seconds, chosen against the two deadlines it sits between. It has to
- * be well under the shortest sleep timer anybody sets — a minute, on the most
- * aggressive laptop — so that an agent starting work is covered before the
- * machine goes down. And it only has to be a fraction of `STALE_REPORT_MS`,
- * five minutes, for a dead agent to stop holding the lock promptly once its
- * report goes stale. Fifteen seconds clears both with room to spare, and the
- * work it does is filtering an array that is almost always empty.
+ * This used to be fifteen seconds, justified by needing to beat the shortest
+ * sleep timer anybody sets so that an agent *starting* work was covered before
+ * the machine went down. That reasoning was left over from before the fast
+ * path existed: starting is an event, and `main.ts` calls `evaluate` on it. So
+ * is a power source changing, a setting changing, and a quiet pane finding its
+ * voice again. Nothing that begins a hold waits for this timer.
+ *
+ * What is left is the one transition with no event behind it — a pane going
+ * quiet — and being slow to notice that costs nothing but a little extra
+ * wakefulness. Thirty seconds against a five-minute staleness window is a tenth
+ * of the deadline, and half the wakeups.
  */
-const POLL_MS = 15_000
+const POLL_MS = 30_000
 
 export interface PowerLockStatus extends AwakeVerdict {
   /**
@@ -74,12 +92,6 @@ export class PowerLock {
     private readonly mode: () => KeepAwakeMode,
     private readonly now: () => number = () => Date.now()
   ) {
-    this.timer = setInterval(() => this.evaluate(), POLL_MS)
-    // Unreferenced so this interval alone can never be the reason the process
-    // stays alive. A wake lock that keeps the app running would be a joke at
-    // its own expense.
-    this.timer.unref?.()
-
     // A power source that changes is the one event that must not wait for the
     // poll: unplugging a laptop under `'ac'` should drop the lock there and
     // then, while the user is still holding the cable and able to connect the
@@ -101,16 +113,39 @@ export class PowerLock {
   evaluate = (): void => {
     if (this.disposed) return
 
-    const verdict = shouldHoldAwake(
-      this.panes().map((p) => ({ paneId: p.paneId, state: p.state, updatedAt: p.updatedAt })),
-      this.mode(),
-      powerMonitor.onBatteryPower,
-      this.now()
-    )
+    const panes = this.panes().map((p) => ({
+      paneId: p.paneId,
+      state: p.state,
+      updatedAt: p.updatedAt,
+      lastOutputAt: p.lastOutputAt,
+    }))
+    const verdict = shouldHoldAwake(panes, this.mode(), powerMonitor.onBatteryPower, this.now())
     this.last = verdict
 
     if (verdict.hold) this.acquire()
     else this.release()
+
+    // Armed on what could still change without anyone saying so. A pane that
+    // claims to be working can go quiet; nothing else here moves on its own.
+    // `'off'` and `'battery'` are the gate being shut, and it only reopens on
+    // an event that calls this again.
+    const gateOpen = verdict.reason !== 'off' && verdict.reason !== 'battery'
+    this.arm(gateOpen && panes.some((p) => p.state === 'working'))
+  }
+
+  /** Starts or stops the safety-net poll. Idempotent in both directions. */
+  private arm(wanted: boolean): void {
+    if (wanted === (this.timer !== null)) return
+    if (!wanted) {
+      if (this.timer) clearInterval(this.timer)
+      this.timer = null
+      return
+    }
+    this.timer = setInterval(() => this.evaluate(), POLL_MS)
+    // Unreferenced so this interval alone can never be the reason the process
+    // stays alive. A wake lock that keeps the app running would be a joke at
+    // its own expense.
+    this.timer.unref?.()
   }
 
   private acquire(): void {
@@ -163,8 +198,7 @@ export class PowerLock {
 
   dispose(): void {
     this.disposed = true
-    if (this.timer) clearInterval(this.timer)
-    this.timer = null
+    this.arm(false)
     powerMonitor.off('on-ac', this.evaluate)
     powerMonitor.off('on-battery', this.evaluate)
     powerMonitor.off('suspend', this.release)

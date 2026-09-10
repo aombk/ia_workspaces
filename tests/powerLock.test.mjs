@@ -33,7 +33,7 @@ await build({
   outdir: out,
 })
 
-const { shouldHoldAwake, KEEP_AWAKE_MODES, STALE_REPORT_MS } = await import(
+const { shouldHoldAwake, KEEP_AWAKE_MODES, STALE_REPORT_MS, MAX_SILENT_RUN_MS } = await import(
   `file://${out}/powerLock.js`
 )
 
@@ -512,6 +512,73 @@ console.log('Edges')
     for (let i = 0; i < 5; i++) {
       assert.deepEqual(shouldHoldAwake(panes, 'ac', ON_MAINS, NOW), first)
     }
+  })
+}
+
+// ------------------------------------------- the other clock: what it printed
+
+// The failure these cover is the one the feature exists to prevent, and it
+// survived in it for a long time. Claude Code's hooks fire at the edges of a
+// turn — a prompt opens it, `Stop` closes it — so a turn that spends twenty
+// minutes inside one tool call reports once and then goes quiet, and five
+// minutes in it looked exactly like an agent that had died. The bytes its
+// terminal is still printing are the difference, and now they count.
+{
+  /** A pane that reported `said` ago and last printed something `printed` ago. */
+  const printing = (paneId, state, said, printed) => ({
+    paneId,
+    state,
+    updatedAt: NOW - said,
+    lastOutputAt: NOW - printed,
+  })
+
+  check('a long turn that is still printing keeps the machine up', () => {
+    const panes = [printing('a', 'working', STALE_REPORT_MS * 3, 2000)]
+    expect(shouldHoldAwake(panes, 'on', ON_MAINS, NOW), true, 'working', ['a'])
+  })
+
+  check('a turn that stopped printing as well as reporting does not', () => {
+    const panes = [printing('a', 'working', STALE_REPORT_MS * 3, STALE_REPORT_MS + 1)]
+    expect(shouldHoldAwake(panes, 'on', ON_MAINS, NOW), false, 'stale')
+  })
+
+  check('output alone cannot hold it forever', () => {
+    // The pane whose turn never closed, in a terminal that never shuts up: a
+    // `tail -f` beside an interrupted agent would otherwise be a laptop that
+    // never sleeps again.
+    const panes = [printing('a', 'working', MAX_SILENT_RUN_MS + 1, 1000)]
+    expect(shouldHoldAwake(panes, 'on', ON_MAINS, NOW), false, 'stale')
+  })
+
+  check('a report inside the ceiling is enough on its own', () => {
+    // The ceiling is about output carrying a silent run, never about a pane
+    // that is talking to us.
+    const panes = [printing('a', 'working', 1000, MAX_SILENT_RUN_MS * 2)]
+    expect(shouldHoldAwake(panes, 'on', ON_MAINS, NOW), true, 'working', ['a'])
+  })
+
+  check('a pane with no output clock decides exactly as it did before', () => {
+    expect(shouldHoldAwake([fresh('a', 'working')], 'on', ON_MAINS, NOW), true, 'working', ['a'])
+    expect(shouldHoldAwake([stale('a', 'working')], 'on', ON_MAINS, NOW), false, 'stale')
+  })
+
+  check('printing does not make a blocked pane hold it', () => {
+    // The pane is parked on a permission prompt and Claude is still redrawing
+    // its own box around it. Waiting is waiting, however busy it looks.
+    const panes = [printing('a', 'blocked', 1000, 100)]
+    expect(shouldHoldAwake(panes, 'on', ON_MAINS, NOW), false, 'idle')
+  })
+
+  check('an output clock from the future is not believed either', () => {
+    const panes = [
+      { paneId: 'a', state: 'working', updatedAt: NOW - 1000, lastOutputAt: NOW + 600_000 },
+    ]
+    expect(shouldHoldAwake(panes, 'on', ON_MAINS, NOW), false, 'stale')
+  })
+
+  check('one printing worker is enough among panes that have gone quiet', () => {
+    const panes = [stale('a', 'working'), printing('b', 'working', STALE_REPORT_MS * 2, 500)]
+    expect(shouldHoldAwake(panes, 'on', ON_MAINS, NOW), true, 'working', ['b'])
   })
 }
 

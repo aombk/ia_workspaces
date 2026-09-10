@@ -84,10 +84,14 @@ export function hookEvents(iawPath: string): Record<string, string> {
     // brings it back down; the refcount nests, so a subagent finishing cannot
     // clear the outer run.
     //
-    // Unbalanced reports are survivable by design: nothing expires `runDepth`,
-    // but the wake lock stops counting a pane that has not reported in five
-    // minutes, so a `Stop` that never arrives costs a stale badge rather than
-    // a machine that never sleeps. See `shared/powerLock.ts`.
+    // `--run-depth 1` alongside, because a prompt from a human is the top of a
+    // turn by definition: whatever was running before it has stopped, and the
+    // count is one. Said absolutely rather than as an increment because `Stop`
+    // does not fire for an interrupted turn, so `--run-start` alone left a
+    // pane one deeper after every Ctrl+C — nine deep, in this project's own
+    // window, reading `'working'` with nothing running at all. `--run-start`
+    // stays for what else it means: a turn beginning clears the last one's
+    // verdict and its progress bar. See `agentState.ts`.
     //
     // `--unblocked` rides along because submitting a prompt is the one thing we
     // can read as an answer without guessing. `Notification` fires for an idle
@@ -101,7 +105,7 @@ export function hookEvents(iawPath: string): Record<string, string> {
     // stopped asking is the failure this feature exists to prevent. A submitted
     // prompt is different in kind — the agent has been given something to do,
     // so whatever it was parked on is over. See `agentState.ts`.
-    UserPromptSubmit: `${iaw} session --quiet${hush}; ${iaw} report-agent --run-start --unblocked${hush}`,
+    UserPromptSubmit: `${iaw} session --quiet${hush}; ${iaw} report-agent --run-start --run-depth 1 --unblocked${hush}`,
   }
 }
 

@@ -801,7 +801,15 @@ function bootApp(): void {
 
   function registerIpc(): void {
     ipcMain.handle(IPC.loadState, () => store.state)
-    ipcMain.handle(IPC.saveState, (_e, next: unknown) => store.save(next))
+    ipcMain.handle(IPC.saveState, (_e, next: unknown) => {
+      store.save(next)
+      // The keep-awake setting arrives in here with everything else, and
+      // turning it off is a request about *now* — the poll used to be what
+      // eventually noticed, which meant a setting that took effect somewhere
+      // in the next half-minute and, with the poll no longer always running,
+      // one that might not take effect at all.
+      powerLock?.evaluate()
+    })
 
     ipcMain.handle(IPC.listShells, () => listShells(store.settings))
     ipcMain.handle(IPC.homeDir, () => app.getPath('home'))
@@ -1521,6 +1529,12 @@ function bootApp(): void {
           // ordinary one. Cheap enough to call on every status: it filters a
           // short array and usually changes nothing.
           if (s.agent) powerLock?.evaluate()
+          // Output is the wake lock's other clock — a turn can go twenty
+          // minutes between hooks and still be visibly alive — so a pane
+          // finding its voice again is the event that can end a release. The
+          // poll would notice too, half a minute later, which is half a minute
+          // of a machine that might have gone down in the meantime.
+          if (s.activity === 'active') powerLock?.evaluate()
           // Two different facts arrive on one channel. Split them, because a
           // reader watching for "an agent needs me" should not have to wade
           // through a throughput detector's opinion of every pane.

@@ -114,7 +114,7 @@ check('submitting a prompt reports the pane unblocked', () => {
   const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
   const commands = config.hooks.UserPromptSubmit.flatMap((g) => g.hooks.map((h) => h.command))
   assert.ok(
-    commands.some((c) => c.includes('report-agent --run-start --unblocked')),
+    commands.some((c) => c.includes('report-agent --run-start --run-depth 1 --unblocked')),
     'UserPromptSubmit does not clear the blocked flag'
   )
 })
@@ -129,7 +129,7 @@ check('an outdated handler of ours is reported as not installed', () => {
     for (const handler of group.hooks) {
       if (handler.command.includes('report-agent')) {
         // Exactly what the previous version wrote.
-        handler.command = handler.command.replace(' --run-start --unblocked', ' --run-start')
+        handler.command = handler.command.replace(' --run-start --run-depth 1 --unblocked', ' --run-start')
       }
     }
   }
@@ -144,7 +144,7 @@ check('installing over it rewrites the stale handler in place', () => {
   // Updated, not duplicated: one handler of ours on the event, and it is current.
   const ours = commands.filter((c) => c.includes('report-agent'))
   assert.equal(ours.length, 1)
-  assert.ok(ours[0].includes('--run-start --unblocked'))
+  assert.ok(ours[0].includes('--run-start --run-depth 1 --unblocked'))
   assert.equal(readClaudeSettings().hooksInstalled, true)
 })
 

@@ -32,9 +32,32 @@
  * cost of a badge being wrong is a wrong word on screen, and the cost of the
  * lock being wrong is somebody's morning.
  *
- * A real agent working steadily reports far more often than this window, so
- * nothing legitimate is cut short by it. It is a dead-man's switch, not a
- * timeout.
+ * It is a dead-man's switch, not a timeout.
+ *
+ * ## Why a report is not the only sign of life
+ *
+ * That rule used to rest on an assumption — that an agent working steadily
+ * reports far more often than the window — and the assumption was wrong in the
+ * direction that costs a night. Claude Code's hooks fire at the *edges* of a
+ * turn and nowhere in the middle: `UserPromptSubmit` opens one, `Stop` closes
+ * it, `Notification` fires when it wants a human. A turn that spends twenty
+ * minutes on one long tool call reports at minute zero and then says nothing at
+ * all, so five minutes in it read as stale and the machine was free to
+ * suspend — with the agent working and the job a tenth done, which is the exact
+ * scenario this whole feature exists to prevent.
+ *
+ * So a pane is fresh if *either* clock is: its last report, or the last byte
+ * its terminal produced. Output is the signal `activityMonitor.ts` already
+ * watches, for the same reason it is the right one here — "the only observable
+ * difference between thinking and waiting for you is that the bytes stop". An
+ * agent that is working prints something; an agent that has hung prints
+ * nothing, and neither clock moves.
+ *
+ * `MAX_SILENT_RUN_MS` is the ceiling on that. Output alone cannot hold the lock
+ * forever, because a pane whose turn never closed — an interrupted run, a
+ * `Stop` hook that never fired — could otherwise be kept alive indefinitely by
+ * whatever else is printing in that terminal, which is a laptop that never
+ * sleeps again. Past the ceiling, only a report will do.
  */
 import type { AgentRunState } from './types'
 
@@ -72,12 +95,32 @@ export const STALE_REPORT_MS = 5 * 60_000
  */
 const FUTURE_TOLERANCE_MS = 60_000
 
+/**
+ * How long a run may go without a single report and still be believed, while
+ * its terminal keeps producing output.
+ *
+ * An hour. A genuine turn longer than this that has fired no hook at all —
+ * no `Notification`, no nested `Stop`, nothing — is not a turn that is still
+ * running; it is a refcount that never came down. The ceiling bounds the worst
+ * case at an hour of lost sleep instead of a whole night, and in ordinary use
+ * nothing comes close to reaching it.
+ */
+export const MAX_SILENT_RUN_MS = 60 * 60_000
+
 /** Just enough of a pane's agent state to decide. */
 export interface AwakePane {
   paneId: string
   state: AgentRunState
   /** Epoch milliseconds of this pane's last report. */
   updatedAt: number
+  /**
+   * Epoch milliseconds of the last byte this pane's terminal produced.
+   *
+   * Optional because it is a fact about a terminal and this function is also
+   * asked about panes in the abstract. Absent is treated as "never", which
+   * leaves the decision exactly where it was before output was consulted.
+   */
+  lastOutputAt?: number
 }
 
 /**
@@ -139,8 +182,15 @@ export function shouldHoldAwake(
   // Bounded at both ends. Too old is a pane that has stopped talking; too far
   // ahead is a clock that cannot be trusted to tell us when it stops.
   const fresh = working.filter((p) => {
-    const age = now - p.updatedAt
-    return age <= STALE_REPORT_MS && age >= -FUTURE_TOLERANCE_MS
+    const said = now - p.updatedAt
+    const printed = p.lastOutputAt ? now - p.lastOutputAt : Number.POSITIVE_INFINITY
+    // The more recent of the two, which for a future-stamped clock is the more
+    // negative — so the tolerance below still sees the one worth catching.
+    const age = Math.min(said, printed)
+    if (age > STALE_REPORT_MS || age < -FUTURE_TOLERANCE_MS) return false
+    // Output can carry a quiet turn, but only so far: past the ceiling the pane
+    // has to have said something itself.
+    return said <= MAX_SILENT_RUN_MS
   })
   if (!fresh.length) {
     // Something claims to be working and nothing has been heard from it. Said
