@@ -144,16 +144,6 @@ export class ChangesView implements GitView {
     const buttons = document.createElement('div')
     buttons.className = 'diff-foot__buttons'
 
-    // First in the row because it happens before the save, and never in the
-    // primary style: the message is the part you write, and a button offering
-    // to start it should not look like the one that finishes.
-    this.draftBtn = gitButton('write a first message from what is picked', 'git diff --cached', {
-      className: 'diff-btn',
-    })
-    this.draftBtn.addEventListener('click', () => void this.draft())
-    explain(this.draftBtn, 'diff', 'staged')
-    buttons.appendChild(this.draftBtn)
-
     this.saveBtn = gitButton('save what you picked', 'git commit', { className: 'diff-btn primary' })
     this.saveBtn.addEventListener('click', () => void this.save())
     explain(this.saveBtn, 'commit')
@@ -163,6 +153,19 @@ export class ChangesView implements GitView {
     this.sendBtn.addEventListener('click', () => void this.send())
     explain(this.sendBtn, 'push', 'origin')
     buttons.appendChild(this.sendBtn)
+
+    // On its own line under save and send, and never in the primary style: the
+    // message is the part you write, and a button offering to start it should
+    // not look like the one that finishes.
+    const draftRow = document.createElement('div')
+    draftRow.className = 'diff-foot__draft'
+    this.draftBtn = gitButton('write a first message from what is picked', 'git diff --cached', {
+      className: 'diff-btn',
+    })
+    this.draftBtn.addEventListener('click', () => void this.draft())
+    explain(this.draftBtn, 'diff', 'staged')
+    draftRow.appendChild(this.draftBtn)
+    buttons.appendChild(draftRow)
 
     this.footNoteEl = document.createElement('div')
     this.footNoteEl.className = 'diff-foot__note'

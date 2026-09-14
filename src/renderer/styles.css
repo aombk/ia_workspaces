@@ -3881,6 +3881,11 @@ button:disabled .gw-note {
   flex-wrap: wrap;
 }
 
+.diff-foot__draft {
+  flex: 1 1 100%;
+  display: flex;
+}
+
 .diff-foot__note {
   flex: 1 1 100%;
   font-size: calc(11px * var(--ui-text, 1));
