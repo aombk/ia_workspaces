@@ -43,6 +43,15 @@ export interface AgentHookSpec {
    */
   matcherGroups: boolean
   /**
+   * Event name → the matcher our group on that event should carry, for the
+   * events where the empty "match everything" matcher is wrong. Only read when
+   * `matcherGroups` is set; an event not named here gets `''`.
+   *
+   * Exists for Claude Code's `Notification`, which fires for an idle prompt as
+   * well as for a real question — see `claudeConfig.ts`.
+   */
+  matchers?: Record<string, string>
+  /**
    * Anything the user has to do that installing cannot do for them.
    *
    * Shown in Settings beside the button. Exists for Codex, which gates hooks
@@ -98,6 +107,10 @@ export function mergeHooks(
   for (const [event, command] of Object.entries(spec.commands(iawPath))) {
     const groups = Array.isArray(hooks[event]) ? [...(hooks[event] as unknown[])] : []
     const wanted = hookShape(command)
+    const matcher = spec.matchers?.[event] ?? ''
+    const fresh = spec.matcherGroups
+      ? { matcher, hooks: [{ type: 'command', command }] }
+      : { hooks: [{ type: 'command', command }] }
 
     // An earlier version of this app may already have written a handler here.
     // Finding one is not the end of the question: if what it runs has since
@@ -107,11 +120,22 @@ export function mergeHooks(
     // handler of ours whose instruction no longer matches is rewritten in
     // place, keeping its position among whatever else the user has on the
     // event.
+    //
+    // The matcher is part of the instruction too. A group of ours matching the
+    // wrong thing is stale however current its command is; if it holds only
+    // our handlers its matcher is corrected in place, and if the user put
+    // handlers of their own beside ours, ours move out into a group of their
+    // own rather than changing what the user's handlers fire on.
     let found = false
     let stale = false
-    const refreshed = groups.map((group) => {
+    let evicted = false
+    const refreshed: unknown[] = []
+    for (const group of groups) {
       const handlers = (group as { hooks?: unknown[] })?.hooks
-      if (!Array.isArray(handlers)) return group
+      if (!Array.isArray(handlers)) {
+        refreshed.push(group)
+        continue
+      }
       let touched = false
       const next = handlers.map((h) => {
         const current = (h as { command?: unknown })?.command
@@ -122,11 +146,25 @@ export function mergeHooks(
         touched = true
         return { ...(h as object), command }
       })
-      return touched ? { ...(group as object), hooks: next } : group
-    })
+      const ours = next.filter((h) => isOurHook((h as { command?: unknown })?.command))
+      const wrongMatcher =
+        spec.matcherGroups && ours.length > 0 && (group as { matcher?: unknown }).matcher !== matcher
+      if (!wrongMatcher) {
+        refreshed.push(touched ? { ...(group as object), hooks: next } : group)
+        continue
+      }
+      stale = true
+      if (ours.length === next.length) {
+        refreshed.push({ ...(group as object), matcher, hooks: next })
+      } else {
+        evicted = true
+        refreshed.push({ ...(group as object), hooks: next.filter((h) => !ours.includes(h)) })
+      }
+    }
 
     if (found) {
       if (!stale) continue
+      if (evicted) refreshed.push(fresh)
       // Rewriting one counts the same as adding one: both mean the file on disk
       // is not yet what this version installs, which is exactly what `added`
       // is read for.
@@ -135,11 +173,7 @@ export function mergeHooks(
       continue
     }
 
-    groups.push(
-      spec.matcherGroups
-        ? { matcher: '', hooks: [{ type: 'command', command }] }
-        : { hooks: [{ type: 'command', command }] }
-    )
+    groups.push(fresh)
     hooks[event] = groups
     added++
   }

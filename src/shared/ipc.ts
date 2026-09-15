@@ -103,6 +103,7 @@ export const IPC = {
   ptySleep: 'pty:sleep',
   ptyIsBusy: 'pty:isBusy',
   agentAnswer: 'agent:answer',
+  agentDismiss: 'agent:dismiss',
   agentState: 'agent:state',
   pasteImage: 'clipboard:pasteImage',
   clipboardImage: 'clipboard:image',

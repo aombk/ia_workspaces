@@ -142,6 +142,7 @@ export function createElectronBackend(): Backend {
 
     agent: {
       answer: (paneId, choiceId) => api.agent.answer(paneId, choiceId),
+      dismiss: (paneId) => api.agent.dismiss(paneId),
       state: (paneId) => api.agent.state(paneId),
     },
 

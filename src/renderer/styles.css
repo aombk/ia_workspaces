@@ -6130,6 +6130,24 @@ thead .csv-cell {
   font-size: calc(11px * var(--ui-text, 1));
 }
 
+.pane-blocked__dismiss {
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: calc(14px * var(--ui-text, 1));
+  line-height: 1;
+}
+
+.pane-blocked__dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 /* ---------------------------------------------------------- image-notes editor */
 
 /*

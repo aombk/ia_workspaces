@@ -460,7 +460,9 @@ export class TerminalManager {
     // `programWheel.ts` for why guessing at the hardware was abandoned.
     term.attachCustomWheelEventHandler(programWheelDriver(term, element))
 
-    // Absolutely positioned, so it never enters xterm's size measurement.
+    // Absolutely positioned into the pane's bottom padding, which
+    // `syncBlockedInset` sizes to fit it — so it takes rows from the terminal
+    // rather than covering them.
     const blockedBar = document.createElement('div')
     blockedBar.className = 'pane-blocked'
     blockedBar.hidden = true
@@ -1619,6 +1621,7 @@ export class TerminalManager {
       if (indicator) inst.element.dataset.status = indicator
       else delete inst.element.dataset.status
       this.renderBlockedBar(inst)
+      if (this.syncBlockedInset(inst)) this.fit(inst)
       this.renderTurnBar(inst)
       this.renderProgress(inst)
     }
@@ -1673,6 +1676,34 @@ export class TerminalManager {
       sent.textContent = 'answer sent'
       inst.blockedBar.appendChild(sent)
     }
+
+    const close = document.createElement('button')
+    close.className = 'pane-blocked__dismiss'
+    close.textContent = '×'
+    close.title = 'Dismiss — not waiting on this'
+    close.setAttribute('aria-label', 'Dismiss')
+    close.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void backend().agent.dismiss(inst.paneId)
+    })
+    inst.blockedBar.appendChild(close)
+  }
+
+  /**
+   * Makes room for the blocked bar instead of drawing it over the last rows.
+   *
+   * The bar used to float, on the reasoning that a strip in the layout reflows
+   * the scrollback when it comes and goes. But it covered the very prompt it
+   * was announcing, which is worse. Padding rather than a flex sibling because
+   * the fit addon already subtracts the pane's padding when it measures, and
+   * the bar is positioned into that padding. Measured each time, because the
+   * bar wraps on a narrow pane.
+   */
+  private syncBlockedInset(inst: Instance): boolean {
+    const next = inst.blockedBar.hidden ? '' : `${inst.blockedBar.offsetHeight}px`
+    if (inst.element.style.paddingBottom === next) return false
+    inst.element.style.paddingBottom = next
+    return true
   }
 
   /**
@@ -1812,6 +1843,7 @@ export class TerminalManager {
   private fit(inst: Instance): void {
     if (!inst.element.isConnected || inst.disposed) return
     if (inst.element.clientHeight === 0 || inst.element.clientWidth === 0) return
+    this.syncBlockedInset(inst)
     try {
       inst.fit.fit()
     } catch {

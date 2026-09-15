@@ -148,6 +148,51 @@ check('installing over it rewrites the stale handler in place', () => {
   assert.equal(readClaudeSettings().hooksInstalled, true)
 })
 
+// `Notification` also fires as an idle reminder after a finished turn, and a
+// pane marked blocked on that showed "waiting for you" with nothing asked.
+const notificationGroup = (config) =>
+  config.hooks.Notification.find((g) => g.hooks.some((h) => h.command.includes('report-agent')))
+
+check('the blocked report only fires for a real question', () => {
+  const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  const matcher = notificationGroup(config).matcher
+  assert.ok(matcher.split('|').includes('permission_prompt'))
+  assert.ok(!matcher.includes('idle_prompt'))
+})
+
+check('an install matching every notification is upgraded in place', () => {
+  const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  // Exactly what the previous version wrote.
+  notificationGroup(config).matcher = ''
+  fs.writeFileSync(settingsFile, JSON.stringify(config, null, 2) + '\n')
+  assert.equal(readClaudeSettings().hooksInstalled, false)
+
+  setClaudeIntegration(true, stateDir, IAW)
+  const next = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  assert.equal(next.hooks.Notification.length, 1)
+  assert.ok(notificationGroup(next).matcher.includes('permission_prompt'))
+  assert.equal(readClaudeSettings().hooksInstalled, true)
+})
+
+check("a user's handler sharing our group keeps its matcher", () => {
+  const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  const group = notificationGroup(config)
+  group.matcher = ''
+  group.hooks.push({ type: 'command', command: 'echo every-notification' })
+  fs.writeFileSync(settingsFile, JSON.stringify(config, null, 2) + '\n')
+
+  setClaudeIntegration(true, stateDir, IAW)
+  const next = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  const theirs = next.hooks.Notification.find((g) => g.hooks.some((h) => h.command === 'echo every-notification'))
+  assert.equal(theirs.matcher, '')
+  assert.ok(!theirs.hooks.some((h) => h.command.includes('iaw')))
+  assert.ok(notificationGroup(next).matcher.includes('permission_prompt'))
+
+  // Put the file back the way the removal checks below expect it.
+  next.hooks.Notification = next.hooks.Notification.filter((g) => g !== theirs)
+  fs.writeFileSync(settingsFile, JSON.stringify(next, null, 2) + '\n')
+})
+
 // The path is not part of the instruction. A user who moved the app, or an
 // install from a build that wrote the bare word, is still current — rewriting
 // their config over a spelling difference is churn, not an upgrade.

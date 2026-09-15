@@ -1177,6 +1177,7 @@ function bootApp(): void {
     ipcMain.handle(IPC.agentAnswer, (_e, paneId: string, choiceId?: string) =>
       ptys.answerAgent(paneId, choiceId)
     )
+    ipcMain.handle(IPC.agentDismiss, (_e, paneId: string) => ptys.dismissAgent(paneId))
     ipcMain.handle(IPC.agentState, (_e, paneId?: string) => ptys.agentState(paneId))
 
     // The untitled buffers. `scratchBuffer.ts` validates the pane id and the

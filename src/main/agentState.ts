@@ -287,6 +287,17 @@ export class AgentStateRegistry {
    * say-so, because there the agent is the one that has to confirm.
    */
   submittedByHuman(paneId: string): void {
+    this.dismiss(paneId)
+  }
+
+  /**
+   * The human said "not waiting" — the × on a pane's blocked bar.
+   *
+   * Unlike an answer, this is the human's own say-so about the human's own
+   * attention, so it clears on our word. If the agent really is still asking,
+   * its next notification puts the bar back.
+   */
+  dismiss(paneId: string): void {
     const rec = this.records.get(paneId)
     if (!rec?.awaitingHuman) return
     const waiter = rec.waiter

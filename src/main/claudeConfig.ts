@@ -20,9 +20,9 @@ const NOTIF_VALUE = 'terminal_bell'
  * because `iaw` reads IAW_PANE_ID from the shell it inherits.
  *
  * `Notification` rather than `PermissionRequest`: it covers being asked to
- * approve a tool *and* the prompt sitting idle waiting to be answered, which is
- * the whole of "Claude wants you". Both would fire for an approval, and two
- * toasts for one event is worse than one.
+ * approve a tool *and* being asked a question, which is the whole of "Claude
+ * wants you". Both would fire for an approval, and two toasts for one event is
+ * worse than one. Its idle reminder is matched out — see `NOTIFICATION_MATCHER`.
  *
  * Event names verified against code.claude.com/docs/en/hooks.
  *
@@ -56,6 +56,8 @@ export function hookEvents(iawPath: string): Record<string, string> {
     // wake lock. Without it the app had no idea any agent was ever doing
     // anything — `runDepth` stayed 0, every pane read `idle`, and a feature
     // built on "an agent is working" could never fire. See `agentState.ts`.
+    //
+    // Only for a real question — see `NOTIFICATION_MATCHER`.
     Notification: `${iaw} notify --quiet --title "Claude Code" --body "is waiting for you"${hush}; ${iaw} report-agent --blocked "waiting for you"${hush}`,
     // A turn ended: the refcount comes back down, and anything that was parked
     // on a human is no longer parked, because the agent has stopped either way.
@@ -109,6 +111,22 @@ export function hookEvents(iawPath: string): Record<string, string> {
   }
 }
 
+/**
+ * Which of Claude Code's notifications mean it is waiting on an answer.
+ *
+ * `Notification` also fires as `idle_prompt`, a minute after a finished turn
+ * has sat unanswered. That is not a question: `Stop` has already said the turn
+ * is over, and marking the pane blocked on it put a "waiting for you" bar over
+ * every Claude pane left alone for a minute — and, since `blocked` releases the
+ * wake lock, it mislabelled an idle pane besides.
+ *
+ * An exact-name list, not a regex — Claude Code matches names containing only
+ * letters and underscores literally. Names verified against
+ * code.claude.com/docs/en/hooks.
+ */
+export const NOTIFICATION_MATCHER =
+  'permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input'
+
 function settingsPath(): string {
   return path.join(os.homedir(), '.claude', 'settings.json')
 }
@@ -127,6 +145,7 @@ const CLAUDE: AgentHookSpec = {
   label: 'Claude Code',
   settingsPath,
   matcherGroups: true,
+  matchers: { Notification: NOTIFICATION_MATCHER },
   commands: hookEvents,
 }
 

@@ -673,6 +673,8 @@ export interface Backend {
      * unless that pane is currently blocked and published that choice.
      */
     answer(paneId: string, choiceId?: string): Promise<{ ok: boolean; error?: string; label?: string }>
+    /** Clears a pane's "waiting for you" on the human's word. */
+    dismiss(paneId: string): Promise<void>
     state(paneId?: string): Promise<PaneAgentState[]>
   }
 

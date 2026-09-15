@@ -283,6 +283,7 @@ const api = {
   agent: {
     answer: (paneId: string, choiceId?: string): Promise<{ ok: boolean; error?: string; label?: string }> =>
       ipcRenderer.invoke(IPC.agentAnswer, paneId, choiceId),
+    dismiss: (paneId: string): Promise<void> => ipcRenderer.invoke(IPC.agentDismiss, paneId),
     state: (paneId?: string): Promise<PaneAgentState[]> => ipcRenderer.invoke(IPC.agentState, paneId),
   },
 

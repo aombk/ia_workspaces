@@ -1030,6 +1030,10 @@ export class PtyManager {
     return { ok: true, label: resolved.choice.label }
   }
 
+  dismissAgent(paneId: string): void {
+    this.agents.dismiss(paneId)
+  }
+
   agentState(paneId?: string): PaneAgentState[] {
     const states = paneId ? [this.agents.snapshot(paneId)] : this.agents.all()
     // Stamped on the way out rather than kept in the registry: the registry
