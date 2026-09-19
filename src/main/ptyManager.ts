@@ -110,6 +110,8 @@ interface Session {
    */
   pendingCommand: string | null
   pendingCommandTimer: NodeJS.Timeout | null
+  /** The line this app typed itself, until the shell reports it back. */
+  autoCommand: string | null
   /**
    * True only while replayed output is being pushed through the scanner.
    *
@@ -434,6 +436,7 @@ export class PtyManager {
       // ourselves. A plain shell reopens at an empty prompt.
       pendingCommand: resumeCommand(req.resumeSession, Date.now()),
       pendingCommandTimer: null,
+      autoCommand: null,
       replaying: false,
     }
 
@@ -470,12 +473,23 @@ export class PtyManager {
         // nothing for the renderer to persist when nothing changed.
         if (command === session.lastCommand) return
         session.lastCommand = command
+        // Ours, coming back to us: the shell reports the resume line exactly as
+        // it reports a typed one, because it *was* typed — by `sendPendingCommand`.
+        // Cleared as it is recognised, so a person who runs the same line
+        // themselves later is recorded normally.
+        const synthetic = command === session.autoCommand
+        if (synthetic) session.autoCommand = null
         // The folder travels with the line. Without it every entry recorded a
         // blank `cwd`, which is fine for a list you scroll and useless for
         // everything that asks "what do I run *here*" — the runbook filters on
         // it, and cross-machine sharing groups on it. The session has known the
         // folder all along; it simply was not on this message.
-        this.hooks.onMeta({ paneId: session.id, lastCommand: command, cwd: session.cwd })
+        this.hooks.onMeta({
+          paneId: session.id,
+          lastCommand: command,
+          cwd: session.cwd,
+          synthetic,
+        })
       },
     })
 
@@ -675,6 +689,9 @@ export class PtyManager {
       clearTimeout(session.pendingCommandTimer)
       session.pendingCommandTimer = null
     }
+    // Remembered until the shell echoes it back through OSC 133;E, which is the
+    // only way this side can tell our own line from a typed one.
+    session.autoCommand = command
     this.backend?.write(session.id, command + '\r')
   }
 

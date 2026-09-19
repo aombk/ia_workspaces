@@ -161,4 +161,78 @@ check('a history file of NUL bytes is recovered, not read as empty', () => {
   assert.equal(after[0].command, 'npm test')
 })
 
+// Forgetting. A history nobody can prune fills with lines that are no use — the
+// resume command a restored pane re-enters with, most of all.
+check('forgetting a command takes it out, in every folder it ran in', () => {
+  const h = fresh()
+  h.add('npm test', CWD, PANE)
+  h.add('npm test', 'C:\\work\\beta', PANE)
+  h.add('npm run build', CWD, PANE)
+  assert.equal(h.remove('npm test'), 2)
+  const left = h.recent(50)
+  assert.deepEqual(
+    left.map((e) => e.command),
+    ['npm run build']
+  )
+})
+
+check('forgetting in one folder leaves the same command elsewhere', () => {
+  const h = fresh()
+  h.add('npm test', CWD, PANE)
+  h.add('npm test', 'C:\\work\\beta', PANE)
+  assert.equal(h.remove('npm test', CWD), 1)
+  const left = h.recent(50)
+  assert.equal(left.length, 1)
+  assert.equal(left[0].cwd, 'C:\\work\\beta')
+})
+
+check('forgetting something that was never there changes nothing', () => {
+  const h = fresh()
+  h.add('npm test', CWD, PANE)
+  assert.equal(h.remove('npm run nope'), 0)
+  assert.equal(h.recent(50).length, 1)
+})
+
+// Written through immediately: forgetting is the one thing somebody may quit
+// straight after, and a delete that comes back after a restart is worse than
+// no delete at all.
+check('a forgotten command stays forgotten across a restart', () => {
+  const file = path.join(out, 'forget.json')
+  const h = new CommandHistory(file)
+  h.add('npm test', CWD, PANE)
+  h.add('secret --token abc', CWD, PANE)
+  h.remove('secret --token abc')
+  assert.deepEqual(
+    new CommandHistory(file)
+      .recent(50)
+      .map((e) => e.command),
+    ['npm test']
+  )
+})
+
+// The app types this into every restored agent pane, so a history written
+// before it was filtered out has one per pane per restart.
+check('resume lines recorded by an earlier version are dropped on load', () => {
+  const file = path.join(out, 'resume.json')
+  fs.writeFileSync(
+    file,
+    JSON.stringify([
+      { command: 'claude --resume 5a60f12b-7389-4c1c-a1fc-51e74d18b584', cwd: CWD, at: 3 },
+      { command: 'npm test', cwd: CWD, at: 2 },
+      // A person's own line, which happens to start the same way. Not ours to
+      // throw away: the id is not the shape this app generates.
+      { command: 'claude --resume latest', cwd: CWD, at: 1 },
+    ]),
+    'utf8'
+  )
+  assert.deepEqual(
+    new CommandHistory(file)
+      .recent(50)
+      .map((e) => e.command),
+    ['npm test', 'claude --resume latest']
+  )
+  // And the file itself no longer carries them, whatever happens next.
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('5a60f12b'))
+})
+
 console.log(`\n${passed} checks passed`)

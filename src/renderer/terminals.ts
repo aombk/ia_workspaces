@@ -833,7 +833,12 @@ export class TerminalManager {
     const token = ++this.layoutToken
     this.mountedTabId = tab.id
 
-    const signature = layoutSignature(tab)
+    // The rename target is part of what the tree looks like, not just of what
+    // the store holds: a pane header is built here and nowhere else, so a
+    // signature blind to it meant `beginRenamePane` rebuilt nothing and the
+    // input never appeared — and committing one left the input it did have on
+    // screen, already settled, with no second Enter or click able to dismiss it.
+    const signature = layoutSignature(tab) + `|rename:${this.renamingPane ?? ''}`
     let entry = this.trees.get(tab.id)
 
     if (!entry || entry.signature !== signature) {
@@ -1220,6 +1225,14 @@ export class TerminalManager {
         onCommit: (value) => {
           this.renamingPane = null
           store.renamePane(pane.id, value)
+          // Remounted here, exactly as the cancel path does, and not left to
+          // the store's own notification: `render` rebuilds the sidebar and the
+          // tab strip outright, but a pane header is only built by `showTab`,
+          // and `syncMountedTab` returns early for the tab already on screen.
+          // So committing a name changed the state and nothing else — the input
+          // stayed where it was, already settled, and no second Enter or click
+          // would dismiss it.
+          this.paneHooks?.remount()
         },
         onCancel: () => {
           this.renamingPane = null

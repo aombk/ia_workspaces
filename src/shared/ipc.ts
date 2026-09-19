@@ -38,6 +38,7 @@ export const IPC = {
   sessionHost: 'app:sessionHost',
   agentHooks: 'agent:hooks',
   commandHistory: 'app:commandHistory',
+  forgetCommand: 'app:forgetCommand',
   vaultList: 'app:vaultList',
   vaultFolder: 'app:vaultFolder',
   worktreeList: 'git:worktreeList',

@@ -57,6 +57,7 @@ export function createElectronBackend(): Backend {
     apps: api.apps,
     sessionHost: () => api.sessionHost(),
     commandHistory: () => api.commandHistory(),
+    forgetCommand: (command, cwd) => api.forgetCommand(command, cwd),
     vault: {
       list: () => api.vaultList(),
       folder: () => api.vaultFolder(),

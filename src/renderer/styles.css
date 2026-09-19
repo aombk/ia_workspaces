@@ -3166,6 +3166,31 @@ kbd {
   text-transform: uppercase;
 }
 
+/* Drawn only under the cursor: a column of crosses down a list you are reading
+   is an invitation to delete something by accident. */
+.palette-forget {
+  flex: none;
+  visibility: hidden;
+  padding: 0 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: calc(12px * var(--ui-text, 1));
+  line-height: 1;
+}
+
+.palette-row.selected .palette-forget,
+.palette-row:hover .palette-forget {
+  visibility: visible;
+}
+
+.palette-forget:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 /* ---------------------------------------------------------------- reader pane */
 
 .reader-pane {

@@ -28,6 +28,20 @@ const CAP = 500
 /** A line longer than this is a paste, not a command worth remembering. */
 const MAX_COMMAND = 2000
 
+/**
+ * The line this app types into a restored agent pane, exactly as it composes it.
+ *
+ * Recorded as an ordinary command until `synthetic` reached this file, so a
+ * history written by an earlier version has one of these per agent pane per
+ * restart — each naming a conversation that has already been resumed, none of
+ * them anything anybody typed or would want back. They are dropped on load.
+ *
+ * Anchored, and the id has to be a UUID: `claude --resume` is a thing a person
+ * may well type themselves, and only the shape this app generates is ours to
+ * throw away.
+ */
+const RESUME_LINE = /^claude --resume [0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+
 export class CommandHistory {
   private entries: HistoryEntry[] = []
   private dirty = false
@@ -54,6 +68,16 @@ export class CommandHistory {
         // an old entry means.
         .map((e) => ({ ...e, runs: e.runs ?? 1, fails: e.fails ?? 0 }))
         .slice(0, CAP)
+
+      // Cleared out on the first load that knows about them — see `RESUME_LINE`.
+      // Written back straight away rather than left to the next command, so the
+      // file stops carrying them whether or not anything else happens.
+      const kept = this.entries.filter((e) => !RESUME_LINE.test(e.command))
+      if (kept.length !== this.entries.length) {
+        this.entries = kept
+        this.dirty = true
+        this.flush()
+      }
     }
   }
 
@@ -120,6 +144,30 @@ export class CommandHistory {
 
     this.dirty = true
     this.schedule()
+  }
+
+  /**
+   * Forgets a command.
+   *
+   * By text alone when no folder is given, because that is how the list is read:
+   * a line you never want to see again is not one you want to delete once per
+   * project it was run in. Returns how many went, so a caller can say nothing
+   * happened rather than redraw an unchanged list.
+   */
+  remove(command: string, cwd?: string): number {
+    const before = this.entries.length
+    this.entries = this.entries.filter(
+      (e) => e.command !== command || (cwd !== undefined && e.cwd !== cwd)
+    )
+    const gone = before - this.entries.length
+    if (!gone) return 0
+
+    this.dirty = true
+    // Written now rather than on the timer. Forgetting is the one operation
+    // somebody may well quit straight after, and a delete that comes back after
+    // a restart is worse than no delete at all.
+    this.flush()
+    return gone
   }
 
   /** Newest first. `limit` clamps what crosses the IPC boundary. */

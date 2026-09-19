@@ -9,6 +9,19 @@
  */
 let depth = 0
 
+/**
+ * The inline editors currently on screen.
+ *
+ * Tracked as elements rather than counted, because an input can leave without
+ * saying so: a rebuild that replaces the DOM around a rename discards the input
+ * without a `blur`, so nothing settles it. A counter never came back down from
+ * that, and `isEditing()` stayed true for the life of the window — with every
+ * terminal refusing focus from then on. An element that is no longer in the
+ * document is no longer editing anything, and that is a question we can ask
+ * rather than a promise we have to keep.
+ */
+const live = new Map<HTMLInputElement, { seen: boolean }>()
+
 export function beginEditing(): void {
   depth++
 }
@@ -18,7 +31,13 @@ export function endEditing(): void {
 }
 
 export function isEditing(): boolean {
-  return depth > 0
+  for (const [input, state] of live) {
+    // An editor is built before it is inserted, so "not in the document" only
+    // means "gone" once it has been in there at all.
+    if (input.isConnected) state.seen = true
+    else if (state.seen) live.delete(input)
+  }
+  return depth > 0 || live.size > 0
 }
 
 /**
@@ -31,12 +50,12 @@ export function attachInlineEditor(
   opts: { onCommit(value: string): void; onCancel(): void }
 ): void {
   let settled = false
-  beginEditing()
+  live.set(input, { seen: false })
 
   const settle = (commit: boolean) => {
     if (settled) return
     settled = true
-    endEditing()
+    live.delete(input)
     if (commit) opts.onCommit(input.value)
     else opts.onCancel()
   }

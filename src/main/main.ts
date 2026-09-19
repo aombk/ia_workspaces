@@ -847,6 +847,9 @@ function bootApp(): void {
     )
     ipcMain.handle(IPC.processes, () => listProcesses(ptys.panePids()))
     ipcMain.handle(IPC.commandHistory, () => history.recent(300))
+    ipcMain.handle(IPC.forgetCommand, (_e, command: string, cwd?: string) =>
+      history.remove(command, cwd)
+    )
     ipcMain.handle(IPC.vaultList, () => vault.list())
     ipcMain.handle(IPC.vaultFolder, () => vault.folder)
     ipcMain.handle(IPC.sessionHost, () => ptys.hostSnapshot())
@@ -1507,7 +1510,9 @@ function bootApp(): void {
           // The shell integration already reports every submitted line so a
           // restored agent pane can be resumed; keeping more than the last one
           // is the whole of the history feature.
-          if (p.lastCommand) history.add(p.lastCommand, p.cwd ?? '', p.paneId)
+          // Not the resume line this app types into a restored pane: see
+          // `synthetic` on `TerminalMeta`.
+          if (p.lastCommand && !p.synthetic) history.add(p.lastCommand, p.cwd ?? '', p.paneId)
         },
         // What it exited with, stamped onto the entry `onMeta` just recorded.
         // This is the whole of what makes a command's past knowable: without it

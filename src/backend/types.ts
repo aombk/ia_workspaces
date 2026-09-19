@@ -317,6 +317,11 @@ export interface Backend {
    * agent pane could be resumed, and this simply keeps more of them.
    */
   commandHistory(): Promise<HistoryEntry[]>
+  /**
+   * Forgets a recorded command, in every folder unless one is named. Returns
+   * how many entries went.
+   */
+  forgetCommand(command: string, cwd?: string): Promise<number>
 
   /**
    * Transcripts of panes that have been closed.

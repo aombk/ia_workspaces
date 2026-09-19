@@ -2697,6 +2697,16 @@ export interface TerminalMeta {
   agentSession?: AgentSession
   /** The command line just submitted, from shell integration's OSC 133;E. */
   lastCommand?: string
+  /**
+   * The line was typed by the app rather than by a person — the agent-resume
+   * command a restored pane re-enters with, and nothing else.
+   *
+   * Carried so the history can leave it out. A restored workspace types one of
+   * these into every agent pane, so a week of restarts buries the commands you
+   * actually ran under `claude --resume <id>` lines that are no use to anybody:
+   * each names a conversation that has already been resumed.
+   */
+  synthetic?: boolean
 }
 
 /**

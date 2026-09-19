@@ -149,6 +149,8 @@ const api = {
   sessionHost: (): Promise<SessionHostInfo> => ipcRenderer.invoke(IPC.sessionHost),
   agentHooks: (): Promise<AgentConfigInfo[]> => ipcRenderer.invoke(IPC.agentHooks),
   commandHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.commandHistory),
+  forgetCommand: (command: string, cwd?: string): Promise<number> =>
+    ipcRenderer.invoke(IPC.forgetCommand, command, cwd),
   vaultList: (): Promise<VaultEntry[]> => ipcRenderer.invoke(IPC.vaultList),
   vaultFolder: (): Promise<string> => ipcRenderer.invoke(IPC.vaultFolder),
   worktreeList: (cwd: string): Promise<Worktree[]> => ipcRenderer.invoke(IPC.worktreeList, cwd),

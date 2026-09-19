@@ -27,6 +27,14 @@ interface Command {
   /** Extra text that should match but is drawn quieter. */
   detail?: string
   run(): void
+  /**
+   * Removes this row's entry for good, where there is something to remove.
+   *
+   * Only the command history has one. An action is a thing the app can do and
+   * forgetting it means nothing, and a command read from another machine's
+   * shared list is not ours to delete.
+   */
+  forget?(): void
 }
 
 let actions: UiActions
@@ -129,6 +137,16 @@ export function initPalette(a: UiActions): void {
       e.preventDefault()
       historyScope = nextView(historyScope)
       void showHistory()
+      return
+    }
+    // Shift qualifies it deliberately: Delete and Backspace are how you edit
+    // the search text, and a bare one that deleted a row instead would be a
+    // trap. Both keys, because a Mac keyboard's Delete is the other one.
+    if ((e.key === 'Delete' || e.key === 'Backspace') && e.shiftKey) {
+      const command = filtered[selected]
+      if (!command?.forget) return
+      e.preventDefault()
+      command.forget()
       return
     }
     if (e.key === 'Enter') {
@@ -321,6 +339,11 @@ export async function showHistory(): Promise<void> {
     run: () => {
       void typeIntoPane(pane?.id, entry.command)
     },
+    // Every folder it was run in, not just this row's: the list is read as
+    // "commands", and somebody striking one out wants it gone rather than gone
+    // from here. A row from another machine has no `at` and nothing local to
+    // delete, so it keeps the plain behaviour.
+    forget: entry.elsewhere ? undefined : () => void forget(entry.command),
   }))
 
   renderScope(counts)
@@ -337,6 +360,29 @@ export async function showHistory(): Promise<void> {
         : 'Nothing recorded yet'
   refine()
   input().focus()
+}
+
+/**
+ * Forgets a command and takes it off the list under the cursor.
+ *
+ * Redrawn from what is already in hand rather than by reopening the box: the
+ * search text and the selected row are the state somebody is in the middle of
+ * using, and reopening would throw both away to fetch a list we can correct
+ * ourselves.
+ */
+async function forget(command: string): Promise<void> {
+  try {
+    await backend().forgetCommand(command)
+  } catch {
+    return // nothing removed; leave the row where it is
+  }
+  commands = commands.filter((c) => c.label !== command)
+  const at = filtered.findIndex((c) => c.label === command)
+  filtered = filtered.filter((c) => c.label !== command)
+  // Keep the cursor where the eye is: on what has moved up into the gap, or on
+  // the new last row when the gap was at the end.
+  if (at !== -1 && selected >= at) selected = Math.max(0, Math.min(selected, filtered.length - 1))
+  render()
 }
 
 /**
@@ -723,6 +769,25 @@ function render(): void {
     kind.className = 'palette-kind'
     kind.textContent = command.kind
     row.appendChild(kind)
+
+    if (command.forget) {
+      const drop = document.createElement('button')
+      drop.type = 'button'
+      drop.className = 'palette-forget'
+      drop.textContent = '✕'
+      drop.tabIndex = -1
+      drop.title = 'Forget this command (Shift+Delete)'
+      drop.setAttribute('aria-label', `Forget ${command.label}`)
+      // mousedown for the same reason the row uses it — the input's blur would
+      // otherwise close the box first — and stopped here so the row beneath
+      // does not read this as "run it".
+      drop.addEventListener('mousedown', (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        command.forget?.()
+      })
+      row.appendChild(drop)
+    }
 
     // mousedown, not click: the input loses focus on mousedown and a blur
     // handler would have closed the palette before click ever landed.
