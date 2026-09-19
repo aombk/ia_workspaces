@@ -32,6 +32,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
+import { toolPath } from './toolPath'
 import type {
   Branch,
   ChangedFile,
@@ -87,6 +88,9 @@ function run(cwd: string, args: string[], opts: { timeout?: number; network?: bo
         maxBuffer: MAX_OUTPUT,
         env: {
           ...process.env,
+          // A git installed by Homebrew rather than by Xcode is only on the
+          // resolved PATH — see `toolPath.ts`.
+          PATH: toolPath(),
           // Git must never stop and ask this process a question: there is no
           // terminal behind it, so a prompt for a username would hang until the
           // timeout and then report nothing useful. Off, it fails immediately
@@ -256,6 +260,9 @@ function runProgress(
       windowsHide: true,
       env: {
         ...process.env,
+        // `gh` is one of the programs that comes through here, and it is not on
+        // a GUI process's inherited PATH — see `toolPath.ts`.
+        PATH: toolPath(),
         GIT_TERMINAL_PROMPT: '0',
         GIT_PAGER: 'cat',
         GIT_EDITOR: 'true',
@@ -1330,7 +1337,16 @@ function runTool(command: string, args: string[], cwd: string, timeout = 15_000)
     execFile(
       command,
       args,
-      { cwd, timeout, windowsHide: true, maxBuffer: MAX_OUTPUT, env: { ...process.env, NO_COLOR: '1' }, shell: false },
+      {
+        cwd,
+        timeout,
+        windowsHide: true,
+        maxBuffer: MAX_OUTPUT,
+        // The resolved PATH, which is the whole reason this app could not find
+        // `gh` when it was opened from the Dock. See `toolPath.ts`.
+        env: { ...process.env, PATH: toolPath(), NO_COLOR: '1' },
+        shell: false,
+      },
       (error, stdout, stderr) => {
         resolve({ ok: !error, out: stdout ?? '', err: (stderr ?? '').trim() || (error?.message ?? '') })
       }

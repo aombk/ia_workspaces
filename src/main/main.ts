@@ -86,6 +86,7 @@ import { isCliVerb, runCli } from './cli'
 import { ScrollbackStore } from './scrollback'
 import { EventLog, parseCategories } from './events'
 import { CommandHistory } from './history'
+import { primeToolPath } from './toolPath'
 import { SessionVault } from './vault'
 import { PidMap } from './pidMap'
 import { directoryFromArgv, isContextMenuInstalled, setContextMenu } from './explorerMenu'
@@ -300,6 +301,13 @@ function clipboardImage(): ClipboardImage {
 }
 
 function bootApp(): void {
+  // Started now and never waited for: an app opened from the Dock inherits a
+  // PATH with none of the places programs are installed, and working out the
+  // real one takes a shell. Nothing needs the answer until a user opens a
+  // panel, and everything that asks before then gets the inherited PATH, which
+  // is what this app used everywhere until now. See `toolPath.ts`.
+  void primeToolPath()
+
   // Before anything creates a window: Electron refuses to register a scheme's
   // privileges once one exists, and the images pane cannot load a thing without
   // this. The handler itself is installed after `whenReady`.
