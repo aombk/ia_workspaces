@@ -70,9 +70,23 @@ check('the separator is the platform\u2019s, not a hard-coded colon', () => {
 
 // The whole point, end to end: given the PATH a Dock launch gets, the resolved
 // one has to reach the places things are actually installed.
+//
+// Windows hides nothing from a GUI launch and has no login shell to ask, so
+// there the same call is held to the other half of the contract: the inherited
+// PATH comes back, in its order, minus whatever is not on disk.
+const windows = process.platform === 'win32'
+const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
+// Folders this platform certainly has, standing in for the ones a GUI launch
+// is left with.
+const inherited = windows
+  ? [systemRoot, path.join(systemRoot, 'system32')]
+  : ['/usr/bin', '/bin', '/usr/sbin', '/sbin']
+// Only the ones that are actually there can come back out.
+const kept = inherited.filter((dir) => fs.existsSync(dir))
+
 await (async () => {
   const before = process.env.PATH
-  process.env.PATH = ['/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter)
+  process.env.PATH = inherited.join(path.delimiter)
   try {
     const resolvedPath = await primeToolPath()
     const dirs = resolvedPath.split(path.delimiter)
@@ -80,14 +94,18 @@ await (async () => {
     check('a GUI PATH still reaches the folders a login shell knows', () => {
       // Whatever this machine has: the login shell's answer, the known folders,
       // or both. What must not happen is ending up with launchd's four.
-      assert.ok(dirs.length >= 4)
-      assert.ok(dirs.includes('/usr/bin'), 'the inherited folders survive')
-      if (process.platform !== 'win32') {
+      assert.ok(dirs.length >= kept.length)
+      assert.ok(dirs.includes(inherited[0]), 'the inherited folders survive')
+      if (!windows) {
         assert.ok(
-          dirs.length > 4 || !fs.existsSync('/opt/homebrew/bin'),
+          dirs.length > kept.length || !fs.existsSync('/opt/homebrew/bin'),
           'a machine with Homebrew installed must end up with more than launchd gave us'
         )
       }
+    })
+
+    check('what was inherited leads, in the order it was given', () => {
+      assert.deepEqual(dirs.slice(0, kept.length), kept)
     })
 
     check('the resolved PATH is what callers are handed', () => {
