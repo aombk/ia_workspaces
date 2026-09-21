@@ -28,7 +28,8 @@
  */
 import { backend } from '../../backend'
 import { hostLabel } from '../../shared/gitHosts'
-import type { GitProgress, GitResult } from '../../shared/types'
+import { formatSize, REFUSED_FILE_BYTES } from '../../shared/gitSize'
+import type { GitProgress, GitResult, SendSize } from '../../shared/types'
 import { remoteHostOfPane, store } from '../state'
 import type { AuxPane } from '../auxPane'
 import { confirmDialog } from '../ui/confirm'
@@ -85,6 +86,10 @@ export class GitPane implements AuxPane {
   private readonly history: HistoryView
   private view: GitViewName
   private snapshot: RepoSnapshot | null = null
+  /** What a push would send right now, once it has been worked out. See `loadSendSize`. */
+  private sendSize: SendSize | null = null
+  /** What `sendSize` was worked out for, so it is asked again only when that changes. */
+  private sendSizeKey = ''
   private unwatch: (() => void) | null = null
   private busyFlag = false
   private disposed = false
@@ -182,6 +187,7 @@ export class GitPane implements AuxPane {
         this.showView('history')
         this.history.filterByFile(repoPath)
       },
+      sendSize: () => (this.sendSizeKey ? this.sendSize : null),
     }
 
     this.changes = new ChangesView(ctx)
@@ -415,20 +421,35 @@ export class GitPane implements AuxPane {
     // git reports nothing ahead — and "send" is exactly what it needs.
     const firstSend = hasRemote && !status?.upstream && !!status?.branch
     setButtonCommand(this.sendBtn, firstSend ? 'git push -u origin' : 'git push')
-    setButtonLabel(
-      this.sendBtn,
-      firstSend
-        ? `send "${status?.branch}" to ${where} for the first time`
-        : ahead
-          ? `send ${ahead} save${ahead === 1 ? '' : 's'} to ${where}`
-          : `send your saves to ${where}`
-    )
+    const sendLabel = firstSend
+      ? `send "${status?.branch}" to ${where} for the first time`
+      : ahead
+        ? `send ${ahead} save${ahead === 1 ? '' : 's'} to ${where}`
+        : `send your saves to ${where}`
+    setButtonLabel(this.sendBtn, sendLabel)
     this.sendBtn.disabled = busy || !hasRemote || (ahead === 0 && !firstSend) || stopped
     if (!root) this.sendBtn.title = 'This folder is not a git project yet.'
     else if (!hasRemote) this.sendBtn.title = 'This project has no copy online to send to yet.'
     else if (stopped) this.sendBtn.title = `A ${status?.inProgress} is part-way through. Finish it first.`
     else if (ahead === 0 && !firstSend) this.sendBtn.title = `${where} already has every save you have.`
     else explain(this.sendBtn, 'push')
+
+    // How big the push is, on the button that makes it — the last moment the
+    // answer can still change anything. Asked only when there is something to
+    // send, and only again when what would be sent has changed.
+    const sending = hasRemote && !stopped && (ahead > 0 || firstSend)
+    const key = sending ? `${status?.root}:${status?.headFull}:${status?.upstream ?? ''}:${ahead}` : ''
+    if (key !== this.sendSizeKey) {
+      this.sendSizeKey = key
+      this.sendSize = null
+      if (key) void this.loadSendSize(key)
+    }
+    const size = sending ? this.sendSize : null
+    if (size && size.saves > 0) {
+      const refused = size.largest && size.largest.bytes >= REFUSED_FILE_BYTES
+      setButtonLabel(this.sendBtn, `${refused ? '⚠ ' : ''}${sendLabel} · ${formatSize(size.bytes)}`)
+      this.sendBtn.title += `\n\n${describeSend(size)}`
+    }
 
     setButtonCommand(this.publishBtn, root ? 'git remote add origin' : 'git init')
     setButtonLabel(this.publishBtn, root ? 'put this project online' : 'start tracking this folder with git')
@@ -617,6 +638,28 @@ export class GitPane implements AuxPane {
    * second click while a push is in flight would start a second push, and the
    * refresh in between would redraw the button out from under the cursor.
    */
+  /**
+   * Works out what a push would send, then redraws the button with it.
+   *
+   * Asynchronous and never waited on: the button is usable at once, and the
+   * figure joins it when it arrives. Dropped if the repository moved on while
+   * it was being worked out, so a stale size never lands on a newer button.
+   */
+  private async loadSendSize(key: string): Promise<void> {
+    let size: SendSize | null = null
+    try {
+      size = await backend().git.sendSize(this.cwd)
+    } catch {
+      return
+    }
+    if (this.disposed || key !== this.sendSizeKey) return
+    this.sendSize = size
+    this.renderActions()
+    // The Changes footer has a send button of its own, drawn from the same
+    // figure, and it only redraws when it is handed a snapshot.
+    if (this.snapshot) this.changes.update(this.snapshot)
+  }
+
   private async run(work: () => Promise<GitResult>, success: string, label = 'Working'): Promise<void> {
     if (this.busyFlag) return
     this.busyFlag = true
@@ -723,6 +766,32 @@ export class GitPane implements AuxPane {
  * know rewrites the pane as a terminal — so the tab would not merely open on
  * the wrong view, it would be gone on the next save of the document.
  */
+/**
+ * The push, weighed, for the send button's tooltip.
+ *
+ * Two sizes, and which is which is said: the contents are what you are
+ * sharing, and the upload is what crosses the wire — smaller, because git sends
+ * everything compressed. The biggest file is named because it is almost always
+ * the answer to "why is this push so big".
+ */
+function describeSend(size: SendSize): string {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+  const lines = [
+    `This push: ${plural(size.saves, 'save')}, ${plural(size.files, 'file')}, ${formatSize(size.bytes)} of contents.`,
+    `About ${formatSize(size.upload)} to upload once git has compressed it (${plural(size.objects, 'object')}).`,
+  ]
+  if (size.largest && size.largest.bytes > 0) {
+    lines.push(`Largest file: ${size.largest.path} (${formatSize(size.largest.bytes)}).`)
+    if (size.largest.bytes >= REFUSED_FILE_BYTES) {
+      lines.push(
+        'GitHub refuses any push containing a file over 100 MB — after uploading all of it. ' +
+          'Take that file out of the save before sending.'
+      )
+    }
+  }
+  return lines.join('\n')
+}
+
 export function viewForKind(kind: string): GitViewName {
   return kind === 'history' ? 'history' : 'changes'
 }

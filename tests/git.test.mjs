@@ -30,6 +30,7 @@ await build({
     patch: 'src/shared/diffPatch.ts',
     hosts: 'src/shared/gitHosts.ts',
     draft: 'src/shared/draftMessage.ts',
+    size: 'src/shared/gitSize.ts',
   },
   bundle: true,
   platform: 'node',
@@ -43,6 +44,7 @@ const Words = await import(`file://${out}/words.js`)
 const Patch = await import(`file://${out}/patch.js`)
 const Hosts = await import(`file://${out}/hosts.js`)
 const Draft = await import(`file://${out}/draft.js`)
+const Size = await import(`file://${out}/size.js`)
 
 let passed = 0
 const check = (name, fn) => {
@@ -1114,6 +1116,168 @@ check('a long line is folded where git log can read it', () => {
     true,
     'a folded line continues under the text of its bullet, not under the dash'
   )
+})
+
+// ------------------------------------------------------------------ sizes
+//
+// How big a save and a push are, before either is made. Against a real git for
+// the same reason as everything above: the figures come from what git says an
+// object weighs, and a fake would only agree with this file's guess.
+console.log('Sizes')
+
+check('git progress quantities are read in bytes', () => {
+  assert.equal(Size.parseGitQuantity('512', 'bytes'), 512)
+  assert.equal(Size.parseGitQuantity('1.50', 'KiB'), 1536)
+  assert.equal(Size.parseGitQuantity('2.00', 'MiB'), 2 * 1024 * 1024)
+  assert.equal(Size.parseGitQuantity('3', 'furlongs'), undefined, 'an unknown unit is unknown, not zero')
+})
+
+check('sizes read the way the file tree reads them', () => {
+  assert.equal(Size.formatSize(0), '0 B')
+  assert.equal(Size.formatSize(812), '812 B')
+  assert.equal(Size.formatSize(4300), '4.2 KB')
+  assert.equal(Size.formatSize(37 * 1024 * 1024), '37 MB')
+})
+
+check('an upload line carries how much has moved and how fast', () => {
+  const line = G.parseProgress('Writing objects:  46% (6/13), 1.20 MiB | 1.10 MiB/s')
+  assert.equal(line.current, 6)
+  assert.equal(line.total, 13)
+  assert.equal(line.bytes, 1.2 * 1024 * 1024)
+  assert.equal(line.rate, 1.1 * 1024 * 1024)
+})
+
+check('the last upload line, with no speed, still carries the amount', () => {
+  const line = G.parseProgress('Writing objects: 100% (13/13), 3.41 MiB | 2.02 MiB/s, done.')
+  assert.equal(line.bytes, 3.41 * 1024 * 1024)
+  const bare = G.parseProgress('Writing objects: 100% (3/3), 290 bytes, done.')
+  assert.equal(bare.bytes, 290)
+  assert.equal(bare.rate, undefined)
+})
+
+check('a phase that moves no data parses exactly as it always did', () => {
+  const line = G.parseProgress('Counting objects: 100% (25/25), done.')
+  assert.equal(line.total, 25)
+  assert.equal(line.bytes, undefined)
+})
+
+const sized = path.join(out, 'sized')
+fs.mkdirSync(sized)
+const sgit = (...args) =>
+  execFileSync('git', args, { cwd: sized, encoding: 'utf8', windowsHide: true }).trim()
+sgit('init', '--initial-branch=main')
+sgit('config', 'user.email', 'test@example.com')
+sgit('config', 'user.name', 'Test Person')
+sgit('config', 'commit.gpgsign', 'false')
+const fileIn = (name) => (status) => status.files.find((f) => f.repoPath === name)
+
+await checkAsync('a changed file carries its size on disk', async () => {
+  fs.writeFileSync(path.join(sized, 'kept.txt'), 'x'.repeat(1000))
+  const status = await G.repoStatus(sized)
+  assert.equal(fileIn('kept.txt')(status).size, 1000)
+})
+
+// The case that needs two figures: pick a file, then keep editing it. The save
+// holds what was picked, so the "staged" row must say that size, not the disk's.
+await checkAsync('a file picked then edited is two sizes, and the save holds the picked one', async () => {
+  fs.writeFileSync(path.join(sized, 'edited.txt'), 'a'.repeat(300))
+  await G.pick(sized, ['edited.txt'])
+  fs.writeFileSync(path.join(sized, 'edited.txt'), 'a'.repeat(900))
+  const file = fileIn('edited.txt')(await G.repoStatus(sized))
+  assert.equal(file.pickedSize, 300)
+  assert.equal(file.size, 900)
+  assert.equal(Size.sizeOn(file, 'picked'), 300)
+  assert.equal(Size.sizeOn(file, 'changed'), 900)
+})
+
+// The folder someone adds by accident is full of ignored build output. Counting
+// what is on disk would report all of it; `git add` would take none of it.
+await checkAsync('a new folder is sized by what git would add, ignored files left out', async () => {
+  fs.mkdirSync(path.join(sized, 'newdir'))
+  fs.writeFileSync(path.join(sized, 'newdir', 'real.txt'), 'r'.repeat(200))
+  fs.writeFileSync(path.join(sized, 'newdir', 'huge.log'), 'l'.repeat(50_000))
+  fs.writeFileSync(path.join(sized, '.gitignore'), '*.log\n')
+  const folder = fileIn('newdir/')(await G.repoStatus(sized))
+  assert.ok(folder, 'git lists an untracked folder as one line')
+  assert.equal(folder.size, 200)
+  assert.ok(!folder.sizeAtLeast)
+})
+
+await checkAsync('a deleted file adds nothing', async () => {
+  await G.pick(sized, [])
+  await G.save(sized, 'first')
+  fs.rmSync(path.join(sized, 'kept.txt'))
+  let file = fileIn('kept.txt')(await G.repoStatus(sized))
+  assert.equal(file.size, 0)
+  await G.pick(sized, ['kept.txt'])
+  file = fileIn('kept.txt')(await G.repoStatus(sized))
+  assert.equal(file.pickedSize, 0)
+  await G.save(sized, 'removed one')
+})
+
+check('by size puts the biggest first, unknown sizes last, ties by path', () => {
+  const f = (repoPath, size, pickedSize) => ({
+    repoPath, path: `/${repoPath}`, picked: pickedSize === undefined ? '' : 'M', changed: 'M',
+    untracked: false, conflicted: false, size, pickedSize,
+  })
+  const files = [f('a.txt', 10), f('b.txt', undefined), f('c.txt', 500), f('d.txt', 10), f('e.txt', 0)]
+  assert.deepEqual(
+    Size.orderFiles(files, 'changed', 'size').map((x) => x.repoPath),
+    ['c.txt', 'a.txt', 'd.txt', 'e.txt', 'b.txt']
+  )
+  // By name is git's order untouched — the same array, not a re-sort of it.
+  assert.equal(Size.orderFiles(files, 'changed', 'name'), files)
+  // A picked row ranks by what the save will hold, not by the file on disk.
+  const picked = [f('small-now.txt', 1, 900), f('big-now.txt', 800, 2)]
+  assert.deepEqual(
+    Size.orderFiles(picked, 'picked', 'size').map((x) => x.repoPath),
+    ['small-now.txt', 'big-now.txt']
+  )
+})
+
+check('a group total adds its files and says when any is only a floor', () => {
+  const files = [
+    { repoPath: 'a', path: '/a', picked: 'M', changed: '', untracked: false, conflicted: false, size: 10, pickedSize: 5 },
+    { repoPath: 'b/', path: '/b', picked: '', changed: '?', untracked: true, conflicted: false, size: 20, sizeAtLeast: true },
+  ]
+  assert.deepEqual(Size.totalOf(files, 'picked'), { bytes: 25, known: 2, atLeast: true })
+})
+
+await checkAsync('a push is weighed before it is made: saves, files and bytes', async () => {
+  const bare = path.join(out, 'sized-origin.git')
+  execFileSync('git', ['init', '--bare', '--initial-branch=main', bare], { encoding: 'utf8', windowsHide: true })
+  sgit('remote', 'add', 'origin', bare)
+  sgit('push', '--quiet', '--set-upstream', 'origin', 'main')
+  assert.deepEqual(
+    await G.sendSize(sized),
+    { saves: 0, files: 0, bytes: 0, upload: 0, objects: 0 },
+    'a level branch has nothing to send'
+  )
+
+  fs.writeFileSync(path.join(sized, 'one.bin'), 'a'.repeat(4000))
+  fs.writeFileSync(path.join(sized, 'two.bin'), 'b'.repeat(6000))
+  await G.pick(sized, ['one.bin', 'two.bin'])
+  await G.save(sized, 'two files')
+  fs.writeFileSync(path.join(sized, 'one.bin'), 'c'.repeat(8000))
+  await G.pick(sized, ['one.bin'])
+  await G.save(sized, 'one of them again')
+
+  const size = await G.sendSize(sized)
+  assert.equal(size.saves, 2)
+  // One file in two saves is still one file, but both versions are sent.
+  assert.equal(size.files, 2)
+  assert.equal(size.bytes, 4000 + 6000 + 8000)
+  assert.deepEqual(size.largest, { path: 'one.bin', bytes: 8000 })
+  assert.ok(size.upload > 0 && size.upload < size.bytes, 'the upload is compressed contents, and these compress')
+  assert.ok(size.objects >= size.saves + 3, 'every save, every version and every folder listing is an object')
+})
+
+await checkAsync('once pushed, there is nothing left to weigh', async () => {
+  const res = await G.send(sized)
+  assert.ok(res.ok, res.error)
+  const size = await G.sendSize(sized)
+  assert.equal(size.saves, 0)
+  assert.equal(size.bytes, 0)
 })
 
 console.log(`\n${passed} checks passed`)

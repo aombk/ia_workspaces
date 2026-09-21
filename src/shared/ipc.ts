@@ -57,6 +57,7 @@ export const IPC = {
   gitUnpick: 'git:unpick',
   gitSave: 'git:save',
   gitSend: 'git:send',
+  gitSendSize: 'git:sendSize',
   gitPeek: 'git:peek',
   gitBringIn: 'git:bringIn',
   gitGoTo: 'git:goTo',

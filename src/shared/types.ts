@@ -1700,6 +1700,15 @@ export interface Settings {
    */
   historyScope: HistoryScope
   /**
+   * How the git pane lists changed files: by path, or biggest first.
+   *
+   * By path is git's own order and the default, because it keeps a folder's
+   * files together. Biggest first is for the question the sizes were added to
+   * answer — "what is making this save so large" — where the answer should be
+   * the first row rather than somewhere in the middle.
+   */
+  gitFileOrder: 'name' | 'size'
+  /**
    * Whether pasting a picture opens the notes editor instead of pasting it.
    *
    * Off, and that is the important part. An ordinary paste is muscle memory and
@@ -2406,6 +2415,50 @@ export interface ChangedFile {
   conflicted: boolean
   /** Where it came from, for a rename or a copy. */
   from?: string
+  /**
+   * Bytes on disk right now: 0 for a file that has been deleted, the whole of
+   * its contents for a new folder git lists as one line. Absent when it could
+   * not be read.
+   */
+  size?: number
+  /**
+   * Bytes of the version that is picked (in the index), which is what the next
+   * save will hold. Differs from `size` when a file was picked and then edited
+   * again. Absent when nothing of this file is picked.
+   */
+  pickedSize?: number
+  /**
+   * `size` is only a lower bound — a new folder too large to finish counting.
+   * Said so on screen as "≥", because an exact-looking figure that is really a
+   * floor is the kind of number that talks somebody into a 2 GB commit.
+   */
+  sizeAtLeast?: boolean
+}
+
+/**
+ * What the next push would send, worked out before it is sent.
+ *
+ * Counted from the saves that exist on no remote branch — the same set the
+ * history pane marks as "only on this machine" — so the figure and the badge
+ * can never disagree about what is going.
+ */
+export interface SendSize {
+  /** Saves (commits) that would go. */
+  saves: number
+  /** Distinct files among them, however many saves each appears in. */
+  files: number
+  /** Their contents, uncompressed: the size of what you are sharing. */
+  bytes: number
+  /**
+   * Roughly what crosses the network: git's own compressed size of every
+   * object that goes, commits and folders included. An estimate — the pack is
+   * compressed again on the way out, usually smaller still.
+   */
+  upload: number
+  /** Objects git will write, which is the unit its progress counts in. */
+  objects: number
+  /** The largest single file going, for the warning GitHub would otherwise give. */
+  largest?: { path: string; bytes: number }
 }
 
 /**
@@ -2523,6 +2576,16 @@ export interface GitProgress {
   percent?: number
   current?: number
   total?: number
+  /** Bytes moved so far in this phase, from git's own `, 1.20 MiB` suffix. */
+  bytes?: number
+  /** Bytes per second, from git's own `| 850 KiB/s` suffix. */
+  rate?: number
+  /**
+   * What the whole of a push was worked out to be before it started, carried
+   * on every one of its events so the bar can say "of" something. See
+   * `SendSize`.
+   */
+  sending?: SendSize
   /** True when this phase is happening on the far end rather than here. */
   remote?: boolean
   /** The file being dealt with, for the operations that name them. */
@@ -2826,6 +2889,7 @@ export const DEFAULT_SETTINGS: Settings = {
   notesOnPaste: false,
   imageNoteColor: '#d29922',
   historyScope: 'terminal',
+  gitFileOrder: 'name',
   themeId: 'graphite',
   customThemes: [],
   customTerminalThemes: [],

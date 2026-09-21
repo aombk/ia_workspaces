@@ -100,6 +100,47 @@ await check('a v2 file comes back untouched and all top-level', async () => {
   assert.deepEqual(names(store.sidebarRows()), ['dev', 'audioDev'])
 })
 
+// A name given to one half of a split. It was written to the file all along and
+// read back nowhere, so it survived until the next launch and no further —
+// while the tab's own name, given by the same gesture, came back every time.
+await check('a name given to a split pane comes back', async () => {
+  await load({
+    version: 2,
+    workspaces: [
+      {
+        ...ws('w', 'dev'),
+        tabs: [
+          {
+            id: 't',
+            customTitle: 'build',
+            panes: [
+              { id: 'p1', cwd: 'C:\\Projects', autoTitle: 'zsh', customTitle: 'claude' },
+              { id: 'p2', cwd: 'C:\\Projects', autoTitle: 'zsh' },
+            ],
+            layout: {
+              kind: 'split',
+              direction: 'column',
+              children: [
+                { kind: 'leaf', paneId: 'p1' },
+                { kind: 'leaf', paneId: 'p2' },
+              ],
+            },
+            activePaneId: 'p1',
+          },
+        ],
+        activeTabId: 't',
+      },
+    ],
+    activeWorkspaceId: 'w',
+  })
+
+  const tab = store.workspaces[0].tabs[0]
+  assert.equal(tab.customTitle, 'build')
+  assert.equal(tab.panes[0].customTitle, 'claude')
+  // The pane nobody named must not acquire one.
+  assert.equal(tab.panes[1].customTitle, null)
+})
+
 await check('a v1 group becomes a workspace holding its members', async () => {
   // Groups were a separate entity for one release. A sidebar arranged with them
   // must come back arranged the same way, with one concept in it instead of two.

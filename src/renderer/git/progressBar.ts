@@ -25,7 +25,44 @@
  * Nothing here is ever the only report of an outcome. The toast still says what
  * happened, in git's words and ours; this says what is happening, and then goes.
  */
-import type { GitProgress } from '../../shared/types'
+import { formatSize } from '../../shared/gitSize'
+import type { GitProgress, SendSize } from '../../shared/types'
+
+/**
+ * What a push is carrying, beside the phase: "Uploading 12 files in 3 saves".
+ *
+ * Said in files because that is the unit a person thinks in — and only here,
+ * as the total, never as a running count. Git's progress counts objects, and
+ * one file can be several of them across several saves, so a "6 of 12 files"
+ * derived from it would be a number that looks measured and is not.
+ */
+function sendingWhat(size: SendSize): string {
+  const files = `${size.files} file${size.files === 1 ? '' : 's'}`
+  const saves = `${size.saves} save${size.saves === 1 ? '' : 's'}`
+  return `${files} in ${saves}`
+}
+
+/**
+ * The right-hand figures: how far, how much, how fast.
+ *
+ *   46% · 6 of 13 objects · 1.2 MB of ~2.1 MB · 1.1 MB/s
+ *
+ * Each part only when git said it. The "of" total is the estimate worked out
+ * before the push began, and only on the upload phase — it is the size of what
+ * is being written, and next to "Counting" it would be a total of something
+ * else. Marked "~" because git compresses again on the way out, so the upload
+ * usually finishes under it.
+ */
+function countLine(event: GitProgress): string {
+  const parts = [`${event.percent}%`]
+  if (event.total !== undefined) parts.push(`${event.current} of ${event.total} objects`)
+  if (event.bytes !== undefined) {
+    const uploading = event.sending && event.phase.startsWith('Writing objects')
+    parts.push(uploading ? `${formatSize(event.bytes)} of ~${formatSize(event.sending!.upload)}` : formatSize(event.bytes))
+  }
+  if (event.rate !== undefined) parts.push(`${formatSize(event.rate)}/s`)
+  return parts.join(' · ')
+}
 
 /** How long a finished bar stays on screen, so a fast operation still registers. */
 const LINGER_MS = 600
@@ -95,12 +132,13 @@ export class GitProgressBar {
 
     // A file name is the most concrete thing there is, so it wins the line
     // whenever there is one — "Picking src/main/git.ts" beats "Picking".
-    this.labelEl.textContent = event.file ? `${event.plain} ${event.file}` : event.plain || this.opening
+    this.labelEl.textContent = event.file
+      ? `${event.plain} ${event.file}`
+      : (event.plain || this.opening) + (event.sending ? ` ${sendingWhat(event.sending)}` : '')
 
     if (typeof event.percent === 'number') {
       this.determinate(event.percent)
-      this.countEl.textContent =
-        event.total !== undefined ? `${event.percent}% · ${event.current}/${event.total}` : `${event.percent}%`
+      this.countEl.textContent = countLine(event)
     } else {
       this.indeterminate()
       // A count with no total still moves, which is the entire question being

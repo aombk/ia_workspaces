@@ -7896,6 +7896,71 @@ html.translucent .titlebar {
   border-bottom: 1px solid var(--border);
 }
 
+/* A file's size, right-aligned at the end of its row so a column of them
+   reads down the list. Tabular figures keep the digits lined up. */
+.diff-file__size {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* GitHub's own two lines: it warns at 50 MB and refuses at 100 MB. */
+.diff-file__size.large {
+  color: var(--warn);
+}
+
+.diff-file__size.refused {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* "Order: name · size", above the groups. Quiet until pointed at: it is a
+   preference, set once, not something to read on every glance. */
+.diff-order {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 6px 0;
+  font-size: calc(11px * var(--ui-text, 1));
+  color: var(--text-faint);
+}
+
+.diff-order__label {
+  margin-right: 4px;
+}
+
+.diff-order__btn {
+  padding: 1px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  cursor: pointer;
+}
+
+.diff-order__btn:hover {
+  color: var(--text);
+}
+
+.diff-order__btn.on {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* The group's total, after its heading: not uppercased like the heading, since
+   "MB" and "files" read worse shouted. */
+.diff-group__size {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 /* "Every save that touched this file", on a changed file's row. */
 .diff-file__past {
   flex: none;

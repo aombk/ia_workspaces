@@ -42,7 +42,16 @@ import {
 } from '../../shared/diffPatch'
 import { draftMessage } from '../../shared/draftMessage'
 import { hostLabel } from '../../shared/gitHosts'
+import {
+  formatSize,
+  LARGE_FILE_BYTES,
+  orderFiles,
+  REFUSED_FILE_BYTES,
+  sizeOn,
+  totalOf,
+} from '../../shared/gitSize'
 import type { ChangedFile, RepoStatus } from '../../shared/types'
+import { store } from '../state'
 import { confirmDialog } from '../ui/confirm'
 import { explain, gitButton, gitWordFirst, plainWord, setButtonLabel } from '../ui/gitWord'
 import { patchElement, splitResizer, text } from './common'
@@ -268,9 +277,20 @@ export class ChangesView implements GitView {
       return
     }
 
+    this.listEl.appendChild(this.orderControl())
+
+    const order = store.settings.gitFileOrder
     const conflicted = files.filter((f) => f.conflicted)
-    const picked = files.filter((f) => f.picked && !f.conflicted)
-    const changed = files.filter((f) => f.changed && !f.conflicted)
+    const picked = orderFiles(
+      files.filter((f) => f.picked && !f.conflicted),
+      'picked',
+      order
+    )
+    const changed = orderFiles(
+      files.filter((f) => f.changed && !f.conflicted),
+      'changed',
+      order
+    )
 
     if (conflicted.length) {
       this.group(
@@ -290,7 +310,7 @@ export class ChangesView implements GitView {
     // counts is a button that moves the heading beneath it every time a save
     // lands — and these headings are two rows apart.
     this.group(
-      [plainWord('staged'), text(' — going into the next save')],
+      [plainWord('staged'), text(' — going into the next save'), groupSize(picked, 'picked')],
       picked.length
         ? 'Untick to take one back out. Nothing on disk changes either way.'
         : 'Nothing is picked yet, so a save right now would hold nothing. Tick something below.',
@@ -304,7 +324,7 @@ export class ChangesView implements GitView {
     )
 
     this.group(
-      [text('Not picked (not staged) — changed, and staying out')],
+      [text('Not picked (not staged) — changed, and staying out'), groupSize(changed, 'changed')],
       changed.length
         ? 'Tick to put one into the next save, or open it to pick part of it.'
         : 'Everything that has changed is already picked.',
@@ -316,6 +336,41 @@ export class ChangesView implements GitView {
         run: () => this.pick([]),
       }
     )
+  }
+
+  /**
+   * "Order: name · size", above the groups.
+   *
+   * One control for both groups rather than one each: the question it answers
+   * — where are the big ones — is asked of the whole list, and two toggles that
+   * could disagree would make the list read as two different kinds of thing.
+   */
+  private orderControl(): HTMLElement {
+    const bar = document.createElement('div')
+    bar.className = 'diff-order'
+    const label = document.createElement('span')
+    label.className = 'diff-order__label'
+    label.textContent = 'Order:'
+    bar.appendChild(label)
+
+    const current = store.settings.gitFileOrder
+    const option = (value: 'name' | 'size', text: string, hint: string) => {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'diff-order__btn' + (current === value ? ' on' : '')
+      btn.textContent = text
+      btn.title = hint
+      btn.setAttribute('aria-pressed', String(current === value))
+      btn.addEventListener('click', () => {
+        if (store.settings.gitFileOrder === value) return
+        store.updateSettings({ gitFileOrder: value })
+        this.renderList()
+      })
+      bar.appendChild(btn)
+    }
+    option('name', 'name', 'By path, the way git lists them — a folder\u2019s files stay together.')
+    option('size', 'size', 'Biggest first, so whatever is making the save large is the first row.')
+    return bar
   }
 
   private group(
@@ -384,6 +439,8 @@ export class ChangesView implements GitView {
     name.textContent = file.from ? `${file.repoPath} (was ${file.from})` : file.repoPath
     name.addEventListener('click', () => this.select({ repoPath: file.repoPath, side }))
     row.appendChild(name)
+
+    row.appendChild(fileSize(file, side))
 
     // "Where did this file come from" is a question you have while looking at
     // what it has just become, and it is one filter away in the other view.
@@ -856,17 +913,24 @@ export class ChangesView implements GitView {
     // in-progress merge or rebase is, for the same reason saving is.
     this.draftBtn.disabled = busy || picked === 0 || !!status?.inProgress
 
+    // The size of the save, on the button that makes it — the same figure as
+    // the heading over the picked files, repeated where the decision is made.
+    const pickedFiles = status?.files.filter((f) => f.picked && !f.conflicted) ?? []
+    const pickedTotal = totalOf(pickedFiles, 'picked')
+    const pickedSize = pickedTotal.known ? ` · ${pickedTotal.atLeast ? '≥ ' : ''}${formatSize(pickedTotal.bytes)}` : ''
     setButtonLabel(
       this.saveBtn,
-      picked ? `save ${picked} picked file${picked === 1 ? '' : 's'}` : 'save what you picked'
+      picked ? `save ${picked} picked file${picked === 1 ? '' : 's'}${pickedSize}` : 'save what you picked'
     )
     this.saveBtn.disabled = busy || picked === 0 || !hasMessage || conflicts || !!status?.inProgress
 
     const ahead = status?.ahead ?? 0
     const where = hostLabel(this.snapshot?.remote)
+    const sending = this.ctx.sendSize()
+    const sendSize = sending && sending.saves > 0 ? ` · ${formatSize(sending.bytes)}` : ''
     setButtonLabel(
       this.sendBtn,
-      ahead ? `send ${ahead} save${ahead === 1 ? '' : 's'} to ${where}` : `send your saves to ${where}`
+      (ahead ? `send ${ahead} save${ahead === 1 ? '' : 's'} to ${where}` : `send your saves to ${where}`) + sendSize
     )
     this.sendBtn.disabled =
       busy || !status?.hasRemote || (ahead === 0 && !!status?.upstream) || !!status?.inProgress
@@ -944,6 +1008,71 @@ export class ChangesView implements GitView {
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value
+}
+
+/**
+ * A row's size, at the end of the row where a column of them can be read.
+ *
+ * Coloured only past GitHub's own lines — 50 MB, where it warns, and 100 MB,
+ * where it refuses the whole push — because those are the two sizes that change
+ * what you should do. Everything under them is information, not a warning.
+ */
+function fileSize(file: ChangedFile, side: Side): HTMLElement {
+  const el = document.createElement('span')
+  el.className = 'diff-file__size'
+
+  const deleted = (side === 'picked' ? file.picked : file.changed) === 'D'
+  if (deleted) {
+    el.textContent = '—'
+    el.title = 'Deleted: this adds nothing to the save.'
+    return el
+  }
+
+  const bytes = sizeOn(file, side)
+  if (bytes === undefined) return el
+
+  const floor = file.sizeAtLeast ? '≥ ' : ''
+  el.textContent = floor + formatSize(bytes)
+
+  const lines = [
+    side === 'picked' && file.pickedSize !== undefined && file.size !== undefined && file.pickedSize !== file.size
+      ? `${formatSize(file.pickedSize)} picked — the file on disk is ${formatSize(file.size)} now, and the save will hold the picked version.`
+      : file.repoPath.endsWith('/')
+        ? `${floor}${formatSize(bytes)} across the new files in this folder that git would add (ignored files left out).`
+        : `${formatSize(bytes)}`,
+  ]
+  if (bytes >= REFUSED_FILE_BYTES) {
+    el.classList.add('refused')
+    lines.push(
+      'Over 100 MB: GitHub refuses any push containing a file this big, after uploading all of it. ' +
+        'Leave it out of the save, or use Git LFS for it.'
+    )
+  } else if (bytes >= LARGE_FILE_BYTES) {
+    el.classList.add('large')
+    lines.push('Over 50 MB: GitHub will warn about this file when it is pushed, and refuses anything over 100 MB.')
+  }
+  el.title = lines.join('\n\n')
+  return el
+}
+
+/**
+ * "· 12 files · 3.4 MB" after a group's heading.
+ *
+ * The number that answers "how big is this save going to be" before it is made
+ * — which is the one moment it can still be changed by an untick.
+ */
+function groupSize(files: readonly ChangedFile[], side: Side): Node {
+  const el = document.createElement('span')
+  el.className = 'diff-group__size'
+  if (!files.length) return el
+  const { bytes, known, atLeast } = totalOf(files, side)
+  const count = `${files.length} file${files.length === 1 ? '' : 's'}`
+  el.textContent = known ? ` · ${count} · ${atLeast ? '≥ ' : ''}${formatSize(bytes)}` : ` · ${count}`
+  el.title =
+    side === 'picked'
+      ? 'The size of what the next save will hold, as picked.'
+      : 'The size of the changed files you have not picked, as they are on disk.'
+  return el
 }
 
 /** What a porcelain letter means, spelled out, since one character cannot. */

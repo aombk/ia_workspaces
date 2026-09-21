@@ -81,6 +81,7 @@ export function createElectronBackend(): Backend {
       unpick: (cwd, paths) => api.git.unpick(cwd, paths),
       save: (cwd, message) => api.git.save(cwd, message),
       send: (cwd) => api.git.send(cwd),
+      sendSize: (cwd) => api.git.sendSize(cwd),
       peek: (cwd) => api.git.peek(cwd),
       bringIn: (cwd) => api.git.bringIn(cwd),
       goTo: (cwd, branch) => api.git.goTo(cwd, branch),

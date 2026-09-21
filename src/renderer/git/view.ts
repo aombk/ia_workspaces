@@ -7,7 +7,7 @@
  * through. So a view never runs a timer, never shows its own toast for a
  * failure, and cannot disagree with the other about what the branch is called.
  */
-import type { GitResult } from '../../shared/types'
+import type { GitResult, SendSize } from '../../shared/types'
 import type { RepoSnapshot } from './repoWatch'
 
 export interface GitView {
@@ -44,4 +44,10 @@ export interface GitContext {
   show(view: 'changes' | 'history'): void
   /** Shows the history of one file — the History view's filter, set from Changes. */
   showFileHistory(repoPath: string): void
+  /**
+   * What a push would send, once the pane has worked it out, or null before
+   * then and whenever there is nothing to send. Owned by the pane so the two
+   * send buttons — its strip's and the Changes footer's — show one figure.
+   */
+  sendSize(): SendSize | null
 }

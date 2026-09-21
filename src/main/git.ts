@@ -30,9 +30,12 @@
  * it about what is about to be saved.
  */
 import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { toolPath } from './toolPath'
+import { parseGitQuantity } from '../shared/gitSize'
 import type {
   Branch,
   ChangedFile,
@@ -44,6 +47,7 @@ import type {
   HistoryFilter,
   HostTool,
   RepoStatus,
+  SendSize,
 } from '../shared/types'
 
 /** Long enough for a slow disk or a big repository, short enough not to hang the UI. */
@@ -112,12 +116,13 @@ function run(cwd: string, args: string[], opts: { timeout?: number; network?: bo
 }
 
 /**
- * The same, with a patch fed to git on its standard input.
+ * The same, with something fed to git on its standard input.
  *
- * Only `git apply` needs this, and it needs it rather than a temporary file for
- * a reason worth stating: a patch written to disk is a patch that outlives the
- * operation if the process dies mid-way, in a folder the user did not ask us to
- * write to. Down the pipe it exists for as long as the command does.
+ * `git apply` needs this rather than a temporary file for a reason worth
+ * stating: a patch written to disk is a patch that outlives the operation if
+ * the process dies mid-way, in a folder the user did not ask us to write to.
+ * Down the pipe it exists for as long as the command does. `cat-file
+ * --batch-check` uses it too, to size thousands of objects in one spawn.
  */
 function runInput(cwd: string, args: string[], input: string): Promise<GitRun> {
   return new Promise((resolve) => {
@@ -129,7 +134,14 @@ function runInput(cwd: string, args: string[], input: string): Promise<GitRun> {
         timeout: LOCAL_TIMEOUT_MS,
         windowsHide: true,
         maxBuffer: MAX_OUTPUT,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat', GIT_EDITOR: 'true', LC_ALL: 'C' },
+        env: {
+          ...process.env,
+          PATH: toolPath(),
+          GIT_TERMINAL_PROMPT: '0',
+          GIT_PAGER: 'cat',
+          GIT_EDITOR: 'true',
+          LC_ALL: 'C',
+        },
       },
       (error, stdout, stderr) => {
         resolve({ ok: !error, out: stdout ?? '', err: (stderr ?? '').trim() || (error?.message ?? '') })
@@ -205,9 +217,33 @@ const PHASES: readonly { match: string; plain: string }[] = [
  * front, which is why it is optional here and why the bar has an indeterminate
  * state at all. Exported for the tests.
  */
-export function parseProgress(line: string): { phase: string; plain: string; percent?: number; current?: number; total?: number; remote: boolean } | null {
+export function parseProgress(line: string): {
+  phase: string
+  plain: string
+  percent?: number
+  current?: number
+  total?: number
+  bytes?: number
+  rate?: number
+  remote: boolean
+} | null {
   const text = line.trim()
   if (!text) return null
+
+  // The transfer phases add how much has moved, and while moving how fast:
+  //
+  //   Writing objects:  46% (6/13), 1.20 MiB | 1.10 MiB/s
+  //   Writing objects: 100% (13/13), 3.41 MiB | 2.02 MiB/s, done.
+  //
+  // Read separately and merged in below, so a line without them parses exactly
+  // as it always did.
+  const moved = /,\s*([\d.]+)\s*(bytes?|[KMGT]iB)(?:\s*\|\s*([\d.]+)\s*(bytes?|[KMGT]iB)\/s)?/i.exec(text)
+  const transfer = moved
+    ? {
+        bytes: parseGitQuantity(moved[1], moved[2]),
+        rate: moved[3] ? parseGitQuantity(moved[3], moved[4]) : undefined,
+      }
+    : {}
 
   const withCounts = /^(.*?):\s+(\d+)%\s+\((\d+)\/(\d+)\)/.exec(text)
   const bare = /^(.*?):\s+(\d+)(?:,|$)/.exec(text)
@@ -228,6 +264,7 @@ export function parseProgress(line: string): { phase: string; plain: string; per
       percent: Number(withCounts[2]),
       current: Number(withCounts[3]),
       total: Number(withCounts[4]),
+      ...transfer,
       remote,
     }
   }
@@ -250,7 +287,14 @@ export function parseProgress(line: string): { phase: string; plain: string; per
 function runProgress(
   cwd: string,
   args: string[],
-  opts: { op: string; network?: boolean; onLine?: (line: string) => void; command?: string }
+  opts: {
+    op: string
+    network?: boolean
+    onLine?: (line: string) => void
+    command?: string
+    /** Stamped onto every progress event, for facts known before git started. */
+    extra?: Partial<GitProgress>
+  }
 ): Promise<GitRun> {
   return new Promise((resolve) => {
     // `gh` shells out to git for the push it does, and git's progress comes
@@ -303,7 +347,7 @@ function runProgress(
       if (err.length < MAX_OUTPUT) err += value
       for (const line of value.split(/[\r\n]+/)) {
         const parsed = parseProgress(line)
-        if (parsed) report({ cwd, op: opts.op, ...parsed })
+        if (parsed) report({ ...opts.extra, cwd, op: opts.op, ...parsed })
       }
     })
 
@@ -702,6 +746,7 @@ async function statusOf(root: string): Promise<RepoStatus> {
   ])
 
   const parsed = parseStatus(status.ok ? status.out : '', root)
+  await fillSizes(root, parsed.files)
 
   // Every save on any line here that is on no line GitHub has.
   //
@@ -750,6 +795,218 @@ async function lastSave(root: string, sha: string | undefined): Promise<RepoStat
     },
     60 * 60_000
   )
+}
+
+// ----------------------------------------------------------------- sizes
+
+/**
+ * How many files of a new folder are counted before giving a lower bound.
+ *
+ * The folder that matters most here is the one somebody did not mean to add —
+ * a build output, a dataset, a `node_modules` that is not ignored — and that is
+ * also the one with a hundred thousand files in it. Counting all of them on
+ * every poll would stall the pane to report a number whose only useful reading
+ * is "enormous", which a floor says just as well.
+ */
+const FOLDER_FILE_LIMIT = 2000
+
+/**
+ * Puts a size on every changed file, in place.
+ *
+ * Two figures, because a file can be two sizes at once: what is on disk, and
+ * what is picked. See `ChangedFile.pickedSize`. Every failure leaves the field
+ * absent rather than zero — a file whose size could not be read must not be
+ * added into a total as nothing.
+ */
+async function fillSizes(root: string, files: ChangedFile[]): Promise<void> {
+  const picked = files.filter((f) => f.picked && f.picked !== 'D' && !f.conflicted)
+  const [index] = await Promise.all([
+    pickedSizes(root, picked.map((f) => f.repoPath)),
+    Promise.all(
+      files.map(async (file) => {
+        if (file.untracked && file.repoPath.endsWith('/')) {
+          const folder = await untrackedFolderSize(root, file.repoPath)
+          if (folder) {
+            file.size = folder.bytes
+            if (folder.atLeast) file.sizeAtLeast = true
+          }
+          return
+        }
+        try {
+          const info = await stat(file.path)
+          if (info.isFile()) file.size = info.size
+        } catch {
+          // Gone from disk: a deletion, picked or not. Nothing is being added.
+          if (file.picked === 'D' || file.changed === 'D') file.size = 0
+        }
+      })
+    ),
+  ])
+
+  for (const file of files) {
+    if (file.picked === 'D') file.pickedSize = 0
+    else if (file.picked) {
+      const size = index.get(file.repoPath)
+      if (size !== undefined) file.pickedSize = size
+    }
+  }
+}
+
+/**
+ * The size of each picked file as the index holds it.
+ *
+ * `ls-files --format` asks git for the object's size without reading the
+ * object, so this costs one spawn however many files there are. Named paths
+ * while the list is short, the whole index when it is not: a pick of ten
+ * thousand files would otherwise be an argument list the OS refuses, and one
+ * pass over an index is cheaper than working around that.
+ */
+async function pickedSizes(root: string, repoPaths: string[]): Promise<Map<string, number>> {
+  const sizes = new Map<string, number>()
+  if (!repoPaths.length) return sizes
+
+  const named = repoPaths.length <= 500
+  const args = [
+    // Paths are paths, not patterns: a file called `[draft].md` is one file.
+    '--literal-pathspecs',
+    'ls-files',
+    '-z',
+    '--format=%(objectsize)%x09%(path)',
+  ]
+  if (named) args.push('--', ...repoPaths)
+
+  const res = await run(root, args)
+  if (!res.ok) return sizes
+  for (const record of res.out.split('\0')) {
+    const tab = record.indexOf('\t')
+    if (tab < 0) continue
+    const size = Number(record.slice(0, tab))
+    if (Number.isFinite(size)) sizes.set(record.slice(tab + 1), size)
+  }
+  return sizes
+}
+
+/**
+ * What a new folder would add, which is not the same as what is in it.
+ *
+ * Asked of git rather than walked on disk, because git leaves out what is
+ * ignored — and the folders people add by accident are exactly the ones full
+ * of ignored build output. A walk would report a gigabyte for a folder whose
+ * `git add` would take three files.
+ *
+ * Cached briefly: this is the one part of the status that can take a moment,
+ * and a status is asked for every few seconds while a pane is open.
+ */
+function untrackedFolderSize(
+  root: string,
+  repoPath: string
+): Promise<{ bytes: number; atLeast: boolean } | null> {
+  return shaped(
+    `folder:${root}:${repoPath}`,
+    async () => {
+      const res = await run(root, [
+        '--literal-pathspecs',
+        'ls-files',
+        '-z',
+        '--others',
+        '--exclude-standard',
+        '--',
+        repoPath,
+      ])
+      if (!res.ok) return null
+      const listed = res.out.split('\0').filter(Boolean)
+      const counted = listed.slice(0, FOLDER_FILE_LIMIT)
+      const sizes = await Promise.all(
+        counted.map((p) =>
+          stat(path.join(root, p))
+            .then((info) => (info.isFile() ? info.size : 0))
+            .catch(() => 0)
+        )
+      )
+      return {
+        bytes: sizes.reduce((sum, n) => sum + n, 0),
+        atLeast: listed.length > counted.length,
+      }
+    },
+    15_000
+  )
+}
+
+/**
+ * What the next push would send, before it is sent.
+ *
+ * Keyed on where HEAD is and where every remote branch is, so it is worked out
+ * once per save and once per push rather than once per poll. Everything that
+ * could change the answer changes one of those two.
+ */
+export async function sendSize(cwd: string): Promise<SendSize | null> {
+  const root = await checkoutRoot(cwd)
+  if (!root) return null
+  const [head, remotes] = await Promise.all([
+    run(root, ['rev-parse', '--verify', '-q', 'HEAD']),
+    run(root, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/remotes']),
+  ])
+  // No save yet means nothing to send, which is a different answer from
+  // "could not tell" — but both are drawn as no figure at all.
+  if (!head.ok) return null
+  const where = createHash('sha1').update(remotes.out).digest('hex')
+  return shaped(`send:${root}:${head.out.trim()}:${where}`, () => measureSend(root), 10 * 60_000)
+}
+
+/**
+ * Counts and weighs the objects a push would write.
+ *
+ * `rev-list --objects HEAD --not --remotes` is the set of objects reachable from
+ * here that no remote branch already has — the same question the push asks the
+ * other end, answered from what this machine already knows about it. Then one
+ * `cat-file` pass for their sizes.
+ *
+ * Exported for the tests.
+ */
+export async function measureSend(root: string): Promise<SendSize | null> {
+  const listed = await run(root, ['rev-list', '--objects', 'HEAD', '--not', '--remotes'])
+  if (!listed.ok) return null
+
+  // `<sha>` for a commit, `<sha> <path>` for everything reachable from one.
+  const pathOf = new Map<string, string>()
+  const ids: string[] = []
+  for (const line of listed.out.split('\n')) {
+    if (!line) continue
+    const space = line.indexOf(' ')
+    const id = space < 0 ? line : line.slice(0, space)
+    ids.push(id)
+    if (space >= 0) pathOf.set(id, line.slice(space + 1))
+  }
+
+  const empty: SendSize = { saves: 0, files: 0, bytes: 0, upload: 0, objects: 0 }
+  if (!ids.length) return empty
+
+  const checked = await runInput(
+    root,
+    ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize) %(objectsize:disk)'],
+    ids.join('\n') + '\n'
+  )
+  if (!checked.ok) return null
+
+  const size = { ...empty, objects: ids.length }
+  const files = new Set<string>()
+  for (const line of checked.out.split('\n')) {
+    const [id, type, raw, disk] = line.split(' ')
+    if (!id || !type) continue
+    size.upload += Number(disk) || 0
+    if (type === 'commit') size.saves++
+    if (type !== 'blob') continue
+
+    const bytes = Number(raw) || 0
+    size.bytes += bytes
+    // One path per blob: the same contents at two paths is one object, sent
+    // once, and counting it twice would overstate what goes.
+    const where = pathOf.get(id)
+    if (where) files.add(where)
+    if (where && (!size.largest || bytes > size.largest.bytes)) size.largest = { path: where, bytes }
+  }
+  size.files = files.size
+  return size
 }
 
 // --------------------------------------------------------------- history
@@ -1100,7 +1357,13 @@ export async function send(cwd: string): Promise<GitResult> {
   const args = status.upstream
     ? ['push', '--progress']
     : ['push', '--progress', '--set-upstream', 'origin', status.branch]
-  return asResult(await runProgress(root, args, { op: 'send', network: true }))
+  // Worked out before the push rather than read from it: git says how much it
+  // has written, never how much it is going to. Almost always already cached
+  // from the button that started this, which showed the same figure.
+  const sending = (await sendSize(root)) ?? undefined
+  return asResult(
+    await runProgress(root, args, { op: 'send', network: true, extra: sending ? { sending } : undefined })
+  )
 }
 
 /**

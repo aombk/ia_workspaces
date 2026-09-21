@@ -908,6 +908,7 @@ function bootApp(): void {
     ipcMain.handle(IPC.gitUnpick, (_e, cwd: string, paths: string[]) => git.unpick(cwd, paths ?? []))
     ipcMain.handle(IPC.gitSave, (_e, cwd: string, message: string) => git.save(cwd, message))
     ipcMain.handle(IPC.gitSend, (_e, cwd: string) => git.send(cwd))
+    ipcMain.handle(IPC.gitSendSize, (_e, cwd: string) => git.sendSize(cwd))
     ipcMain.handle(IPC.gitPeek, (_e, cwd: string) => git.peek(cwd))
     ipcMain.handle(IPC.gitBringIn, (_e, cwd: string) => git.bringIn(cwd))
     ipcMain.handle(IPC.gitGoTo, (_e, cwd: string, branch: string) => git.goTo(cwd, branch))

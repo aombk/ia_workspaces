@@ -37,6 +37,7 @@ import type {
   ChangedFile,
   GitResult,
   GitProgress,
+  SendSize,
   HistoryFilter,
   HostTool,
   CryptoReading,
@@ -392,6 +393,8 @@ export interface Backend {
     save(cwd: string, message: string): Promise<GitResult>
     /** The one operation that leaves this machine. */
     send(cwd: string): Promise<GitResult>
+    /** What `send` would upload, worked out before anything is sent. Null when there is nothing to tell. */
+    sendSize(cwd: string): Promise<SendSize | null>
     /** Looks at what is new on GitHub without touching anything here. */
     peek(cwd: string): Promise<GitResult>
     bringIn(cwd: string): Promise<GitResult>

@@ -18,6 +18,7 @@ import { remoteHostOfPane, store } from './state'
 import { sortEntries } from '../shared/images'
 import { isCanvasPath } from '../shared/canvas'
 import { isDocumentPath } from '../shared/docs'
+import { formatSize } from '../shared/gitSize'
 import { isMediaPath, mediaKind } from '../shared/media'
 import type { FileEntry, GitStatusMap, Settings } from '../shared/types'
 
@@ -1809,29 +1810,13 @@ function signatureOf(
   )
 }
 
-/**
- * A file size in the narrowest form that is still honest: bytes below a
- * kilobyte, and one decimal only while the number is small enough for it to
- * mean something.
- *
- * Right-aligned in a fixed-width column by `.files-size`, which is what makes
- * the figures form a line you can run your eye down. Splitting the number into
- * separately aligned pieces — digits, point, fraction, unit — was tried and
- * looked worse: every part sizes to the widest row that has one, so a column of
- * mostly-round numbers ends up spread across gaps that exist for other rows.
- */
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  let value = bytes / 1024
-  let unit = 0
-  while (value >= 1024 && unit < SIZE_UNITS.length - 1) {
-    value /= 1024
-    unit++
-  }
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${SIZE_UNITS[unit]}`
-}
-
-const SIZE_UNITS = ['KB', 'MB', 'GB', 'TB']
+// Sizes are drawn by `formatSize` from `shared/gitSize.ts`, which the git pane
+// shares so a file reads the same size in both. Right-aligned in a fixed-width
+// column by `.files-size`, which is what makes the figures form a line you can
+// run your eye down. Splitting the number into separately aligned pieces —
+// digits, point, fraction, unit — was tried and looked worse: every part sizes
+// to the widest row that has one, so a column of mostly-round numbers ends up
+// spread across gaps that exist for other rows.
 
 /**
  * A timestamp at the width a tree column can spare: the clock for today, the

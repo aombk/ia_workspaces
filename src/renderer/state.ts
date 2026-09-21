@@ -1942,6 +1942,12 @@ function normalize(raw: unknown): PersistedState {
   // any other value is a real preference and is left alone.
   if (settings.lineHeight === 1.2) settings.lineHeight = DEFAULT_SETTINGS.lineHeight
 
+  // A value from a newer build, or a hand-edited file, falls back rather than
+  // leaving the list in an order the pane does not know how to draw.
+  if (settings.gitFileOrder !== 'name' && settings.gitFileOrder !== 'size') {
+    settings.gitFileOrder = DEFAULT_SETTINGS.gitFileOrder
+  }
+
   // The shared folder was `tokenShareDir` while token totals were the only
   // thing written into it. Relay writes there too now, so the key says what it
   // is. Carried rather than asked for again: someone who already chose a folder
@@ -1974,6 +1980,12 @@ function normalize(raw: unknown): PersistedState {
           kind: readPaneKind(p.kind),
           cwd: sanitizeCwd(String(p.cwd ?? cwd), cwd),
           autoTitle: String(p.autoTitle ?? ''),
+          // A name you gave a split. Written all along — `workspaceFile.ts`
+          // saves it beside the tab's — and read back nowhere, so renaming a
+          // pane survived exactly until the next launch. A tab's own name is
+          // read below, which is what made this look like a save bug: one half
+          // of the same gesture came back and the other did not.
+          customTitle: typeof p.customTitle === 'string' ? p.customTitle : null,
           shell: readPaneShell(p.shell, docVersion),
           agentSession: readAgentSession(p.agentSession),
           lastCommand: readLastCommand(p.lastCommand),
