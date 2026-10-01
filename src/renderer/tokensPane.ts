@@ -20,6 +20,7 @@
  * workspaces.
  */
 import type { AuxPane } from './auxPane'
+import { Redraw } from './redraw'
 import { backend } from '../backend'
 import { store } from './state'
 import {
@@ -80,6 +81,7 @@ export class TokensPane implements AuxPane {
   private readonly body: HTMLDivElement
   private unwatch: (() => void) | null = null
   private disposed = false
+  private readonly redraw: Redraw
 
   constructor(
     readonly paneId: string,
@@ -99,19 +101,37 @@ export class TokensPane implements AuxPane {
     this.body.className = 'tokens-body'
     this.element.appendChild(this.body)
 
+    this.redraw = new Redraw(this.element)
     this.render()
     // Redrawn when a new count lands rather than on a clock of its own: the
-    // scan already runs once a minute for everything that wants it.
-    this.unwatch = watchTokens(() => this.render())
+    // scan already runs once a minute for everything that wants it. A new
+    // count is news whatever the inputs say, since the machines' shared totals
+    // arrive with it.
+    this.unwatch = watchTokens(() => {
+      this.redraw.invalidate()
+      this.refresh()
+    })
   }
 
   /** Cheap and idempotent: the store changing can rename the workspace. */
   sync(): void {
-    this.render()
+    this.refresh()
+  }
+
+  /** The workspace, the report, the settings, and the minute for "ago" times. */
+  private inputs(): readonly unknown[] {
+    const workspace = store.workspaces.find((w) => w.id === this.workspaceId)
+    return [workspace?.cwd, latestTokens(), store.settings, Math.floor(Date.now() / 60_000)]
+  }
+
+  /** Redraws for a change from outside, if it changed anything shown. */
+  private refresh(): void {
+    if (this.redraw.due(this.inputs())) this.render()
   }
 
   private render(): void {
     if (this.disposed) return
+    this.redraw.drew(this.inputs())
     const workspace = store.workspaces.find((w) => w.id === this.workspaceId)
     const spent = workspaceTokens(this.workspaceId)
 

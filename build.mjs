@@ -176,6 +176,92 @@ async function buildMacSensors() {
   console.log(done ? '[build] macsensors (universal)' : '[build] macsensors skipped — no working clang')
 }
 
+/**
+ * The type checker and the test suite, before anything is built.
+ *
+ * On the build rather than on a push because the build is where a broken change
+ * actually does harm: `package` is `build` followed by electron-builder, so a
+ * build that fails here is an installer that never gets made, rather than one
+ * that gets made, installed and found wanting.
+ *
+ * Both at once — they share nothing, and the suite is the slow one, so the type
+ * check costs no time at all. Output is held back and shown only for whichever
+ * failed: 848 lines of "ok" in front of every build would bury the one line
+ * that matters on the day something breaks.
+ *
+ * Skipped in watch mode, which rebuilds on every save and would be running the
+ * whole suite between keystrokes. And skippable on purpose — `--skip-tests`, or
+ * `IAW_SKIP_TESTS=1` where the build is run by another script (`npm start`
+ * passes its arguments to Electron, not to this) — for the moment you need a
+ * build to find out what is wrong, which is not the moment to be refused one.
+ */
+function runCheck(label, script, scriptArgs) {
+  return new Promise((resolve) => {
+    // This Node, by path, and no shell: `npx` and `npm run` would each start
+    // another Node and another npm just to find the same two files.
+    const child = spawn(process.execPath, [script, ...scriptArgs], { cwd: root, windowsHide: true })
+    let output = ''
+    child.stdout.on('data', (chunk) => (output += chunk))
+    child.stderr.on('data', (chunk) => (output += chunk))
+    child.on('error', (error) => resolve({ label, ok: false, output: output + error.message }))
+    child.on('close', (code) => resolve({ label, ok: code === 0, output }))
+  })
+}
+
+async function checkBeforeBuild() {
+  if (args.includes('--skip-tests') || process.env.IAW_SKIP_TESTS === '1') {
+    console.log('[build] tests skipped — this build has not been checked')
+    return
+  }
+  const started = Date.now()
+  const results = await Promise.all([
+    runCheck('typecheck', path.join(root, 'node_modules/typescript/bin/tsc'), ['--noEmit']),
+    runCheck('tests', path.join(root, 'tests/run.mjs'), []),
+  ])
+  const failed = results.filter((r) => !r.ok)
+  if (failed.length) {
+    for (const r of failed) {
+      console.error(`\n[build] ${r.label} failed:\n`)
+      console.error(r.output.trimEnd())
+    }
+    console.error(
+      `\n[build] stopped: ${failed.map((r) => r.label).join(' and ')} failed, so nothing was built — ` +
+        'the last good build in out/ is untouched. Fix it, or build anyway with --skip-tests (or IAW_SKIP_TESTS=1).'
+    )
+    process.exit(1)
+  }
+  // The suite's own closing line — "32 suites passed" — is the summary worth
+  // keeping, so it is passed through rather than restated.
+  const summary = results[1].output.trim().split('\n').pop()
+  console.log(`[build] typecheck clean · ${summary} (${((Date.now() - started) / 1000).toFixed(1)}s)`)
+}
+
+/**
+ * The interface suite, against the app that was just built.
+ *
+ * After the build rather than before it, unlike the checks above, because what
+ * it tests *is* the build: it launches `out/electron` offscreen and drives it
+ * with mouse and keys. So a failure here cannot keep the old output — it has
+ * already been replaced — but it still exits non-zero, which is what stops
+ * `package` from making an installer out of it. See `tests/ui.e2e.mjs`.
+ */
+async function checkInterface() {
+  if (args.includes('--skip-tests') || process.env.IAW_SKIP_TESTS === '1') return
+  const started = Date.now()
+  const result = await runCheck('interface tests', path.join(root, 'tests/ui.e2e.mjs'), [])
+  if (!result.ok) {
+    console.error('\n[build] interface tests failed:\n')
+    console.error(result.output.trimEnd())
+    console.error(
+      '\n[build] stopped: the interface tests failed against this build. It is in out/, but nothing ' +
+        'that runs after the build (packaging) will use it. Fix it, or build anyway with --skip-tests.'
+    )
+    process.exit(1)
+  }
+  const summary = result.output.trim().split('\n').pop()
+  console.log(`[build] interface: ${summary} (${((Date.now() - started) / 1000).toFixed(1)}s)`)
+}
+
 const targets = electronTargets
 
 if (watch) {
@@ -189,8 +275,12 @@ if (watch) {
     spawn(electron, ['.'], { stdio: 'inherit', cwd: root }).on('exit', () => process.exit(0))
   }
 } else {
+  // Before the old output is removed, so a failed check leaves the last good
+  // build in place rather than an empty folder.
+  await checkBeforeBuild()
   await rm(electronOut, { recursive: true, force: true })
   await copyStatic()
   await Promise.all([...targets.map((t) => build(t)), buildMacSensors()])
+  await checkInterface()
   console.log('[build] done')
 }

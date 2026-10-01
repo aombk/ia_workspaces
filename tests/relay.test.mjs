@@ -384,5 +384,33 @@ await checkAsync('another machine’s commands come back, and only for the right
   )
 })
 
+await checkAsync('an unchanged command file is not decrypted again on the next sweep', async () => {
+  // Every sweep reads every machine's file, and each decryption is a key
+  // derivation that is slow on purpose. A file whose size and mtime have not
+  // moved is answered from what it said last time. Proved by changing its
+  // bytes behind the sweep's back while keeping both: a re-read would fail to
+  // decrypt and lose the commands.
+  const project = Object.keys(written())[0].split('/')[0]
+  const other = path.join(relayDir, project, 'cmd-macbook-deadbeef.json')
+  const entries = [{ cwd: repo, name: 'alpha', open: true }]
+  // A whole-second mtime, so putting it back below restores it exactly.
+  const mtime = new Date(Math.floor(fs.statSync(other).mtimeMs / 1000) * 1000 - 60_000)
+  fs.utimesSync(other, mtime, mtime)
+  const first = await R.publishRelay(dataDir, shared, entries, 'a shared passphrase')
+  assert.equal((first.commandsByProject[project] ?? []).length, 1)
+
+  const { size } = fs.statSync(other)
+  fs.writeFileSync(other, 'x'.repeat(size))
+  fs.utimesSync(other, mtime, mtime)
+  const again = await R.publishRelay(dataDir, shared, entries, 'a shared passphrase')
+  assert.equal((again.commandsByProject[project] ?? []).length, 1, 'answered without reading it again')
+
+  // And a real change is still seen: a new mtime means a new read.
+  const later = new Date(mtime.getTime() + 5000)
+  fs.utimesSync(other, later, later)
+  const changed = await R.publishRelay(dataDir, shared, entries, 'a shared passphrase')
+  assert.deepEqual(changed.commandsByProject[project] ?? [], [], 'the garbage is read once it looks changed')
+})
+
 Date.now = realNow
 console.log(`\n${passed} checks passed`)

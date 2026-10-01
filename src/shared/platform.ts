@@ -431,15 +431,23 @@ export function ipcRuntimeDir(
  * path limit. It is second choice rather than first because the temp directory
  * is the one place something else may delete the socket out from under a
  * running server.
+ *
+ * With `uid`, the fallback is a folder of this user's own inside it rather than
+ * the temp directory itself. On Linux that directory is `/tmp`, shared by every
+ * account, and a fixed socket name there is one another user can create first
+ * and then collect the token from whoever connects. The caller creates the
+ * folder 0700 and checks it is still its own (`ensurePrivateDir`); a name alone
+ * cannot promise that.
  */
 export function ipcAddress(
   p: PlatformKind,
   name: string,
-  dirs: { runtime: string; tmp: string }
+  dirs: { runtime: string; tmp: string; uid?: number }
 ): string {
   if (isWindows(p)) return `\\\\.\\pipe\\iaw-${name}`
   const preferred = joinPath(p, dirs.runtime, `${name}.sock`)
   if (preferred.length <= SOCKET_PATH_MAX) return preferred
+  if (dirs.uid !== undefined) return joinPath(p, dirs.tmp, `iaw-${dirs.uid}`, `${name}.sock`)
   return joinPath(p, dirs.tmp, `iaw-${name}.sock`)
 }
 

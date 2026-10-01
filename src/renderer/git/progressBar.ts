@@ -71,6 +71,8 @@ export class GitProgressBar {
   readonly element: HTMLDivElement
   private readonly labelEl: HTMLDivElement
   private readonly countEl: HTMLDivElement
+  /** Shown only for an operation that is safe to end part-way. See `start`. */
+  private readonly stopBtn: HTMLButtonElement
   private readonly trackEl: HTMLDivElement
   private readonly fillEl: HTMLDivElement
 
@@ -98,6 +100,16 @@ export class GitProgressBar {
     this.countEl.className = 'git-progress__count'
     row.appendChild(this.countEl)
 
+    // On the bar rather than in the button strip: every button there is locked
+    // while git runs, and the bar is the one thing on screen that is about the
+    // operation in progress — which is what a Stop is about.
+    this.stopBtn = document.createElement('button')
+    this.stopBtn.type = 'button'
+    this.stopBtn.className = 'git-progress__stop'
+    this.stopBtn.textContent = 'Stop'
+    this.stopBtn.hidden = true
+    row.appendChild(this.stopBtn)
+
     this.element.appendChild(row)
 
     this.trackEl = document.createElement('div')
@@ -115,13 +127,31 @@ export class GitProgressBar {
    * because for the first second or two of a push there is nothing else to say,
    * and "working…" says less than nothing.
    */
-  start(label: string): void {
+  start(label: string, onStop?: () => void): void {
     this.clearTimer()
     this.opening = label
     this.element.hidden = false
     this.labelEl.textContent = label
     this.countEl.textContent = ''
     this.indeterminate()
+
+    // Offered from the first moment, not once git has said something: the
+    // wait people most want to abandon is the silent one at the start of a
+    // push, while it is still trying to reach the other end.
+    this.stopBtn.hidden = !onStop
+    this.stopBtn.disabled = false
+    this.stopBtn.textContent = 'Stop'
+    this.stopBtn.title = 'Stop now. Nothing is sent or changed until the very end, so stopping leaves everything as it was.'
+    this.stopBtn.onclick = onStop
+      ? () => {
+          // Once. The operation still has to end on its own terms — git has to
+          // exit and the pane has to unlock — and a second press in that gap
+          // would only be a second kill of something already going.
+          this.stopBtn.disabled = true
+          this.stopBtn.textContent = 'Stopping…'
+          onStop()
+        }
+      : null
   }
 
   /** One line of what git said. */
@@ -156,12 +186,14 @@ export class GitProgressBar {
    * — and the whole reason this exists is to make the app look like it is doing
    * something rather than like it is broken.
    */
-  finish(): void {
+  finish(outcome = 'Done'): void {
     this.clearTimer()
+    this.stopBtn.hidden = true
+    this.stopBtn.onclick = null
     if (this.element.hidden) return
     this.determinate(100)
     this.countEl.textContent = ''
-    this.labelEl.textContent = 'Done'
+    this.labelEl.textContent = outcome
     this.hideTimer = setTimeout(() => {
       this.element.hidden = true
       this.hideTimer = null

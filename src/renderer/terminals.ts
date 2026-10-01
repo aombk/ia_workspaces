@@ -55,6 +55,7 @@ import { beginDrag, draggingTab, endDrag } from './ui/dragState'
 import { isMac, isPrimary } from './ui/keys'
 import { DomZoom, UnavailablePane, type AuxPane, type PaneZoom } from './auxPane'
 import { bufferWhileHidden, clearPending, drainPending } from './paneBuffer'
+import { layoutSignature } from './paneLayout'
 import { programWheelDriver } from './programWheel'
 import { fallbackCwd } from '../shared/platform'
 import type { DropSide } from './state'
@@ -203,6 +204,7 @@ export class TerminalManager {
     setInterval(() => {
       this.trimHidden()
       this.releaseIdle()
+      this.refreshAtlases()
     }, TerminalManager.TRIM_EVERY_MS)
 
     this.resizeObserver = new ResizeObserver(() => this.fitAll())
@@ -301,19 +303,6 @@ export class TerminalManager {
     // Must be in the document before open() or xterm measures a zero cell.
     this.pool.appendChild(element)
     term.open(element)
-
-    // WebGL is a large speedup but renders its background opaque, so it can't
-    // be used with a translucent theme. It also fails on some drivers.
-    let webgl: WebglAddon | null = null
-    if (!isTranslucent(settings)) {
-      try {
-        webgl = new WebglAddon()
-        webgl.onContextLoss(() => webgl?.dispose())
-        term.loadAddon(webgl)
-      } catch {
-        webgl = null // DOM renderer is fine
-      }
-    }
 
     // TUIs query the terminal's own colours (OSC 10 foreground, 11 background)
     // to decide whether they are on a light or dark background and tune their
@@ -503,7 +492,7 @@ export class TerminalManager {
       fit,
       search,
       element,
-      webgl,
+      webgl: null,
       blockedBar,
       blockedSignature: '',
       corner,
@@ -525,6 +514,14 @@ export class TerminalManager {
       hibernated: false,
     }
     this.instances.set(paneId, inst)
+
+    // WebGL is a large speedup but renders its background opaque, so it can't
+    // be used with a translucent theme. It also fails on some drivers. Through
+    // `setRenderer` like every other renderer change, so the one context-loss
+    // handler that remembers to forget the addon is the only one there is — a
+    // second copy here used to dispose it and leave `inst.webgl` pointing at
+    // the corpse, and the pane stayed on the DOM renderer for good.
+    this.setRenderer(inst, document.visibilityState === 'visible')
     return inst
   }
 
@@ -832,6 +829,7 @@ export class TerminalManager {
   async showTab(workspaceId: string, tab: TerminalTabState): Promise<void> {
     const token = ++this.layoutToken
     this.mountedTabId = tab.id
+    this.appliedActivePane = tab.activePaneId
 
     // The rename target is part of what the tree looks like, not just of what
     // the store holds: a pane header is built here and nowhere else, so a
@@ -878,6 +876,10 @@ export class TerminalManager {
     for (const pane of tab.panes) {
       this.elementOf(pane.id)?.classList.toggle('active', pane.id === tab.activePaneId)
     }
+    // A kept tree's headers are as old as the tree, and its panes skipped
+    // every store change while they were hidden — see `applyPaneStatus`.
+    this.syncHeaders(tab.activePaneId)
+    for (const pane of tab.panes) this.aux.get(pane.id)?.sync?.()
 
     // Measure only once laid out, otherwise every pane reads zero.
     await new Promise((r) => requestAnimationFrame(r))
@@ -1206,12 +1208,7 @@ export class TerminalManager {
     if (indicator) {
       const dot = document.createElement('span')
       dot.className = `pane-state pane-state--${indicator}`
-      dot.title =
-        indicator === 'blocked'
-          ? (store.paneAgent(pane.id)?.blockedReason ?? 'Waiting for you')
-          : indicator === 'working'
-            ? 'Agent working'
-            : 'Producing output'
+      dot.title = paneStateTitle(indicator, pane.id)
       header.appendChild(dot)
     }
 
@@ -1583,8 +1580,61 @@ export class TerminalManager {
     for (const [id, element] of this.paneEntries()) {
       element.classList.toggle('active', id === paneId)
     }
-    if (this.mayTakeFocus()) this.instances.get(paneId)?.term.focus()
+    // The headers too. They are built once per tree and the tree is kept, so
+    // a header lit at build time stayed lit while the pane under it went dark.
+    this.syncHeaders(paneId)
+    // A pane actually changing is somebody asking to be somewhere else — a
+    // click on a header, Alt+arrow, a jump from a notification — and that is
+    // allowed to take the caret out of another pane's field. The same pane
+    // re-asserted by an unrelated store change is not.
+    const moved = this.appliedActivePane !== null && this.appliedActivePane !== paneId
+    this.appliedActivePane = paneId
+    if (this.mayTakeFocus(moved)) this.instances.get(paneId)?.term.focus()
   }
+
+  /**
+   * Brings the mounted tab's pane headers up to date without rebuilding them.
+   *
+   * A header is built with its tree and the tree is kept across store changes
+   * — rebuilding it is what reloads a browser pane — so what a header shows
+   * has to be refreshed in place: which pane is active, what the pane is
+   * called now, and the dot saying what it is doing. A few comparisons per
+   * header; nothing is touched that has not changed, and a header holding a
+   * rename field keeps its field.
+   */
+  private syncHeaders(activePaneId?: string): void {
+    const tree = this.mountedTabId ? this.trees.get(this.mountedTabId)?.element : null
+    if (!tree) return
+    const active = activePaneId ?? store.tab(this.mountedTabId!)?.activePaneId
+    for (const header of tree.querySelectorAll<HTMLElement>('.pane-shell > .pane-header')) {
+      const id = (header.parentElement as HTMLElement).dataset.paneId ?? ''
+      header.classList.toggle('active', id === active)
+      const pane = store.pane(id)
+      if (!pane) continue
+
+      const title = header.querySelector<HTMLElement>(':scope > .pane-title')
+      const label = paneLabel(pane)
+      if (title && title.textContent !== label) title.textContent = label
+
+      const indicator = store.paneIndicator(id)
+      let dot = header.querySelector<HTMLElement>(':scope > .pane-state')
+      if (!indicator) {
+        dot?.remove()
+        continue
+      }
+      if (!dot) {
+        dot = document.createElement('span')
+        header.querySelector(':scope > .pane-grip')?.after(dot)
+      }
+      const className = `pane-state pane-state--${indicator}`
+      if (dot.className !== className) dot.className = className
+      const hint = paneStateTitle(indicator, id)
+      if (dot.title !== hint) dot.title = hint
+    }
+  }
+
+  /** The active pane `setActivePane` last applied, to tell a move from a repeat. */
+  private appliedActivePane: string | null = null
 
   /**
    * Whether it is our turn to hold focus.
@@ -1598,15 +1648,29 @@ export class TerminalManager {
    * click was all you got.
    *
    * So the terminal only claims focus when nothing else wants it.
+   *
+   * "Inside a pane" used to count as nothing else wanting it, on the grounds
+   * that xterm's own textarea lives in one. But so does every other pane's
+   * field — a commit message, a search box, an editor, a web page — and a split
+   * with a terminal beside any of them lost what you were typing to the
+   * terminal on the next store change, which during agent output is every few
+   * hundred milliseconds. So: a terminal's textarea is fair game, and a field
+   * anywhere is not, unless `moved` says the user just asked for another pane.
    */
-  private mayTakeFocus(): boolean {
+  private mayTakeFocus(moved = false): boolean {
     if (isEditing()) return false
     const active = document.activeElement
     if (!active || active === document.body || active === document.documentElement) return true
-    // xterm's own hidden textarea lives inside a pane, and that is not
-    // "somewhere else" — losing this case would stop panes focusing at all.
-    if (active.closest('.pane, .pane-shell')) return true
-    return !active.closest('input, select, textarea, button, [contenteditable="true"]')
+    if (active.classList.contains('xterm-helper-textarea')) return true
+    // A tab or workspace row reached from the keyboard is where the keyboard is
+    // working. One that merely took focus from a click is not — clicking a tab
+    // has always handed the keyboard to its terminal, and still does.
+    if (active.matches('[role="tab"]')) return !active.matches(':focus-visible')
+    const field = active.closest(
+      'input, select, textarea, webview, iframe, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]'
+    )
+    if (active.closest('.pane, .pane-shell')) return moved || !field
+    return !field && !active.closest('button')
   }
 
   /**
@@ -1639,8 +1703,14 @@ export class TerminalManager {
       this.renderProgress(inst)
     }
     // Panes that draw from store state rather than from a PTY. Each decides for
-    // itself whether anything actually changed.
-    for (const pane of this.aux.values()) pane.sync?.()
+    // itself whether anything actually changed — and only the ones on screen
+    // are asked. A gallery in a hidden tab re-listing a folder, or a dashboard
+    // there rebuilding itself, was work for nobody on every store change; each
+    // is asked again as its tab comes back, in `showTab`.
+    for (const id of this.mountedPaneIds()) this.aux.get(id)?.sync?.()
+    // A split's headers carry the same dot, and the pane's name, and nothing
+    // else would ever repaint them short of a layout change.
+    this.syncHeaders()
   }
 
   /**
@@ -1794,6 +1864,11 @@ export class TerminalManager {
     }
   }
 
+  /** The panes of the tab on screen. */
+  private mountedPaneIds(): string[] {
+    return (this.mountedTabId ? store.tab(this.mountedTabId)?.panes : undefined)?.map((p) => p.id) ?? []
+  }
+
   /** Every mounted pane element, shell or otherwise. */
   private *paneEntries(): Generator<[string, HTMLElement]> {
     for (const inst of this.instances.values()) yield [inst.paneId, inst.element]
@@ -1899,6 +1974,13 @@ export class TerminalManager {
     if (!inst) return
     inst.disposed = true
     void backend().pty.kill(paneId)
+    // Ahead of the terminal's own dispose, which would dispose the addon too
+    // but leave its context for the collector — see `releaseWebgl`.
+    if (inst.webgl) {
+      const webgl = inst.webgl
+      inst.webgl = null
+      releaseWebgl(webgl)
+    }
     try {
       inst.term.dispose()
     } catch {
@@ -1981,6 +2063,38 @@ export class TerminalManager {
       if ((inst.term.options.scrollback ?? 0) <= keep) continue
       try {
         inst.term.options.scrollback = keep
+      } catch {
+        /* a pane mid-teardown */
+      }
+    }
+  }
+
+  /** How often a pane on screen has its glyph atlas started afresh. */
+  private static readonly ATLAS_EVERY_MS = 30 * 60 * 1000
+  private atlasesClearedAt = Date.now()
+
+  /**
+   * Starts the glyph atlas of every pane on screen afresh, every half hour.
+   *
+   * The WebGL renderer draws text from an atlas of every glyph, colour and
+   * style it has ever been asked for, and the atlas only ever grows: a pane
+   * that has shown a few days of agent output — colours, emoji, box drawing in
+   * every weight — carries pages of textures for glyphs it may never draw
+   * again. Hidden panes are not the problem; they hand their renderer back
+   * entirely (see `setRenderer`), atlas and all. This is for the ones that
+   * stay on screen for days.
+   *
+   * Clearing costs one redraw that re-rasterises what is visible, which is
+   * nothing at this interval.
+   */
+  private refreshAtlases(): void {
+    const now = Date.now()
+    if (now - this.atlasesClearedAt < TerminalManager.ATLAS_EVERY_MS) return
+    this.atlasesClearedAt = now
+    for (const inst of this.instances.values()) {
+      if (inst.disposed || inst.deferred || !inst.webgl) continue
+      try {
+        inst.term.clearTextureAtlas()
       } catch {
         /* a pane mid-teardown */
       }
@@ -2106,12 +2220,9 @@ export class TerminalManager {
     const allowed = wanted && !isTranslucent(store.settings)
 
     if (!allowed && inst.webgl) {
-      try {
-        inst.webgl.dispose()
-      } catch {
-        /* already gone */
-      }
+      const webgl = inst.webgl
       inst.webgl = null
+      releaseWebgl(webgl)
       return
     }
     if (allowed && !inst.webgl && !inst.disposed) {
@@ -2120,12 +2231,8 @@ export class TerminalManager {
         // Null it as well as dispose it, or the pane believes it still has a
         // renderer it no longer has and never asks for another.
         webgl.onContextLoss(() => {
-          try {
-            webgl.dispose()
-          } catch {
-            /* already gone */
-          }
           if (inst.webgl === webgl) inst.webgl = null
+          releaseWebgl(webgl)
         })
         inst.term.loadAddon(webgl)
         inst.webgl = webgl
@@ -2214,24 +2321,12 @@ export class TerminalManager {
       inst.term.options.theme = theme
 
       // Swap renderers when translucency changes: WebGL can't draw a
-      // see-through background, the DOM renderer can.
-      if (translucent && inst.webgl) {
-        try {
-          inst.webgl.dispose()
-        } catch {
-          /* already gone */
-        }
-        inst.webgl = null
-      } else if (!translucent && !inst.webgl) {
-        try {
-          const webgl = new WebglAddon()
-          webgl.onContextLoss(() => webgl.dispose())
-          inst.term.loadAddon(webgl)
-          inst.webgl = webgl
-        } catch {
-          inst.webgl = null
-        }
-      }
+      // see-through background, the DOM renderer can. Only for a pane that is
+      // on screen, which is the rule `setDeferred` and `applyWindowVisibility`
+      // keep everywhere else: this runs on every zoom step, every settings
+      // change and every theme preview, and handing a context to every hidden
+      // pane each time undid the whole point of taking them away.
+      if (!inst.disposed) this.setRenderer(inst, !inst.deferred && document.visibilityState === 'visible')
     }
     this.applyBackdrop(settings)
     this.fitAll()
@@ -2250,6 +2345,57 @@ export class TerminalManager {
 
   get mountedTab(): string | null {
     return this.mountedTabId
+  }
+}
+
+/** The hover text on a pane header's status dot. */
+function paneStateTitle(indicator: string, paneId: string): string {
+  return indicator === 'blocked'
+    ? (store.paneAgent(paneId)?.blockedReason ?? 'Waiting for you')
+    : indicator === 'working'
+      ? 'Agent working'
+      : 'Producing output'
+}
+
+/**
+ * Disposes a WebGL addon and hands its context straight back to the driver.
+ *
+ * Disposing the addon removes its canvas but does not end the context: that
+ * waits for the garbage collector, which is in no hurry, and until then the
+ * context's textures and buffers stay allocated in the GPU process. With a
+ * dozen panes coming and going over a couple of days that added up to
+ * gigabytes. `WEBGL_lose_context` is the one way a page can say "done with
+ * this" outright.
+ *
+ * The context is not on the addon's public surface, so it is read off its
+ * renderer — `_renderer._gl`, a private field that survives the addon's build
+ * unrenamed. Read defensively: if a future version moves it, this quietly does
+ * what it did before, which is dispose and wait. Taken before the dispose and
+ * lost after it, so the addon's own `webglcontextlost` listener is already gone
+ * and nothing mistakes this for a driver reset.
+ */
+function releaseWebgl(webgl: WebglAddon): void {
+  let gl: WebGLRenderingContext | WebGL2RenderingContext | null = null
+  try {
+    const candidate = (webgl as unknown as { _renderer?: { _gl?: unknown } })._renderer?._gl
+    if (
+      (typeof WebGL2RenderingContext !== 'undefined' && candidate instanceof WebGL2RenderingContext) ||
+      (typeof WebGLRenderingContext !== 'undefined' && candidate instanceof WebGLRenderingContext)
+    ) {
+      gl = candidate
+    }
+  } catch {
+    gl = null
+  }
+  try {
+    webgl.dispose()
+  } catch {
+    /* already gone */
+  }
+  try {
+    if (gl && !gl.isContextLost()) gl.getExtension('WEBGL_lose_context')?.loseContext()
+  } catch {
+    /* nothing more to give back */
   }
 }
 
@@ -2282,18 +2428,4 @@ export function attachZoomWheel(element: HTMLElement, zoom: PaneZoom): void {
     },
     { passive: false, capture: true }
   )
-}
-
-/**
- * What a tab's tree was built from.
- *
- * The layout tree carries every pane id and how they are arranged, so it
- * catches a split, a merge, a resize of the divider and a pane arriving from
- * elsewhere. Kinds are appended because a pane can change what it holds without
- * moving — "Reopen as" on a terminal, or an editor tab becoming a diff — and
- * the built element would otherwise be reused for the wrong thing.
- */
-function layoutSignature(tab: TerminalTabState): string {
-  const kinds = tab.panes.map((p) => `${p.id}:${p.kind ?? 'terminal'}`).join(',')
-  return `${JSON.stringify(tab.layout)}|${kinds}`
 }

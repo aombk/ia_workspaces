@@ -34,13 +34,19 @@ import type {
  */
 let running: RunningApp[] = []
 
-/** Keeps the snapshot current. Called wherever the sidebar is about to draw. */
+/** Keeps the snapshot current, now. For the moments a program was just started or stopped. */
 export async function refreshRunningApps(): Promise<void> {
   // The reason comes with it, and both are cheap. On macOS the Accessibility
   // permission can be granted while the app is running, and on Linux the
   // missing package can be installed — so "off" is a state that fixes itself
   // and asking once at startup would leave the menu wrong until a restart.
   await refreshAppReason()
+  reasonAt = Date.now()
+  await refreshRunning()
+}
+
+async function refreshRunning(): Promise<void> {
+  runningAt = Date.now()
   if (!appsSupported()) {
     running = []
     return
@@ -50,6 +56,35 @@ export async function refreshRunningApps(): Promise<void> {
   } catch {
     running = []
   }
+}
+
+/** How stale the running list may be before the sidebar asks again. */
+const RUNNING_EVERY_MS = 3000
+/** And the "is it supported, and why not" answer, which changes far less. */
+const REASON_EVERY_MS = 30_000
+let runningAt = 0
+let reasonAt = 0
+let refreshing: Promise<void> | null = null
+
+/**
+ * Keeps the snapshot current, cheaply. Called wherever the sidebar is about to
+ * draw — which is on every store change, several times a second while an agent
+ * is talking, and each refresh was three round trips to the host. A snapshot a
+ * few seconds old is as good for a menu as one taken now, and the permission
+ * question that rides along changes only when somebody goes to System Settings.
+ */
+export function refreshRunningAppsLazily(): void {
+  const now = Date.now()
+  if (refreshing || now - runningAt < RUNNING_EVERY_MS) return
+  refreshing = (async () => {
+    if (now - reasonAt >= REASON_EVERY_MS) {
+      reasonAt = now
+      await refreshAppReason()
+    }
+    await refreshRunning()
+  })().finally(() => {
+    refreshing = null
+  })
 }
 
 function isRunning(appId: string): RunningApp | undefined {

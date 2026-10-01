@@ -32,7 +32,9 @@ const MIN_BYTES = 200
 export class SessionVault {
   constructor(private readonly dir: string) {
     try {
-      mkdirSync(dir, { recursive: true })
+      // Transcripts of closed panes — whatever was on screen, secrets and all —
+      // so private to this user, the same as the live scrollback.
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
     } catch {
       // A read-only data directory costs the feature, not the app.
     }
@@ -71,7 +73,7 @@ export class SessionVault {
     ].join('\n')
 
     try {
-      writeFileSync(file, header + body + '\n', 'utf8')
+      writeFileSync(file, header + body + '\n', { encoding: 'utf8', mode: 0o600 })
     } catch {
       return null
     }

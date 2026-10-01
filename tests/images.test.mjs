@@ -113,6 +113,7 @@ console.log('Image URLs')
     assert.equal(decodeImagePath('file:///C:/photos/cat.png'), null)
     assert.equal(decodeImagePath('https://example.com/cat.png'), null)
   })
+
 }
 
 // ------------------------------------------------------------------- ordering

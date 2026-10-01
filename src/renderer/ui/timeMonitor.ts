@@ -40,13 +40,25 @@ export function initTimeMonitor(): void {
   window.addEventListener('focus', beat)
   window.addEventListener('blur', beat)
   // Switching workspace ends one stretch and starts another, for the same
-  // reason. `store.subscribe` fires for a great deal else too, which is why
-  // the message is cheap and the main side ignores a repeat.
-  store.subscribe(beat)
+  // reason. `store.subscribe` fires for a great deal else too — several times
+  // a second while an agent is talking — so from there a beat is sent only
+  // when what it would say has changed. The clock above still sends the
+  // repeats that keep a stretch alive.
+  store.subscribe(() => {
+    if (current() !== lastSaid) beat()
+  })
 }
+
+/** What a beat would say, as one string, so a repeat can be told from news. */
+function current(): string {
+  const workspace = document.hasFocus() ? store.activeWorkspace : null
+  return `${workspace?.cwd ?? ''}\n${workspace?.name ?? ''}`
+}
+let lastSaid = ''
 
 function beat(): void {
   const workspace = document.hasFocus() ? store.activeWorkspace : null
+  lastSaid = current()
   void backend()
     .timeBeat(workspace?.cwd ?? '', workspace?.name ?? '')
     .catch(() => {

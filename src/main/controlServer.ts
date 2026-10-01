@@ -1,6 +1,7 @@
 import net from 'node:net'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { ensurePrivateDir } from '../host/paths'
 import os from 'node:os'
 import path from 'node:path'
 import type { PaneSummary, TreeSnapshot } from './controlSurface'
@@ -11,8 +12,15 @@ import { ipcAddress, ipcRuntimeDir, isPipeAddress, platformKind } from '../share
 const PLATFORM = platformKind(process.platform)
 
 /** The two directories `ipcAddress` chooses between on POSIX. */
-export function ipcDirs(): { runtime: string; tmp: string } {
-  return { runtime: ipcRuntimeDir(PLATFORM, process.env, os.homedir()), tmp: os.tmpdir() }
+export function ipcDirs(): { runtime: string; tmp: string; uid?: number } {
+  return {
+    runtime: ipcRuntimeDir(PLATFORM, process.env, os.homedir()),
+    tmp: os.tmpdir(),
+    // A folder of this user's own when the socket has to fall back to the
+    // shared temp directory, rather than a name anyone could take first. See
+    // `ipcAddress`.
+    uid: typeof process.getuid === 'function' ? process.getuid() : undefined,
+  }
 }
 
 /**
@@ -145,18 +153,72 @@ export type ControlHandler = (
   ctx: { onAbort(fn: () => void): void }
 ) => ControlResponse | Promise<ControlResponse>
 
+/**
+ * Asked before one pane acts on another. Resolves to whether to go ahead.
+ *
+ * `from` is the pane the request came from — proven by its token, not claimed —
+ * and `to` the pane it wants to act on. Not given in the tests that do not care,
+ * in which case cross-pane requests are refused outright, the safe default.
+ */
+export type ApproveCrossPane = (from: string, to: string, method: Method) => Promise<boolean>
+
 export interface ControlServer {
   /** What child shells should be given as `IAW_PIPE`. */
   address: string
-  token: string
+  /**
+   * The token a pane's shell is given as `IAW_TOKEN`: its own, and nobody
+   * else's. See `PaneToken` for why one per pane.
+   */
+  tokenFor(paneId: string): string
   close(): void
 }
 
 /** A request bigger than this is not one of ours. */
 const MAX_LINE = 64 * 1024
 
-export function startControlServer(runtime: string, handle: ControlHandler): ControlServer {
-  const token = randomBytes(24).toString('hex')
+/**
+ * One token per pane, so the app knows which pane is asking.
+ *
+ * There used to be a single token, handed to every pane, and a request named
+ * the pane it was about. That made "which pane is calling" a claim anyone could
+ * make: a script in one pane could read another's screen, type into it, or
+ * approve the agent waiting there, and nothing could tell it apart from that
+ * pane acting on itself. Now a pane's token is its own id plus a signature over
+ * it, keyed by a secret that never leaves this process. The token proves the
+ * caller; a pane cannot mint another pane's, because it never sees the secret.
+ *
+ * Self-describing rather than looked up, so it survives being carried
+ * somewhere else — `iaw token` hands it to a remote caller over `iaw bridge`,
+ * and that caller is then, quite rightly, that pane.
+ */
+function signPane(secret: Buffer, paneId: string): string {
+  return `${paneId}.${createHmac('sha256', secret).update(paneId).digest('hex')}`
+}
+
+/** The pane a token belongs to, if it is one this server issued. */
+function paneOfToken(secret: Buffer, token: string): string | null {
+  const dot = token.lastIndexOf('.')
+  if (dot <= 0) return null
+  const paneId = token.slice(0, dot)
+  return constantTimeEqual(token, signPane(secret, paneId)) ? paneId : null
+}
+
+/**
+ * What one pane may do to another only with your say-so.
+ *
+ * Reading another pane's screen, typing into it, pressing its keys, answering
+ * its agent: the things that move secrets out of a pane or commands into it.
+ * Everything else a pane can do to the app — notify, report its own agent, list
+ * the panes — is about itself or about nothing in particular.
+ */
+const CROSS_PANE: ReadonlySet<Method> = new Set<Method>(['read-screen', 'send', 'send-key', 'answer-agent'])
+
+export function startControlServer(
+  runtime: string,
+  handle: ControlHandler,
+  approve?: ApproveCrossPane
+): ControlServer {
+  const secret = randomBytes(32)
 
   const server = net.createServer((socket) => {
     let buffer = ''
@@ -181,7 +243,7 @@ export function startControlServer(runtime: string, handle: ControlHandler): Con
         if (!line) continue
         queue = queue.then(async () => {
           const mine = new Set<() => void>()
-          const res = await respond(line, token, handle, (fn) => {
+          const res = await respond(line, secret, handle, approve, (fn) => {
             mine.add(fn)
             aborts.add(fn)
           })
@@ -217,31 +279,11 @@ export function startControlServer(runtime: string, handle: ControlHandler): Con
   const pipeName = ipcAddress(PLATFORM, `${runtime}-${process.pid}`, ipcDirs())
   let address = pipeName
 
-  try {
-    // A socket is a file, and a crash leaves it behind: `bind` then fails
-    // EADDRINUSE against a socket nothing is listening on. Removing it first is
-    // safe because the name carries our pid, so the only process that could
-    // legitimately own it is this one. A named pipe has no path on disk and
-    // must never be unlinked.
-    if (!isPipeAddress(pipeName)) {
-      mkdirSync(path.dirname(pipeName), { recursive: true })
-      try {
-        rmSync(pipeName, { force: true })
-      } catch {
-        /* nothing there, or not ours to remove — listen will say so */
-      }
-    }
-    server.listen(pipeName)
-  } catch {
-    address = ''
-  }
-
   // A named pipe can be refused outright — some hardened policies and sandboxes
-  // deny the namespace. Loopback TCP on an ephemeral port is the same trust
-  // boundary (the token still gates every call) and keeps the CLI working.
-  server.once('error', (err: NodeJS.ErrnoException) => {
-    if (address !== pipeName) return
-    if (err.code !== 'EACCES' && err.code !== 'EPERM' && err.code !== 'EADDRINUSE') return
+  // deny the namespace — and a socket folder can turn out not to be ours.
+  // Loopback TCP on an ephemeral port is the same trust boundary (the token
+  // still gates every call) and keeps the CLI working.
+  const listenOnLoopback = () => {
     try {
       server.listen(0, '127.0.0.1', () => {
         const info = server.address()
@@ -250,13 +292,45 @@ export function startControlServer(runtime: string, handle: ControlHandler): Con
     } catch {
       /* no control channel this run; the app itself still works */
     }
+  }
+
+  try {
+    // A socket is a file, and a crash leaves it behind: `bind` then fails
+    // EADDRINUSE against a socket nothing is listening on. Removing it first is
+    // safe because the name carries our pid, so the only process that could
+    // legitimately own it is this one. A named pipe has no path on disk and
+    // must never be unlinked.
+    if (!isPipeAddress(pipeName)) {
+      // Created private, and refused if it already exists and is not: a socket
+      // in a folder somebody else controls is a socket somebody else can
+      // replace, and every pane's token would go to whoever did.
+      ensurePrivateDir(path.dirname(pipeName))
+      try {
+        rmSync(pipeName, { force: true })
+      } catch {
+        /* nothing there, or not ours to remove — listen will say so */
+      }
+    }
+    server.listen(pipeName)
+  } catch {
+    // Failing here used to leave no channel at all, silently: the fallback
+    // below only answers an error the *listen* raises, and this never got
+    // that far.
+    address = ''
+    listenOnLoopback()
+  }
+
+  server.once('error', (err: NodeJS.ErrnoException) => {
+    if (address !== pipeName) return
+    if (err.code !== 'EACCES' && err.code !== 'EPERM' && err.code !== 'EADDRINUSE') return
+    listenOnLoopback()
   })
 
   return {
     get address() {
       return address
     },
-    token,
+    tokenFor: (paneId) => signPane(secret, paneId),
     close: () => server.close(),
   }
 }
@@ -272,8 +346,9 @@ const PANELESS: ReadonlySet<Method> = new Set<Method>([
 
 async function respond(
   line: string,
-  token: string,
+  secret: Buffer,
   handle: ControlHandler,
+  approve: ApproveCrossPane | undefined,
   onAbort: (fn: () => void) => void
 ): Promise<ControlResponse> {
   let parsed: (ControlRequest & { token?: string }) | null = null
@@ -283,11 +358,19 @@ async function respond(
     return { ok: false, error: 'bad request' }
   }
   if (!parsed || typeof parsed !== 'object') return { ok: false, error: 'bad request' }
-  if (!constantTimeEqual(parsed.token ?? '', token)) return { ok: false, error: 'unauthorized' }
+  const caller = paneOfToken(secret, typeof parsed.token === 'string' ? parsed.token : '')
+  if (!caller) return { ok: false, error: 'unauthorized' }
   // `agent-state` without a pane is a legitimate "show me every pane" query and
   // `tree` is about the whole app; the rest all act on one pane and have
   // nothing to act on without it.
   if (!PANELESS.has(parsed.method) && !parsed.paneId) return { ok: false, error: 'no pane' }
+
+  // One pane reaching into another waits for a person. Asked here, before the
+  // handler, so no verb can forget to ask.
+  if (CROSS_PANE.has(parsed.method) && parsed.paneId && parsed.paneId !== caller) {
+    const allowed = approve ? await approve(caller, parsed.paneId, parsed.method).catch(() => false) : false
+    if (!allowed) return { ok: false, error: 'denied: this pane may not act on that one' }
+  }
 
   try {
     return await handle(parsed, { onAbort })

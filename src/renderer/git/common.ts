@@ -63,10 +63,6 @@ export function gitRoot(paneId: string): string {
 /** The same rule, under the name the search pane reads it by. */
 export const searchRoot = gitRoot
 
-export function workspaceOf(paneId: string): string {
-  return store.workspaceOfPane(paneId)?.id ?? ''
-}
-
 /** How little of either side a drag is allowed to leave behind. */
 const MIN_SIDE = 160
 

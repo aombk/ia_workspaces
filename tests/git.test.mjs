@@ -1280,4 +1280,97 @@ await checkAsync('once pushed, there is nothing left to weigh', async () => {
   assert.equal(size.bytes, 0)
 })
 
+// ------------------------------------------------------------------- stop
+//
+// A push that is taking too long, stopped, and the save taken back so the
+// files can be picked differently. The remote here is git's `ext::` transport
+// running `sleep`: a server that accepts the connection and then never says a
+// word, which is exactly what a push stuck on a bad connection looks like from
+// this side.
+console.log('Stopping')
+
+const stuck = path.join(out, 'stuck')
+fs.mkdirSync(stuck)
+const kgit = (...args) =>
+  execFileSync('git', args, { cwd: stuck, encoding: 'utf8', windowsHide: true }).trim()
+kgit('init', '--initial-branch=main')
+kgit('config', 'user.email', 'test@example.com')
+kgit('config', 'user.name', 'Test Person')
+kgit('config', 'commit.gpgsign', 'false')
+kgit('config', 'protocol.ext.allow', 'always')
+// A duration nothing else on the machine uses, so the check below can find
+// exactly this process and no other.
+const HANG = 'sleep 4517'
+// `ext::` splits on spaces itself, so no shell and no quoting: the command and
+// its argument are the two words.
+kgit('remote', 'add', 'origin', `ext::${HANG}`)
+const hangRunning = () => {
+  try {
+    return execFileSync('pgrep', ['-f', HANG], { encoding: 'utf8' }).trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+await checkAsync('with nothing running, Stop has nothing to stop', async () => {
+  assert.equal(await G.stopOperation(stuck), false)
+})
+
+await checkAsync('a push that hangs can be stopped, and says so rather than failing', async () => {
+  fs.writeFileSync(path.join(stuck, 'first.txt'), 'first\n')
+  await G.pick(stuck, ['first.txt'])
+  await G.save(stuck, 'first')
+  fs.writeFileSync(path.join(stuck, 'wrong.txt'), 'meant to leave this out\n')
+  await G.pick(stuck, ['wrong.txt'])
+  await G.save(stuck, 'too much in this one')
+
+  const started = Date.now()
+  const pushing = G.send(stuck)
+  // Long enough that git is connected and waiting on the far end.
+  await new Promise((r) => setTimeout(r, 700))
+  assert.equal(await G.stopOperation(stuck), true, 'the push was running, so there was something to stop')
+  // Raced against a deadline rather than awaited bare. If Stop killed git but
+  // not the helper it started, the helper keeps git's pipes open and the push
+  // never settles at all — which should fail here, not hang the suite.
+  const res = await Promise.race([
+    pushing,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('the push never ended after Stop — a helper is holding it open')), 10_000)
+    ),
+  ])
+
+  assert.equal(res.ok, false)
+  assert.equal(res.stopped, true)
+  assert.match(res.hint, /Nothing was sent/)
+  assert.ok(Date.now() - started < 10_000, 'it ended when stopped, not at the two-minute network timeout')
+})
+
+if (process.platform !== 'win32') {
+  await checkAsync('stopping ends the connection helper too, not just git', async () => {
+    // The transport's own process is what holds a stuck connection open.
+    // Killing git alone would leave it running.
+    await new Promise((r) => setTimeout(r, 300))
+    assert.equal(hangRunning(), false, `"${HANG}" is still running after Stop`)
+  })
+}
+
+await checkAsync('after a stopped push the last save can be taken back, files kept and picked', async () => {
+  let status = await G.repoStatus(stuck)
+  assert.equal(status.lastSave.subject, 'too much in this one')
+  const res = await G.undoLastSave(stuck)
+  assert.ok(res.ok, res.error)
+
+  status = await G.repoStatus(stuck)
+  assert.equal(status.lastSave.subject, 'first', 'the save is gone')
+  const wrong = status.files.find((f) => f.repoPath === 'wrong.txt')
+  assert.ok(wrong, 'the file is still here')
+  assert.equal(wrong.picked, 'A', 'and still picked, ready to be picked differently')
+  assert.ok(fs.existsSync(path.join(stuck, 'wrong.txt')), 'nothing on disk was touched')
+
+  // Picked differently: that file out, and the save made again without it.
+  await G.unpick(stuck, ['wrong.txt'])
+  status = await G.repoStatus(stuck)
+  assert.equal(status.files.find((f) => f.repoPath === 'wrong.txt').picked, '')
+})
+
 console.log(`\n${passed} checks passed`)

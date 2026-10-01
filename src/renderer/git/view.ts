@@ -36,8 +36,11 @@ export interface GitContext {
    * first second of a push, where there is no percentage yet and "working…"
    * would say less than the caller already knows. Present tense, no full stop:
    * it sits beside a number.
+   *
+   * `stoppable` offers a Stop on the progress bar. Only for a push or a fetch:
+   * see `stoppable` in `main/git.ts` for why nothing else may.
    */
-  run(work: () => Promise<GitResult>, success: string, label: string): Promise<void>
+  run(work: () => Promise<GitResult>, success: string, label: string, stoppable?: boolean): Promise<void>
   /** Opens the panel that puts this project online. */
   openPublish(): void
   /** Switches to the other view, from a link in this one. */

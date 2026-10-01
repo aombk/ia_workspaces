@@ -34,7 +34,7 @@
  * - **Anything already published.** Turning this on does not retract what went
  *   out before it.
  */
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, randomBytes, scrypt, scryptSync } from 'node:crypto'
 
 /** Marks a file as ours and says which format it is, so a future one can differ. */
 const MAGIC = 'iaw1'
@@ -55,6 +55,55 @@ const TAG_BYTES = 16
 const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }
 
 /**
+ * Keys already derived, by salt and passphrase.
+ *
+ * Every machine's file keeps its salt until that machine rewrites it, and the
+ * relay sweep reads every file every minute — so without this the same
+ * derivation, tens of milliseconds of deliberately expensive work, ran again
+ * for the same inputs on every pass. Keyed on a hash of the passphrase rather
+ * than the passphrase itself only so the map's keys are not a second copy of
+ * it; the value is the derived key either way. Small and bounded: one entry
+ * per file in the share is the whole working set.
+ */
+const KEY_CACHE_MAX = 256
+const keyCache = new Map<string, Buffer>()
+let derivations = 0
+
+function cacheKey(passphrase: string, salt: Buffer): string {
+  return `${salt.toString('hex')}:${createHash('sha256').update(passphrase).digest('hex')}`
+}
+
+function remember(id: string, key: Buffer): Buffer {
+  if (keyCache.size >= KEY_CACHE_MAX) keyCache.delete(keyCache.keys().next().value as string)
+  keyCache.set(id, key)
+  return key
+}
+
+function deriveSync(passphrase: string, salt: Buffer): Buffer {
+  const id = cacheKey(passphrase, salt)
+  const hit = keyCache.get(id)
+  if (hit) return hit
+  derivations++
+  return remember(id, scryptSync(passphrase, salt, KEY_BYTES, SCRYPT))
+}
+
+/** The same, on the thread pool rather than the main thread. */
+function derive(passphrase: string, salt: Buffer): Promise<Buffer> {
+  const id = cacheKey(passphrase, salt)
+  const hit = keyCache.get(id)
+  if (hit) return Promise.resolve(hit)
+  derivations++
+  return new Promise((resolve, reject) =>
+    scrypt(passphrase, salt, KEY_BYTES, SCRYPT, (err, key) => (err ? reject(err) : resolve(remember(id, key))))
+  )
+}
+
+/** How many scrypt derivations have actually run. For tests. */
+export function keyDerivations(): number {
+  return derivations
+}
+
+/**
  * Encrypts a string, salt and nonce included, as one base64 blob.
  *
  * Everything needed to decrypt except the passphrase travels with the
@@ -64,7 +113,9 @@ const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }
 export function seal(plaintext: string, passphrase: string): string {
   const salt = randomBytes(SALT_BYTES)
   const nonce = randomBytes(NONCE_BYTES)
-  const key = scryptSync(passphrase, salt, KEY_BYTES, SCRYPT)
+  // A fresh salt is never in the cache, so this is always a real derivation;
+  // it goes through the cache anyway so reading our own file back is free.
+  const key = deriveSync(passphrase, salt)
 
   const cipher = createCipheriv('aes-256-gcm', key, nonce)
   const body = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
@@ -82,20 +133,55 @@ export function seal(plaintext: string, passphrase: string): string {
  * cost the caller its other files, so this never throws.
  */
 export function unseal(blob: string, passphrase: string): string | null {
-  if (!blob.startsWith(`${MAGIC}.`)) return null
+  const parts = split(blob)
+  if (!parts) return null
   try {
-    const raw = Buffer.from(blob.slice(MAGIC.length + 1), 'base64')
-    if (raw.length <= SALT_BYTES + NONCE_BYTES + TAG_BYTES) return null
+    return open(parts, deriveSync(passphrase, parts.salt))
+  } catch {
+    return null
+  }
+}
 
-    let at = 0
-    const salt = raw.subarray(at, (at += SALT_BYTES))
-    const nonce = raw.subarray(at, (at += NONCE_BYTES))
-    const tag = raw.subarray(at, (at += TAG_BYTES))
-    const body = raw.subarray(at)
+/**
+ * `unseal`, with the key derived off the main thread.
+ *
+ * For the relay sweep, which reads every machine's file in Electron's main
+ * process: tens of milliseconds of scrypt each, synchronously, is a frozen
+ * window for as long as the share has files.
+ */
+export async function unsealAsync(blob: string, passphrase: string): Promise<string | null> {
+  const parts = split(blob)
+  if (!parts) return null
+  try {
+    return open(parts, await derive(passphrase, parts.salt))
+  } catch {
+    return null
+  }
+}
 
-    const decipher = createDecipheriv('aes-256-gcm', scryptSync(passphrase, salt, KEY_BYTES, SCRYPT), nonce)
-    decipher.setAuthTag(tag)
-    return Buffer.concat([decipher.update(body), decipher.final()]).toString('utf8')
+interface Sealed {
+  salt: Buffer
+  nonce: Buffer
+  tag: Buffer
+  body: Buffer
+}
+
+function split(blob: string): Sealed | null {
+  if (!blob.startsWith(`${MAGIC}.`)) return null
+  const raw = Buffer.from(blob.slice(MAGIC.length + 1), 'base64')
+  if (raw.length <= SALT_BYTES + NONCE_BYTES + TAG_BYTES) return null
+  let at = 0
+  const salt = raw.subarray(at, (at += SALT_BYTES))
+  const nonce = raw.subarray(at, (at += NONCE_BYTES))
+  const tag = raw.subarray(at, (at += TAG_BYTES))
+  return { salt, nonce, tag, body: raw.subarray(at) }
+}
+
+function open(parts: Sealed, key: Buffer): string | null {
+  try {
+    const decipher = createDecipheriv('aes-256-gcm', key, parts.nonce)
+    decipher.setAuthTag(parts.tag)
+    return Buffer.concat([decipher.update(parts.body), decipher.final()]).toString('utf8')
   } catch {
     // A wrong passphrase fails here, as an authentication-tag mismatch, which
     // is exactly the same outcome as a corrupted file and is meant to be.

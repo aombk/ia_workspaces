@@ -1,4 +1,5 @@
 import { backend } from '../../backend'
+import { revealLabel } from '../../shared/fileManager'
 import { shellFor, store, tabLabel } from '../state'
 import { showContextMenu, type MenuEntry } from './contextMenu'
 import { availableShells, shellLabel, sshHosts, sshMenuLabel, wslDistros } from '../shells'
@@ -6,6 +7,7 @@ import { EDITOR_MODES, EDITOR_MODE_LABELS, isTerminalPane } from '../../shared/t
 import { modeForFile } from '../../shared/editorModes'
 import type { PaneState } from '../../shared/types'
 import { attachInlineEditor } from './editing'
+import { heldFocus, moveFocus, replaceChildrenKeeping, restoreFocus } from './rowList'
 import { beginDrag, draggingPane, draggingTab, endDrag } from './dragState'
 import { hasFilePath, pathFromDrop } from './fileDrag'
 import type { UiActions } from './actions'
@@ -15,7 +17,9 @@ let renaming: string | null = null
 
 export function initTabstrip(a: UiActions): void {
   actions = a
-  wireStripScrolling(document.getElementById('tabstrip')!)
+  const strip = document.getElementById('tabstrip')!
+  wireStripScrolling(strip)
+  wireStripSurface(strip)
 }
 
 /**
@@ -59,10 +63,22 @@ export function startRenameTab(tabId: string): void {
 export function renderTabstrip(): void {
   const strip = document.getElementById('tabstrip')!
   const workspace = store.activeWorkspace
-  strip.replaceChildren()
-  if (!workspace) return
+  // Both read before anything is replaced — see `rowList.ts`.
+  const focus = heldFocus(strip, 'data-tab-id')
+  const editing = renaming
+    ? strip.querySelector<HTMLElement>(`.tab[data-tab-id="${CSS.escape(renaming)}"]:has(> .tab-title-input)`)
+    : null
+  if (!workspace) {
+    strip.replaceChildren()
+    return
+  }
 
   strip.style.setProperty('--workspace-color', workspace.color)
+
+  // One tab is reachable with Tab and the arrows move between them: the one
+  // with the focus if a tab has it, otherwise the one on screen.
+  const roving = focus && workspace.tabs.some((t) => t.id === focus.key) ? focus.key : workspace.activeTabId
+  const rows: HTMLElement[] = []
 
   workspace.tabs.forEach((tab, index) => {
     const isActive = tab.id === workspace.activeTabId
@@ -70,11 +86,25 @@ export function renderTabstrip(): void {
     // `paneDemand` rather than here — see `state.ts`.
     const demand = store.tabDemand(tab)
     const needsInput = demand === 'blocked'
+    const className = 'tab' + (isActive ? ' active' : '') + (needsInput ? ' needs-input' : '')
+
+    // The tab being renamed is kept, field and all, rather than rebuilt: a new
+    // field holding the old name is what every store change used to put in
+    // front of you mid-word. Only what it says about the tab is refreshed.
+    if (editing && tab.id === renaming) {
+      editing.className = className
+      editing.setAttribute('aria-selected', String(isActive))
+      editing.tabIndex = tab.id === roving ? 0 : -1
+      rows.push(editing)
+      return
+    }
+
     const el = document.createElement('div')
-    el.className = 'tab' + (isActive ? ' active' : '') + (needsInput ? ' needs-input' : '')
+    el.className = className
     el.dataset.tabId = tab.id
     el.setAttribute('role', 'tab')
     el.setAttribute('aria-selected', String(isActive))
+    el.tabIndex = tab.id === roving ? 0 : -1
     el.title = `${tabLabel(tab)}\n${tab.panes.map((p) => p.cwd).join('\n')}`
     el.draggable = renaming !== tab.id
 
@@ -141,6 +171,20 @@ export function renderTabstrip(): void {
       if (renaming === tab.id) return
       actions.selectTab(workspace.id, tab.id)
     })
+    // The keyboard's way in. F2 is the app's own shortcut, which renames the
+    // focused tab when one has the focus — see `wireKeyboard` in app.ts.
+    el.addEventListener('keydown', (e) => {
+      if (e.target !== el || e.altKey || e.ctrlKey || e.metaKey) return
+      const step =
+        e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : e.key === 'Home' ? 'first' : e.key === 'End' ? 'last' : null
+      if (step !== null) {
+        e.preventDefault()
+        moveFocus(el, '.tab', step)
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        actions.selectTab(workspace.id, tab.id)
+      }
+    })
     el.addEventListener('dblclick', (e) => {
       e.preventDefault()
       startRenameTab(tab.id)
@@ -158,7 +202,7 @@ export function renderTabstrip(): void {
     })
 
     wireDragAndDrop(el, index, workspace.id)
-    strip.appendChild(el)
+    rows.push(el)
   })
 
   const add = document.createElement('button')
@@ -175,11 +219,27 @@ export function renderTabstrip(): void {
     e.preventDefault()
     openNewTabMenu(e.clientX, e.clientY, workspace.id)
   })
-  strip.appendChild(add)
+  rows.push(add)
 
+  replaceChildrenKeeping(strip, rows, editing)
+  restoreFocus(strip, 'data-tab-id', focus)
+
+  strip.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+}
+
+/**
+ * The strip's own surface: its right-click menu and the drop past the last tab.
+ *
+ * Wired once, like the wheel above. These were added in `renderTabstrip`, which
+ * gave the strip one more of each on every store change — so after an hour a
+ * right-click ran the handler thousands of times over.
+ */
+function wireStripSurface(strip: HTMLElement): void {
   // The empty strip area is the other obvious place to reach for "new tab".
   strip.addEventListener('contextmenu', (e) => {
     if ((e.target as HTMLElement).closest('.tab, .new-tab')) return
+    const workspace = store.activeWorkspace
+    if (!workspace) return
     e.preventDefault()
     openNewTabMenu(e.clientX, e.clientY, workspace.id)
   })
@@ -206,8 +266,6 @@ export function renderTabstrip(): void {
     endDrag()
     store.extractPaneToTab(pane.id)
   })
-
-  strip.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
 }
 
 function wireDragAndDrop(el: HTMLElement, index: number, workspaceId: string): void {
@@ -533,7 +591,7 @@ function openTabMenu(x: number, y: number, workspaceId: string, tabId: string): 
       onClick: () => actions.toggleFileTree(),
     },
     'separator',
-    { label: 'Reveal in Explorer', onClick: () => actions.openInExplorer(activePane?.cwd ?? '') },
+    { label: revealLabel(backend().capabilities.platform), onClick: () => actions.openInExplorer(activePane?.cwd ?? '') },
     {
       label: 'Close others',
       disabled: onlyTab,

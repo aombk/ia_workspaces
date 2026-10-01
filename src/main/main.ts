@@ -1,4 +1,15 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, screen, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  Notification,
+  screen,
+  shell,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+} from 'electron'
 import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync, readFileSync as readBytesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
@@ -24,6 +35,7 @@ import { shareTokens, type PublishEntry } from './tokenShare'
 import { readSystemStats } from './systemStats'
 import { readWeather } from './weather'
 import { readCrypto } from './crypto'
+import { randomUUID } from 'node:crypto'
 import { latestRelease } from './updates'
 import { PtyManager } from './ptyManager'
 import { readSoftwareRendering, Store } from './store'
@@ -87,6 +99,8 @@ import { ScrollbackStore } from './scrollback'
 import { EventLog, parseCategories } from './events'
 import { CommandHistory } from './history'
 import { primeToolPath } from './toolPath'
+import { guardBrowserPane } from './browserGuard'
+import { mergeRendererState } from './rendererState'
 import { SessionVault } from './vault'
 import { PidMap } from './pidMap'
 import { directoryFromArgv, isContextMenuInstalled, setContextMenu } from './explorerMenu'
@@ -106,6 +120,7 @@ import {
 import { OPENABLE_PANES } from '../shared/types'
 import type {
   ClipboardImage,
+  CrossPaneDecision,
   ExternalApp,
   HistoryFilter,
   SpawnRequest,
@@ -172,6 +187,21 @@ const ORPHAN_SWEEP_DELAY_MS = 20_000
  * `cliEntry.ts` computes the identical path without importing Electron.
  */
 const SHARED_DATA_DIR = platformDataDir(PLATFORM, process.env, os.homedir())
+
+/**
+ * Running under `tests/ui.e2e.mjs`.
+ *
+ * Two things change and nothing else: the window renders offscreen, and it is
+ * never shown. The interface tests run on every build, and a build that threw
+ * a window up over whatever you were doing — and took focus with it — would be
+ * a build people learned to skip. Everything the tests exercise is the real
+ * app; only where its pixels go is different.
+ *
+ * Isolation is the test's job, not this flag's: it launches the app with its
+ * own home folder and profile, so it never sees your workspace, your shells or
+ * your `~/.claude`.
+ */
+const UI_TEST = process.env.IAW_UI_TEST === '1'
 
 /**
  * One executable serves as both the app and its CLI. `iaw notify …` must not
@@ -341,6 +371,8 @@ function bootApp(): void {
   app.setPath('userData', SHARED_DATA_DIR)
 
   let win: BrowserWindow | null = null
+  /** Set while a quit waits for the renderer's last save. See `before-quit`. */
+  let quitWhenFlushed: (() => void) | null = null
   let store: Store
   let ptys: PtyManager
   let powerLock: PowerLock | undefined
@@ -733,7 +765,12 @@ function bootApp(): void {
         preload: path.join(__dirname, '../preload/preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        // Sandboxed. The preload needs nothing a sandboxed one lacks — Electron's
+        // bridge and IPC, `webUtils`, and `process.platform` — and its bundle
+        // requires nothing but `electron`. Unsandboxed, a bug in this renderer
+        // was a bug with the operating system's full reach; sandboxed, it has
+        // to get past Chromium first, the same as a web page.
+        sandbox: true,
         spellcheck: false,
         // What the browser pane is built on. `<webview>` rather than a
         // `WebContentsView` because it is an ordinary DOM element: it sits
@@ -749,12 +786,13 @@ function bootApp(): void {
         // only plugin that exists in a modern engine — this does not reopen the
         // door to NPAPI, which has not existed for a decade.
         plugins: true,
+        ...(UI_TEST ? { offscreen: true } : {}),
       },
     })
 
     if (bounds.maximized) win.maximize()
     win.once('ready-to-show', () => {
-      win?.show()
+      if (!UI_TEST) win?.show()
       if (pendingFolder) {
         send(IPC.onOpenFolder, pendingFolder)
         pendingFolder = null
@@ -786,6 +824,9 @@ function bootApp(): void {
       return { action: 'deny' }
     })
     win.webContents.on('will-navigate', (e) => e.preventDefault())
+    // What a page in the browser pane may ask for, and how a webview may be
+    // attached at all. See `browserGuard.ts`.
+    guardBrowserPane(win, path.join(__dirname, '../preload/webviewPreload.js'))
 
     win.on('closed', () => {
       win = null
@@ -807,10 +848,95 @@ function bootApp(): void {
     })
   }
 
+  /**
+   * Panes allowed to act on other panes without asking, until the app quits.
+   *
+   * Not saved: "always" is a decision about the program running in that pane
+   * now, and a pane reopened tomorrow may be running something else.
+   */
+  const trustedPanes = new Set<string>()
+  const approvals = new Map<string, (decision: CrossPaneDecision) => void>()
+
+  /**
+   * Asks you whether one pane may act on another. See `CROSS_PANE` in
+   * `controlServer.ts` for which requests come here.
+   *
+   * The question goes to the window, where it names both panes the way the
+   * sidebar does; the answer comes back over `IPC.controlApprovalAnswer`.
+   * Unanswered for two minutes reads as no — the request is a program waiting
+   * on a person, and a person who did not answer did not agree.
+   */
+  function approveCrossPane(from: string, to: string, method: string): Promise<boolean> {
+    if (trustedPanes.has(from)) return Promise.resolve(true)
+    if (!win || win.isDestroyed()) return Promise.resolve(false)
+
+    const panes = flattenPanes(buildTree(store.state, (id) => ptys.has(id)))
+    const describe = (id: string) => {
+      const pane = panes.find((p) => p.id === id)
+      return pane ? pane.title || pane.cwd || 'an unnamed pane' : 'a pane that no longer exists'
+    }
+    const id = randomUUID()
+    send(IPC.onControlApproval, { id, from: describe(from), to: describe(to), method })
+    // The prompt is in the window, which may be behind something else. A
+    // program is waiting on you; say so where you will see it.
+    if (process.platform === 'darwin' && !win.isFocused()) app.dock?.bounce('informational')
+
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => settle('deny'), 120_000)
+      const settle = (decision: CrossPaneDecision) => {
+        clearTimeout(timer)
+        approvals.delete(id)
+        if (decision === 'always') trustedPanes.add(from)
+        resolve(decision !== 'deny')
+      }
+      approvals.set(id, settle)
+    })
+  }
+
+  /** Takes the renderer's document, keeping the fields only main writes. See `rendererState.ts`. */
+  function adoptRendererState(next: unknown): void {
+    const merged = mergeRendererState(store.state, next)
+    if (merged) store.save(merged)
+  }
+
   function registerIpc(): void {
-    ipcMain.handle(IPC.loadState, () => store.state)
-    ipcMain.handle(IPC.saveState, (_e, next: unknown) => {
-      store.save(next)
+    /**
+     * Whether a message came from our own window's own page.
+     *
+     * Every handler below acts with the main process's full reach — spawning
+     * shells, writing and deleting files, opening programs — and none of them
+     * used to ask who was calling. The window is not the only web content this
+     * app hosts: each browser pane is a guest showing whatever site it was
+     * pointed at. A guest has no route to these today, but "no route today" is
+     * a property of everything else staying right, and this makes it a rule:
+     * the caller must be this window's top frame, and nothing else.
+     */
+    const trusted = (e: IpcMainEvent | IpcMainInvokeEvent): boolean =>
+      !!win && !win.isDestroyed() && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame
+
+    function handle<A extends unknown[]>(
+      channel: string,
+      fn: (e: IpcMainInvokeEvent, ...args: A) => unknown
+    ): void {
+      ipcMain.handle(channel, (e, ...args) => {
+        if (!trusted(e)) throw new Error(`refused ${channel}: not from the app window`)
+        return fn(e, ...(args as A))
+      })
+    }
+
+    function listen<A extends unknown[]>(channel: string, fn: (e: IpcMainEvent, ...args: A) => void): void {
+      ipcMain.on(channel, (e, ...args) => {
+        if (!trusted(e)) {
+          e.returnValue = undefined
+          return
+        }
+        fn(e, ...(args as A))
+      })
+    }
+
+    handle(IPC.loadState, () => store.state)
+    handle(IPC.saveState, (_e, next: unknown) => {
+      adoptRendererState(next)
       // The keep-awake setting arrives in here with everything else, and
       // turning it off is a request about *now* — the poll used to be what
       // eventually noticed, which meant a setting that took effect somewhere
@@ -818,67 +944,86 @@ function bootApp(): void {
       // one that might not take effect at all.
       powerLock?.evaluate()
     })
+    // The same document, on the way out. `sendSync` holds the closing window
+    // until this returns, which is the point: it is the one save that cannot
+    // be overtaken by the process ending.
+    listen(IPC.saveStateSync, (e, next: unknown) => {
+      adoptRendererState(next)
+      // Written now, not on the store's own debounce: this save is only ever
+      // made on the way out, and "main has it in memory" is one more step
+      // that has to go right before it is safe.
+      store.flush()
+      e.returnValue = true
+      quitWhenFlushed?.()
+    })
 
-    ipcMain.handle(IPC.listShells, () => listShells(store.settings))
-    ipcMain.handle(IPC.homeDir, () => app.getPath('home'))
-    ipcMain.handle(IPC.appVersion, () => app.getVersion())
-    ipcMain.handle(IPC.latestRelease, () => latestRelease())
-    ipcMain.handle(IPC.gitBranch, (_e, cwd: string) => currentBranch(cwd))
-    ipcMain.handle(IPC.readDir, (_e, dir: string, showHidden: boolean) =>
+    // Your answer to "may this pane act on that one". Ignored for an id that is
+    // not waiting — a stale or forged answer has nothing to settle.
+    handle(IPC.controlApprovalAnswer, (_e, id: string, decision: CrossPaneDecision) => {
+      if (decision !== 'once' && decision !== 'always' && decision !== 'deny') return
+      approvals.get(id)?.(decision)
+    })
+
+    handle(IPC.listShells, () => listShells(store.settings))
+    handle(IPC.homeDir, () => app.getPath('home'))
+    handle(IPC.appVersion, () => app.getVersion())
+    handle(IPC.latestRelease, () => latestRelease())
+    handle(IPC.gitBranch, (_e, cwd: string) => currentBranch(cwd))
+    handle(IPC.readDir, (_e, dir: string, showHidden: boolean) =>
       readDirectory(dir, showHidden)
     )
-    ipcMain.handle(
+    handle(
       IPC.listImages,
       (_e, dir: string, recursive: boolean, showHidden: boolean) =>
         listImages(dir, recursive, showHidden)
     )
-    ipcMain.handle(IPC.listByExtension, (_e, dir: string, suffixes: string[]) =>
+    handle(IPC.listByExtension, (_e, dir: string, suffixes: string[]) =>
       listByExtension(dir, suffixes)
     )
-    ipcMain.handle(IPC.readText, (_e, target: string) => readText(target))
-    ipcMain.handle(IPC.fileStamp, (_e, target: string) => fileStamp(target))
-    ipcMain.handle(IPC.readBytes, (_e, target: string) => readBytes(target))
-    ipcMain.handle(IPC.patchBytes, (_e, target: string, offset: number, base64: string) =>
+    handle(IPC.readText, (_e, target: string) => readText(target))
+    handle(IPC.fileStamp, (_e, target: string) => fileStamp(target))
+    handle(IPC.readBytes, (_e, target: string) => readBytes(target))
+    handle(IPC.patchBytes, (_e, target: string, offset: number, base64: string) =>
       patchBytes(target, offset, base64)
     )
-    ipcMain.handle(IPC.writeText, (_e, target: string, content: string) =>
+    handle(IPC.writeText, (_e, target: string, content: string) =>
       writeText(target, content)
     )
-    ipcMain.handle(IPC.gitDiff, (_e, cwd: string, target: string, untracked: boolean) =>
+    handle(IPC.gitDiff, (_e, cwd: string, target: string, untracked: boolean) =>
       gitDiff(cwd, target, untracked)
     )
-    ipcMain.handle(IPC.compareFiles, (_e, left: string, right: string) =>
+    handle(IPC.compareFiles, (_e, left: string, right: string) =>
       compareFiles(left, right)
     )
-    ipcMain.handle(IPC.search, (_e, cwd: string, query: string, caseSensitive: boolean) =>
+    handle(IPC.search, (_e, cwd: string, query: string, caseSensitive: boolean) =>
       searchWorkspace(cwd, query, caseSensitive)
     )
-    ipcMain.handle(IPC.processes, () => listProcesses(ptys.panePids()))
-    ipcMain.handle(IPC.commandHistory, () => history.recent(300))
-    ipcMain.handle(IPC.forgetCommand, (_e, command: string, cwd?: string) =>
+    handle(IPC.processes, () => listProcesses(ptys.panePids()))
+    handle(IPC.commandHistory, () => history.recent(300))
+    handle(IPC.forgetCommand, (_e, command: string, cwd?: string) =>
       history.remove(command, cwd)
     )
-    ipcMain.handle(IPC.vaultList, () => vault.list())
-    ipcMain.handle(IPC.vaultFolder, () => vault.folder)
-    ipcMain.handle(IPC.sessionHost, () => ptys.hostSnapshot())
+    handle(IPC.vaultList, () => vault.list())
+    handle(IPC.vaultFolder, () => vault.folder)
+    handle(IPC.sessionHost, () => ptys.hostSnapshot())
     // Every agent but Claude Code, which keeps its own handler above because it
     // also carries a bell setting and a prior-state record.
-    ipcMain.handle(IPC.agentHooks, () => AGENTS.map((a) => readAgentHooks(a)))
+    handle(IPC.agentHooks, () => AGENTS.map((a) => readAgentHooks(a)))
 
-    ipcMain.handle(IPC.worktreeList, (_e, cwd: string) => listWorktrees(cwd))
-    ipcMain.handle(IPC.worktreeAt, (_e, cwd: string) => worktreeAt(cwd))
-    ipcMain.handle(IPC.worktreeAdd, async (_e, cwd: string, branch: string, dir: string) => {
+    handle(IPC.worktreeList, (_e, cwd: string) => listWorktrees(cwd))
+    handle(IPC.worktreeAt, (_e, cwd: string) => worktreeAt(cwd))
+    handle(IPC.worktreeAdd, async (_e, cwd: string, branch: string, dir: string) => {
       // Every worktree command runs from the main checkout: `worktree add` from
       // inside another worktree works, but relative paths would then resolve
       // against the wrong root.
       const root = (await mainCheckoutRoot(cwd)) ?? cwd
       return addWorktree(root, { branch, dir })
     })
-    ipcMain.handle(IPC.worktreeRemove, async (_e, cwd: string, dir: string, force: boolean) => {
+    handle(IPC.worktreeRemove, async (_e, cwd: string, dir: string, force: boolean) => {
       const root = (await mainCheckoutRoot(cwd)) ?? cwd
       return removeWorktree(root, dir, force)
     })
-    ipcMain.handle(IPC.worktreeSuggest, async (_e, cwd: string, branch: string) => {
+    handle(IPC.worktreeSuggest, async (_e, cwd: string, branch: string) => {
       const root = await mainCheckoutRoot(cwd)
       return root ? suggestWorktreeDir(root, branch) : null
     })
@@ -889,41 +1034,42 @@ function bootApp(): void {
 
     // The git panes. Every one of these is a thin forward: the module owns the
     // decisions, including which of them are allowed to exist at all.
-    ipcMain.handle(IPC.gitRepoStatus, (_e, cwd: string) => git.repoStatus(cwd))
-    ipcMain.handle(IPC.gitHistory, (_e, cwd: string, limit?: number, filter?: HistoryFilter) =>
+    handle(IPC.gitRepoStatus, (_e, cwd: string) => git.repoStatus(cwd))
+    handle(IPC.gitHistory, (_e, cwd: string, limit?: number, filter?: HistoryFilter) =>
       git.history(cwd, limit, filter)
     )
-    ipcMain.handle(IPC.gitBranches, (_e, cwd: string) => git.branches(cwd))
-    ipcMain.handle(
+    handle(IPC.gitBranches, (_e, cwd: string) => git.branches(cwd))
+    handle(
       IPC.gitFileDiff,
       (_e, cwd: string, repoPath: string, opts: { picked?: boolean; untracked?: boolean }) =>
         git.fileDiff(cwd, repoPath, opts ?? {})
     )
-    ipcMain.handle(IPC.gitPickedDiff, (_e, cwd: string) => git.pickedDiff(cwd))
-    ipcMain.handle(IPC.gitCommitDiff, (_e, cwd: string, sha: string, repoPath?: string) =>
+    handle(IPC.gitPickedDiff, (_e, cwd: string) => git.pickedDiff(cwd))
+    handle(IPC.gitCommitDiff, (_e, cwd: string, sha: string, repoPath?: string) =>
       git.commitDiff(cwd, sha, repoPath)
     )
-    ipcMain.handle(IPC.gitCommitFiles, (_e, cwd: string, sha: string) => git.commitFiles(cwd, sha))
-    ipcMain.handle(IPC.gitPick, (_e, cwd: string, paths: string[]) => git.pick(cwd, paths ?? []))
-    ipcMain.handle(IPC.gitUnpick, (_e, cwd: string, paths: string[]) => git.unpick(cwd, paths ?? []))
-    ipcMain.handle(IPC.gitSave, (_e, cwd: string, message: string) => git.save(cwd, message))
-    ipcMain.handle(IPC.gitSend, (_e, cwd: string) => git.send(cwd))
-    ipcMain.handle(IPC.gitSendSize, (_e, cwd: string) => git.sendSize(cwd))
-    ipcMain.handle(IPC.gitPeek, (_e, cwd: string) => git.peek(cwd))
-    ipcMain.handle(IPC.gitBringIn, (_e, cwd: string) => git.bringIn(cwd))
-    ipcMain.handle(IPC.gitGoTo, (_e, cwd: string, branch: string) => git.goTo(cwd, branch))
-    ipcMain.handle(IPC.gitStartBranch, (_e, cwd: string, name: string) => git.startBranch(cwd, name))
-    ipcMain.handle(IPC.gitApplyLines, (_e, cwd: string, patch: string, direction: 'pick' | 'unpick') =>
+    handle(IPC.gitCommitFiles, (_e, cwd: string, sha: string) => git.commitFiles(cwd, sha))
+    handle(IPC.gitPick, (_e, cwd: string, paths: string[]) => git.pick(cwd, paths ?? []))
+    handle(IPC.gitUnpick, (_e, cwd: string, paths: string[]) => git.unpick(cwd, paths ?? []))
+    handle(IPC.gitSave, (_e, cwd: string, message: string) => git.save(cwd, message))
+    handle(IPC.gitSend, (_e, cwd: string) => git.send(cwd))
+    handle(IPC.gitSendSize, (_e, cwd: string) => git.sendSize(cwd))
+    handle(IPC.gitStop, (_e, cwd: string) => git.stopOperation(cwd))
+    handle(IPC.gitPeek, (_e, cwd: string) => git.peek(cwd))
+    handle(IPC.gitBringIn, (_e, cwd: string) => git.bringIn(cwd))
+    handle(IPC.gitGoTo, (_e, cwd: string, branch: string) => git.goTo(cwd, branch))
+    handle(IPC.gitStartBranch, (_e, cwd: string, name: string) => git.startBranch(cwd, name))
+    handle(IPC.gitApplyLines, (_e, cwd: string, patch: string, direction: 'pick' | 'unpick') =>
       git.applyLines(cwd, patch, direction === 'unpick' ? 'unpick' : 'pick')
     )
-    ipcMain.handle(IPC.gitUndoLastSave, (_e, cwd: string) => git.undoLastSave(cwd))
-    ipcMain.handle(IPC.gitAmend, (_e, cwd: string, message: string) => git.amend(cwd, message ?? ''))
-    ipcMain.handle(IPC.gitRevert, (_e, cwd: string, sha: string) => git.revertSave(cwd, sha))
-    ipcMain.handle(IPC.gitTag, (_e, cwd: string, sha: string, name: string) => git.addTag(cwd, sha, name))
-    ipcMain.handle(IPC.gitInit, (_e, cwd: string) => git.initRepo(cwd))
-    ipcMain.handle(IPC.gitSetOrigin, (_e, cwd: string, url: string) => git.setOrigin(cwd, url))
-    ipcMain.handle(IPC.gitHostTools, (_e, cwd: string) => git.hostTools(cwd))
-    ipcMain.handle(
+    handle(IPC.gitUndoLastSave, (_e, cwd: string) => git.undoLastSave(cwd))
+    handle(IPC.gitAmend, (_e, cwd: string, message: string) => git.amend(cwd, message ?? ''))
+    handle(IPC.gitRevert, (_e, cwd: string, sha: string) => git.revertSave(cwd, sha))
+    handle(IPC.gitTag, (_e, cwd: string, sha: string, name: string) => git.addTag(cwd, sha, name))
+    handle(IPC.gitInit, (_e, cwd: string) => git.initRepo(cwd))
+    handle(IPC.gitSetOrigin, (_e, cwd: string, url: string) => git.setOrigin(cwd, url))
+    handle(IPC.gitHostTools, (_e, cwd: string) => git.hostTools(cwd))
+    handle(
       IPC.gitCreateOnline,
       (_e, cwd: string, opts: { command: string; name: string; private: boolean; description?: string }) =>
         // The tool name is checked against the two this app knows rather than
@@ -933,70 +1079,70 @@ function bootApp(): void {
           ? git.createOnline(cwd, opts)
           : Promise.resolve({ ok: false, error: 'unknown tool' })
     )
-    ipcMain.handle(IPC.setAgentHooks, (_e, id: string, enabled: boolean) => {
+    handle(IPC.setAgentHooks, (_e, id: string, enabled: boolean) => {
       const spec = agentById(id)
       if (!spec) return { ok: false, error: `unknown agent: ${id}`, path: '' }
       return setAgentHooks(spec, enabled, cliShimPath(SHARED_DATA_DIR, 'electron'))
     })
-    ipcMain.handle(IPC.wslDistros, () => listWslDistros())
-    ipcMain.handle(IPC.wslRunning, () => listRunningWslDistros())
-    ipcMain.handle(IPC.wslControl, (_e, action: WslAction, distro?: string) =>
+    handle(IPC.wslDistros, () => listWslDistros())
+    handle(IPC.wslRunning, () => listRunningWslDistros())
+    handle(IPC.wslControl, (_e, action: WslAction, distro?: string) =>
       controlWsl(action, distro)
     )
-    ipcMain.handle(IPC.sshHosts, () => listSshHosts())
-    ipcMain.handle(IPC.claudeUsage, (_e, retry?: boolean) => {
+    handle(IPC.sshHosts, () => listSshHosts())
+    handle(IPC.claudeUsage, (_e, retry?: boolean) => {
       if (retry) forgetKeychainRefusal()
       return readClaudeUsage()
     })
     // The offsets it remembers live beside the workspace document, so a restart
     // reads only what has been appended rather than all of the transcripts again.
-    ipcMain.handle(IPC.claudeTokens, () => readTokenUsage(SHARED_DATA_DIR))
+    handle(IPC.claudeTokens, () => readTokenUsage(SHARED_DATA_DIR))
     // The same transcripts, read for what was said. Its own offsets, beside the
     // token counter's, so neither can hold the other's scan up.
-    ipcMain.handle(IPC.claudeTurns, () => readTurnIndex(SHARED_DATA_DIR))
+    handle(IPC.claudeTurns, () => readTurnIndex(SHARED_DATA_DIR))
     // Publishes this machine's per-project totals into the user's shared folder
     // and hands back every machine's. Off — and instant — while no folder is set.
-    ipcMain.handle(IPC.shareTokens, (_e, dir: string, entries: PublishEntry[]) =>
+    handle(IPC.shareTokens, (_e, dir: string, entries: PublishEntry[]) =>
       shareTokens(SHARED_DATA_DIR, dir, entries)
     )
     // The same folder, a different question: what every machine is part-way
     // through. Reads and writes descriptions only — see `relay.ts`.
-    ipcMain.handle(IPC.relay, (_e, dir: string, entries: RelayEntry[]) =>
+    handle(IPC.relay, (_e, dir: string, entries: RelayEntry[]) =>
       publishRelay(SHARED_DATA_DIR, dir, entries, sharePassphrase(SHARED_DATA_DIR))
     )
-    ipcMain.handle(IPC.startFileDrag, (event, paths: string[]) => startFileDrag(event.sender, paths))
+    handle(IPC.startFileDrag, (event, paths: string[]) => startFileDrag(event.sender, paths))
     // What a pane's own Up arrow walks, for the shells that bind it themselves.
     // A file is the whole interface to them — see `paneHistoryFile.ts`.
-    ipcMain.handle(IPC.writePaneHistory, (_e, paneId: string, commands: string[]) =>
+    handle(IPC.writePaneHistory, (_e, paneId: string, commands: string[]) =>
       writePaneHistory(SHARED_DATA_DIR, paneId, commands)
     )
     // Set from the settings panel and never read back to it: a panel that can
     // show a passphrase is a panel that can leak one over somebody's shoulder.
-    ipcMain.handle(IPC.setSharePassphrase, (_e, passphrase: string) =>
+    handle(IPC.setSharePassphrase, (_e, passphrase: string) =>
       setSharePassphrase(SHARED_DATA_DIR, passphrase)
     )
-    ipcMain.handle(IPC.hasSharePassphrase, () => hasSharePassphrase(SHARED_DATA_DIR))
+    handle(IPC.hasSharePassphrase, () => hasSharePassphrase(SHARED_DATA_DIR))
     // What is on screen, once every fifteen seconds. An empty cwd is "nothing
     // is being worked on", which is the same call rather than a second one — a
     // caller that must remember to say "stopped" forgets on the path nobody
     // tested. See `timeLog.ts`.
-    ipcMain.handle(IPC.timeBeat, (_e, cwd: string, name: string) => timeLog.beat(cwd, name))
-    ipcMain.handle(IPC.timeSpans, () => timeLog.all())
-    ipcMain.handle(IPC.systemStats, (_e, opts?: { drives?: boolean }) => readSystemStats(opts))
-    ipcMain.handle(IPC.weather, (_e, req: WeatherRequest) => readWeather(req))
-    ipcMain.handle(IPC.crypto, (_e, req: { coins: string; currency: string }) => readCrypto(req))
-    ipcMain.handle(IPC.gitStatus, (_e, cwd: string) => gitStatus(cwd))
-    ipcMain.handle(IPC.isDirectory, (_e, dir: string) => isDirectory(dir))
-    ipcMain.handle(IPC.createFile, (_e, parent: string, name: string) =>
+    handle(IPC.timeBeat, (_e, cwd: string, name: string) => timeLog.beat(cwd, name))
+    handle(IPC.timeSpans, () => timeLog.all())
+    handle(IPC.systemStats, (_e, opts?: { drives?: boolean }) => readSystemStats(opts))
+    handle(IPC.weather, (_e, req: WeatherRequest) => readWeather(req))
+    handle(IPC.crypto, (_e, req: { coins: string; currency: string }) => readCrypto(req))
+    handle(IPC.gitStatus, (_e, cwd: string) => gitStatus(cwd))
+    handle(IPC.isDirectory, (_e, dir: string) => isDirectory(dir))
+    handle(IPC.createFile, (_e, parent: string, name: string) =>
       createFile(parent, name)
     )
-    ipcMain.handle(IPC.openWith, (_e, program: string, target: string) =>
+    handle(IPC.openWith, (_e, program: string, target: string) =>
       openWith(program, target)
     )
-    ipcMain.handle(IPC.createDirectory, (_e, parent: string, name: string) =>
+    handle(IPC.createDirectory, (_e, parent: string, name: string) =>
       createDirectory(parent, name)
     )
-    ipcMain.handle(IPC.renameEntry, (_e, target: string, name: string) =>
+    handle(IPC.renameEntry, (_e, target: string, name: string) =>
       renameEntry(target, name)
     )
     /**
@@ -1014,7 +1160,7 @@ function bootApp(): void {
      * on that mount — and "it did not go where I could get it back from" is
      * something the user has to be told, not something to paper over.
      */
-    ipcMain.handle(IPC.removeEntry, async (_e, target: string, permanent = false) => {
+    handle(IPC.removeEntry, async (_e, target: string, permanent = false) => {
       if (permanent) return removeEntry(target)
       try {
         await shell.trashItem(target)
@@ -1024,10 +1170,10 @@ function bootApp(): void {
         )
       }
     })
-    ipcMain.handle(IPC.copyEntry, (_e, source: string, destDir: string) =>
+    handle(IPC.copyEntry, (_e, source: string, destDir: string) =>
       copyEntry(source, destDir)
     )
-    ipcMain.handle(IPC.moveEntry, (_e, source: string, destDir: string) =>
+    handle(IPC.moveEntry, (_e, source: string, destDir: string) =>
       moveEntry(source, destDir)
     )
 
@@ -1035,18 +1181,18 @@ function bootApp(): void {
     // all means starting again. Offered as a button rather than left as an
     // instruction: the setting is three clicks deep and the restart is not the
     // user's idea, it is ours.
-    ipcMain.handle(IPC.appsSupported, () => externalApps.supported)
-    ipcMain.handle(IPC.appsRunning, () => externalApps.list())
-    ipcMain.handle(IPC.appsReason, () => externalApps.reason)
-    ipcMain.handle(IPC.appsAttachable, () => externalApps.attachable())
-    ipcMain.handle(
+    handle(IPC.appsSupported, () => externalApps.supported)
+    handle(IPC.appsRunning, () => externalApps.list())
+    handle(IPC.appsReason, () => externalApps.reason)
+    handle(IPC.appsAttachable, () => externalApps.attachable())
+    handle(
       IPC.appsAttach,
       (_e, app_: ExternalApp, workspaceId: string, hwnd: string, pid: number) =>
         externalApps.attach(app_.id, workspaceId, app_, hwnd, pid)
     )
-    ipcMain.handle(IPC.appsShowAll, () => externalApps.showAll())
-    ipcMain.handle(IPC.appsRelease, (_e, appId: string) => externalApps.release(appId))
-    ipcMain.handle(IPC.appsLaunch, (_e, app_: ExternalApp, workspaceId: string, cwd: string) =>
+    handle(IPC.appsShowAll, () => externalApps.showAll())
+    handle(IPC.appsRelease, (_e, appId: string) => externalApps.release(appId))
+    handle(IPC.appsLaunch, (_e, app_: ExternalApp, workspaceId: string, cwd: string) =>
       externalApps.launch(app_, workspaceId, cwd)
     )
 
@@ -1062,7 +1208,7 @@ function bootApp(): void {
      * the window is placed by the scale of the display our window is mostly on,
      * which is the display the pane is on in every case but a half-dragged one.
      */
-    ipcMain.handle(IPC.appsSync, (_e, request: AppSyncRequest) => {
+    handle(IPC.appsSync, (_e, request: AppSyncRequest) => {
       if (!win || win.isDestroyed()) return externalApps.sync({ ...request, rects: {} })
       const content = win.getContentBounds()
       // One driver works in points rather than pixels — macOS applies the
@@ -1083,7 +1229,7 @@ function bootApp(): void {
       return externalApps.sync({ ...request, rects })
     })
 
-    ipcMain.handle(IPC.relaunch, () => {
+    handle(IPC.relaunch, () => {
       app.relaunch()
       app.quit()
     })
@@ -1108,7 +1254,7 @@ function bootApp(): void {
      * If that ever changes, a material has to go on a window that is not
      * transparent, decided at construction, and never on this one.
      */
-    ipcMain.handle(IPC.setTranslucent, (_e, translucent: boolean) => {
+    handle(IPC.setTranslucent, (_e, translucent: boolean) => {
       if (!win || win.isDestroyed()) return
       try {
         win.setBackgroundColor(translucent ? '#00000000' : '#141414')
@@ -1119,14 +1265,14 @@ function bootApp(): void {
 
     // Read once by the preload, before the renderer decides whether to draw its
     // own caption buttons.
-    ipcMain.on(IPC.usesNativeOverlay, (event) => {
+    listen(IPC.usesNativeOverlay, (event) => {
       event.returnValue = !transparentWindow
     })
 
     // Sent on every theme change: the overlay keeps whatever colours it was
     // built with until it is told otherwise, so without this the strip stays at
     // the startup theme's palette while the rest of the UI moves on.
-    ipcMain.handle(IPC.setOverlayColors, (_e, color: string, symbolColor: string) => {
+    handle(IPC.setOverlayColors, (_e, color: string, symbolColor: string) => {
       if (!win || win.isDestroyed() || transparentWindow) return
       try {
         win.setTitleBarOverlay({ color, symbolColor, height: CAPTION_H })
@@ -1135,7 +1281,7 @@ function bootApp(): void {
       }
     })
 
-    ipcMain.handle(IPC.pickFolder, async (_e, defaultPath?: string) => {
+    handle(IPC.pickFolder, async (_e, defaultPath?: string) => {
       if (!win) return null
       const res = await dialog.showOpenDialog(win, {
         title: 'Choose a folder',
@@ -1145,7 +1291,7 @@ function bootApp(): void {
       return res.canceled ? null : res.filePaths[0]
     })
 
-    ipcMain.handle(
+    handle(
       IPC.pickSaveFile,
       async (
         _e,
@@ -1164,7 +1310,7 @@ function bootApp(): void {
       }
     )
 
-    ipcMain.handle(
+    handle(
       IPC.pickOpenFile,
       async (_e, opts: { title: string; anyFile?: boolean; filters?: Electron.FileFilter[] }) => {
         if (!win) return null
@@ -1177,47 +1323,47 @@ function bootApp(): void {
       }
     )
 
-    ipcMain.handle(IPC.ptySpawn, (_e, req: SpawnRequest) => ptys.spawn(req))
-    ipcMain.handle(IPC.ptyWrite, (_e, id: string, data: string) => ptys.write(id, data))
-    ipcMain.handle(IPC.ptyResize, (_e, id: string, cols: number, rows: number) =>
+    handle(IPC.ptySpawn, (_e, req: SpawnRequest) => ptys.spawn(req))
+    handle(IPC.ptyWrite, (_e, id: string, data: string) => ptys.write(id, data))
+    handle(IPC.ptyResize, (_e, id: string, cols: number, rows: number) =>
       ptys.resize(id, cols, rows)
     )
-    ipcMain.handle(IPC.ptyKill, (_e, id: string) => ptys.kill(id))
-    ipcMain.handle(IPC.ptySleep, (_e, id: string) => ptys.sleep(id))
-    ipcMain.handle(IPC.ptyIsBusy, (_e, id: string) => ptys.isBusy(id))
+    handle(IPC.ptyKill, (_e, id: string) => ptys.kill(id))
+    handle(IPC.ptySleep, (_e, id: string) => ptys.sleep(id))
+    handle(IPC.ptyIsBusy, (_e, id: string) => ptys.isBusy(id))
 
-    ipcMain.handle(IPC.agentAnswer, (_e, paneId: string, choiceId?: string) =>
+    handle(IPC.agentAnswer, (_e, paneId: string, choiceId?: string) =>
       ptys.answerAgent(paneId, choiceId)
     )
-    ipcMain.handle(IPC.agentDismiss, (_e, paneId: string) => ptys.dismissAgent(paneId))
-    ipcMain.handle(IPC.agentState, (_e, paneId?: string) => ptys.agentState(paneId))
+    handle(IPC.agentDismiss, (_e, paneId: string) => ptys.dismissAgent(paneId))
+    handle(IPC.agentState, (_e, paneId?: string) => ptys.agentState(paneId))
 
     // The untitled buffers. `scratchBuffer.ts` validates the pane id and the
     // extension itself rather than trusting either — they arrive from a
     // renderer and are turned into a filename.
-    ipcMain.handle(IPC.powerLock, () =>
+    handle(IPC.powerLock, () =>
       powerLock?.status() ?? { hold: false, reason: 'off', holding: [], supported: false }
     )
 
-    ipcMain.handle(IPC.scratchRead, (_e, paneId: string, ext: string) =>
+    handle(IPC.scratchRead, (_e, paneId: string, ext: string) =>
       readScratch(SHARED_DATA_DIR, paneId, ext)
     )
-    ipcMain.handle(IPC.scratchWrite, (_e, paneId: string, ext: string, text: string) =>
+    handle(IPC.scratchWrite, (_e, paneId: string, ext: string, text: string) =>
       writeScratch(SHARED_DATA_DIR, paneId, ext, text)
     )
-    ipcMain.handle(IPC.scratchDrop, (_e, paneId: string, ext: string) =>
+    handle(IPC.scratchDrop, (_e, paneId: string, ext: string) =>
       dropScratch(SHARED_DATA_DIR, paneId, ext)
     )
 
     // A screenshot on the clipboard becomes a file path typed into the pane,
     // which is what an agent can actually act on — the same gesture as dropping
     // an image into a chat, from any Windows capture tool.
-    ipcMain.handle(IPC.clipboardImage, () => clipboardImage())
+    handle(IPC.clipboardImage, () => clipboardImage())
 
     // One image's bytes, so the image-notes editor can draw it onto a canvas it
     // is still allowed to export. See `Backend.readImageBytes` for why the
     // ordinary `iaw-media` route cannot be used for that one job.
-    ipcMain.handle(IPC.readImageBytes, (_e, target: string) => {
+    handle(IPC.readImageBytes, (_e, target: string) => {
       // The same guard the media protocol uses, and here for the same reason:
       // this is not what makes it safe — the renderer is ours — but a bug on
       // our side should surface as a picture that will not open rather than as
@@ -1238,7 +1384,7 @@ function bootApp(): void {
     // image-notes editor. The renderer hands over bytes and the name of the file
     // they came from; where it lands is decided here, so the call cannot be
     // used to write anywhere else.
-    ipcMain.handle(IPC.saveNotedImage, (_e, from: string, bytes: Uint8Array) => {
+    handle(IPC.saveNotedImage, (_e, from: string, bytes: Uint8Array) => {
       const dir = path.join(os.tmpdir(), 'ia_workspaces')
       mkdirSync(dir, { recursive: true })
       // Named after the picture it marks, so the two sit together in a folder
@@ -1251,7 +1397,7 @@ function bootApp(): void {
       return file
     })
 
-    ipcMain.handle(IPC.pasteImage, () => {
+    handle(IPC.pasteImage, () => {
       // A file the clipboard points at is used where it lies. Copying it into
       // temp would hand the pane a second name for a picture that already has
       // one the user recognises, and leave a duplicate behind.
@@ -1274,12 +1420,12 @@ function bootApp(): void {
       }
     })
 
-    ipcMain.handle(IPC.getContextMenu, () => isContextMenuInstalled())
-    ipcMain.handle(IPC.setContextMenu, (_e, enabled: boolean) =>
+    handle(IPC.getContextMenu, () => isContextMenuInstalled())
+    handle(IPC.setContextMenu, (_e, enabled: boolean) =>
       setContextMenu(enabled, launchCommand(), `${process.execPath},0`)
     )
 
-    ipcMain.handle(
+    handle(
       IPC.notify,
       (_e, opts: { title: string; body: string; paneId: string; workspaceId: string }) => {
         if (!Notification.isSupported()) return
@@ -1299,23 +1445,23 @@ function bootApp(): void {
       }
     )
 
-    ipcMain.handle(IPC.setBadge, (_e, count: number) => {
+    handle(IPC.setBadge, (_e, count: number) => {
       if (!win || win.isDestroyed()) return
       // Windows has no dock badge; flashing the taskbar is the closest signal.
       win.flashFrame(count > 0 && !win.isFocused())
     })
 
-    ipcMain.handle(IPC.openExternal, (_e, url: string) => {
+    handle(IPC.openExternal, (_e, url: string) => {
       if (/^https?:/.test(url)) shell.openExternal(url)
     })
-    ipcMain.handle(IPC.openInExplorer, (_e, target: string) => shell.openPath(target))
+    handle(IPC.openInExplorer, (_e, target: string) => shell.openPath(target))
     // Distinct from openInExplorer, which *runs* the file with whatever is
     // associated. This opens the folder around it with the item highlighted,
     // which is what "show me where this is" means.
-    ipcMain.handle(IPC.revealItem, (_e, target: string) => shell.showItemInFolder(target))
+    handle(IPC.revealItem, (_e, target: string) => shell.showItemInFolder(target))
 
-    ipcMain.handle(IPC.readClaudeConfig, () => readClaudeSettings())
-    ipcMain.handle(IPC.setClaudeIntegration, (_e, enabled: boolean) =>
+    handle(IPC.readClaudeConfig, () => readClaudeSettings())
+    handle(IPC.setClaudeIntegration, (_e, enabled: boolean) =>
       setClaudeIntegration(
         enabled,
         SHARED_DATA_DIR,
@@ -1323,13 +1469,13 @@ function bootApp(): void {
       )
     )
 
-    ipcMain.handle(IPC.windowMinimize, () => win?.minimize())
-    ipcMain.handle(IPC.windowMaximizeToggle, () => {
+    handle(IPC.windowMinimize, () => win?.minimize())
+    handle(IPC.windowMaximizeToggle, () => {
       if (!win) return
       if (win.isMaximized()) win.unmaximize()
       else win.maximize()
     })
-    ipcMain.handle(IPC.windowClose, () => win?.close())
+    handle(IPC.windowClose, () => win?.close())
   }
 
   /**
@@ -1502,7 +1648,7 @@ function bootApp(): void {
             : { ok: true, data: { text } }
         }
       }
-    })
+    }, approveCrossPane)
 
     ptys = new PtyManager(
       {
@@ -1519,9 +1665,11 @@ function bootApp(): void {
           // The shell integration already reports every submitted line so a
           // restored agent pane can be resumed; keeping more than the last one
           // is the whole of the history feature.
-          // Not the resume line this app types into a restored pane: see
-          // `synthetic` on `TerminalMeta`.
-          if (p.lastCommand && !p.synthetic) history.add(p.lastCommand, p.cwd ?? '', p.paneId)
+          // `record` keeps the line unless it is the resume line this app typed
+          // (`synthetic` on `TerminalMeta`) — and either way notes that the pane
+          // started something, so that command's exit code lands on it and not
+          // on whatever ran before. See `history.ts`.
+          if (p.lastCommand) history.record(p)
         },
         // What it exited with, stamped onto the entry `onMeta` just recorded.
         // This is the whole of what makes a command's past knowable: without it
@@ -1572,7 +1720,7 @@ function bootApp(): void {
       {
         notifyPipe: () => control!.address,
         historyDir: () => historyDir(SHARED_DATA_DIR),
-        token: control.token,
+        tokenFor: (paneId) => control!.tokenFor(paneId),
         binDir,
         scrollback,
         pidMap,
@@ -1748,8 +1896,35 @@ function bootApp(): void {
     hardExit('window-all-closed')
   })
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (e) => {
     noteShutdown('before-quit')
+    // A quit reaches here before any window has closed, so a change still
+    // sitting in the renderer's save debounce has not been sent — and
+    // `hardExit` leaves no later moment to send it. Ask for it, and go the
+    // moment it arrives. Bounded, because a renderer that is hung or gone must
+    // not be able to stop the app quitting: past the deadline it quits with
+    // whatever main already has, which is how every quit used to behave.
+    if (win && !win.isDestroyed() && !quitWhenFlushed) {
+      e.preventDefault()
+      let done = false
+      quitWhenFlushed = () => {
+        if (done) return
+        done = true
+        clearTimeout(deadline)
+        shutdown()
+        hardExit('before-quit')
+      }
+      const deadline = setTimeout(() => quitWhenFlushed?.(), 600)
+      // Called by name rather than signalled: `executeJavaScript` settles only
+      // after the call has run, and the save inside it is synchronous, so by
+      // the time this resolves the document is either here or there was
+      // nothing pending. See `flushNow` in the renderer's store.
+      win.webContents
+        .executeJavaScript('window.__iawFlushState?.()')
+        .then(() => quitWhenFlushed?.())
+        .catch(() => quitWhenFlushed?.())
+      return
+    }
     shutdown()
     hardExit('before-quit')
   })

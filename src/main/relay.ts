@@ -36,10 +36,10 @@
  * `tokenShare.ts` so both features agree about who wrote a file and which
  * project it belongs to.
  */
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { repoStatus, unsentSubjects } from './git'
-import { redact, seal, unseal } from './shareCrypto'
+import { redact, seal, unsealAsync } from './shareCrypto'
 import { machine, projectKey } from './shareIdentity'
 import type { Relay, RelayPresence, RelayPublishEntry, RepoStatus } from '../shared/types'
 
@@ -367,6 +367,47 @@ async function writeCommands(
 }
 
 /**
+ * What each command file decrypted to, by path, while it stays unchanged.
+ *
+ * The sweep runs every minute and reads every machine's file; another machine
+ * rewrites its own only when its commands change, which is rarely. Decrypting
+ * an unchanged file again costs a key derivation that is slow on purpose, so a
+ * file whose size and mtime match what was last read — under the same
+ * passphrase — is answered from here. A file that could not be opened is
+ * remembered too: a machine on a different passphrase stays unreadable until
+ * either side changes, and asking again every minute would not change that.
+ */
+type CommandRecord = { machine: string; label: string; commands: string[] }
+const commandFiles = new Map<
+  string,
+  { mtimeMs: number; size: number; passphrase: string; record: CommandRecord | null }
+>()
+
+async function readCommandFile(file: string, passphrase: string): Promise<CommandRecord | null> {
+  const st = await stat(file)
+  const known = commandFiles.get(file)
+  if (known && known.mtimeMs === st.mtimeMs && known.size === st.size && known.passphrase === passphrase) {
+    return known.record
+  }
+  const raw = await readFile(file, 'utf8')
+  const opened = await unsealAsync(raw, passphrase)
+  let record: CommandRecord | null = null
+  if (opened) {
+    try {
+      const parsed = JSON.parse(opened) as CommandRecord
+      if (parsed?.machine && Array.isArray(parsed.commands)) record = parsed
+    } catch {
+      /* sealed but not ours to read */
+    }
+  }
+  // Keyed to the stat taken *before* the read: a file rewritten in between
+  // then differs next time and is read again, rather than the new contents
+  // being cached under the old size.
+  commandFiles.set(file, { mtimeMs: st.mtimeMs, size: st.size, passphrase, record })
+  return record
+}
+
+/**
  * Every other machine's commands, by project, for the passphrases that match.
  *
  * A file this passphrase cannot open is skipped in silence. That is the
@@ -400,11 +441,8 @@ async function readCommands(
       // This machine's own are already in its own history, and fresher.
       if (file.name === `cmd-${meId}.json`) continue
       try {
-        const raw = await readFile(path.join(root, project.name, file.name), 'utf8')
-        const opened = unseal(raw, passphrase)
-        if (!opened) continue
-        const record = JSON.parse(opened) as { machine: string; label: string; commands: string[] }
-        if (!record?.machine || !Array.isArray(record.commands)) continue
+        const record = await readCommandFile(path.join(root, project.name, file.name), passphrase)
+        if (!record) continue
         ;(out[project.name] ??= []).push({
           machine: record.machine,
           label: record.label || record.machine,

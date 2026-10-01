@@ -21,6 +21,7 @@
  */
 import { execFile } from 'node:child_process'
 import path from 'node:path'
+import { gitArgs, gitEnv } from './gitEnv'
 import type { Worktree } from '../shared/types'
 
 /** Long enough for a slow disk, short enough not to hang the UI on a lock. */
@@ -30,8 +31,8 @@ function git(cwd: string, args: string[]): Promise<{ ok: true; out: string } | {
   return new Promise((resolve) => {
     execFile(
       'git',
-      args,
-      { cwd, timeout: GIT_TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+      gitArgs(args),
+      { cwd, timeout: GIT_TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: gitEnv() },
       (err, stdout, stderr) => {
         if (!err) return resolve({ ok: true, out: stdout })
         // git's own message is far better than anything we would compose —

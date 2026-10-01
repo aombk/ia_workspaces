@@ -35,6 +35,7 @@ import { existsSync, statSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { toolPath } from './toolPath'
+import { gitArgs } from './gitEnv'
 import { parseGitQuantity } from '../shared/gitSize'
 import type {
   Branch,
@@ -71,6 +72,57 @@ interface GitRun {
   ok: boolean
   out: string
   err: string
+  /** Ended because somebody pressed Stop, not because git finished or failed. */
+  stopped?: boolean
+}
+
+/**
+ * The operations that can be stopped part-way, by repository root.
+ *
+ * Only the two that are safe to interrupt ever go in here: a push and a fetch.
+ * Both do their work in a pack sent over the wire and update a branch only at
+ * the very end, so stopping either leaves every branch — here and online —
+ * exactly as it was. A pull is deliberately absent: it can be stopped halfway
+ * through rewriting your files, and a Stop button that could leave a rebase
+ * sitting half-done would be a button that makes things worse.
+ */
+const stoppable = new Map<string, { child: ReturnType<typeof spawn>; stopped: boolean }>()
+
+/**
+ * Stops the push or fetch running in this repository, if there is one.
+ *
+ * Returns whether there was something to stop. The operation itself then ends
+ * the way any other does — its promise settles, the pane unlocks — carrying
+ * `stopped` so it can say what happened instead of reporting a failure.
+ */
+export async function stopOperation(cwd: string): Promise<boolean> {
+  const root = (await checkoutRoot(cwd)) ?? cwd
+  const entry = stoppable.get(root) ?? stoppable.get(cwd)
+  if (!entry) return false
+  entry.stopped = true
+  killTree(entry.child)
+  return true
+}
+
+/**
+ * Kills git and whatever it started to reach the network.
+ *
+ * A push over HTTPS is `git` running `git-remote-https`, and over SSH `git`
+ * running `ssh`. Killing only the first can leave the second holding the
+ * connection open until it notices, which is exactly the hang being stopped. On
+ * macOS and Linux the child was started as the leader of its own group, so the
+ * whole group goes at once; Windows ends the tree with its parent.
+ */
+function killTree(child: ReturnType<typeof spawn>): void {
+  if (process.platform !== 'win32' && child.pid) {
+    try {
+      process.kill(-child.pid, 'SIGTERM')
+      return
+    } catch {
+      // Already gone, or not a group leader after all — fall through.
+    }
+  }
+  child.kill()
 }
 
 /**
@@ -84,7 +136,7 @@ function run(cwd: string, args: string[], opts: { timeout?: number; network?: bo
   return new Promise((resolve) => {
     execFile(
       'git',
-      args,
+      gitArgs(args),
       {
         cwd,
         timeout: opts.timeout ?? (opts.network ? NETWORK_TIMEOUT_MS : LOCAL_TIMEOUT_MS),
@@ -128,7 +180,7 @@ function runInput(cwd: string, args: string[], input: string): Promise<GitRun> {
   return new Promise((resolve) => {
     const child = execFile(
       'git',
-      args,
+      gitArgs(args),
       {
         cwd,
         timeout: LOCAL_TIMEOUT_MS,
@@ -294,14 +346,20 @@ function runProgress(
     command?: string
     /** Stamped onto every progress event, for facts known before git started. */
     extra?: Partial<GitProgress>
+    /** Whether Stop may end this one part-way. See `stoppable`. */
+    stoppable?: boolean
   }
 ): Promise<GitRun> {
   return new Promise((resolve) => {
     // `gh` shells out to git for the push it does, and git's progress comes
     // back up the same pipe — so the one runner covers both.
-    const child = spawn(opts.command ?? 'git', args, {
+    // The hardening flags are git's, not `gh`'s, which would refuse them.
+    const child = spawn(opts.command ?? 'git', opts.command ? args : gitArgs(args), {
       cwd,
       windowsHide: true,
+      // Its own process group, so Stop can end git and the helper it runs to
+      // talk to the network together. See `killTree`.
+      detached: !!opts.stoppable && process.platform !== 'win32',
       env: {
         ...process.env,
         // `gh` is one of the programs that comes through here, and it is not on
@@ -317,19 +375,23 @@ function runProgress(
     let out = ''
     let err = ''
     let settled = false
+    const entry = { child, stopped: false }
+    if (opts.stoppable) stoppable.set(cwd, entry)
     const timer = setTimeout(() => {
       // Killed rather than left running: a push that hangs forever behind a
       // dead connection would otherwise hold the pane's lock for the life of
       // the app, with a bar that never moves.
-      child.kill()
+      if (opts.stoppable) killTree(child)
+      else child.kill()
     }, opts.network ? NETWORK_TIMEOUT_MS : LOCAL_TIMEOUT_MS)
 
     const finish = (ok: boolean) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (stoppable.get(cwd) === entry) stoppable.delete(cwd)
       report({ cwd, op: opts.op, phase: '', plain: '', done: true })
-      resolve({ ok, out, err: err.trim() })
+      resolve({ ok: ok && !entry.stopped, out, err: err.trim(), stopped: entry.stopped || undefined })
     }
 
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -1229,10 +1291,10 @@ export async function fileDiff(
 ): Promise<string> {
   const root = (await checkoutRoot(cwd)) ?? cwd
   const args = opts.untracked
-    ? ['diff', '--no-index', '--no-color', '--', '/dev/null', repoPath]
+    ? ['diff', '--no-index', '--no-color', '--no-ext-diff', '--', '/dev/null', repoPath]
     : opts.picked
-      ? ['diff', '--cached', '--no-color', '--', repoPath]
-      : ['diff', '--no-color', '--', repoPath]
+      ? ['diff', '--cached', '--no-color', '--no-ext-diff', '--', repoPath]
+      : ['diff', '--no-color', '--no-ext-diff', '--', repoPath]
   const res = await run(root, args)
   // `--no-index` exits non-zero when the files differ, which is the ordinary
   // case here — so what git printed is trusted over what it returned.
@@ -1242,14 +1304,14 @@ export async function fileDiff(
 /** Everything picked, as one patch — what the next save will actually contain. */
 export async function pickedDiff(cwd: string): Promise<string> {
   const root = (await checkoutRoot(cwd)) ?? cwd
-  const res = await run(root, ['diff', '--cached', '--no-color'])
+  const res = await run(root, ['diff', '--cached', '--no-color', '--no-ext-diff'])
   return capped(res.out)
 }
 
 /** One save's changed lines, with the files it touched. */
 export async function commitDiff(cwd: string, sha: string, repoPath?: string): Promise<string> {
   const root = (await checkoutRoot(cwd)) ?? cwd
-  const args = ['show', '--no-color', '--format=', '--patch', sha]
+  const args = ['show', '--no-color', '--no-ext-diff', '--format=', '--patch', sha]
   if (repoPath) args.push('--', repoPath)
   const res = await run(root, args)
   return capped(res.out)
@@ -1361,9 +1423,24 @@ export async function send(cwd: string): Promise<GitResult> {
   // has written, never how much it is going to. Almost always already cached
   // from the button that started this, which showed the same figure.
   const sending = (await sendSize(root)) ?? undefined
-  return asResult(
-    await runProgress(root, args, { op: 'send', network: true, extra: sending ? { sending } : undefined })
-  )
+  const res = await runProgress(root, args, {
+    op: 'send',
+    network: true,
+    stoppable: true,
+    extra: sending ? { sending } : undefined,
+  })
+  if (res.stopped) {
+    return {
+      ok: false,
+      stopped: true,
+      error: 'push stopped',
+      hint:
+        'Stopped. Nothing was sent: a push only changes anything online once all of it has arrived. ' +
+        'Your saves are still here, only on this machine. To change what is in the last one, use ' +
+        '"undo the last save, keep my files" — the files go back to picked, and you can pick again.',
+    }
+  }
+  return asResult(res)
 }
 
 /**
@@ -1375,7 +1452,16 @@ export async function send(cwd: string): Promise<GitResult> {
  */
 export async function peek(cwd: string): Promise<GitResult> {
   const root = (await checkoutRoot(cwd)) ?? cwd
-  return asResult(await runProgress(root, ['fetch', '--progress'], { op: 'peek', network: true }))
+  const res = await runProgress(root, ['fetch', '--progress'], { op: 'peek', network: true, stoppable: true })
+  if (res.stopped) {
+    return {
+      ok: false,
+      stopped: true,
+      error: 'fetch stopped',
+      hint: 'Stopped. Nothing here was changed, and what is online was only being looked at.',
+    }
+  }
+  return asResult(res)
 }
 
 /**

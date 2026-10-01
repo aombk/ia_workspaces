@@ -15,6 +15,7 @@
 import net from 'node:net'
 import { spawn as spawnProcess } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { spawn as spawnPty } from '@lydell/node-pty'
 import {
   FRAME_BACKLOG,
@@ -31,7 +32,8 @@ import {
   type HostMessage,
   type SessionSummary,
 } from '../host/protocol'
-import { hostPaths } from '../host/paths'
+import { hostPaths, isOwnedByUs } from '../host/paths'
+import { isPipeAddress } from '../shared/platform'
 import { SessionTable, type PtyLike, type SpawnSpec } from '../host/sessions'
 
 export type { SpawnSpec } from '../host/sessions'
@@ -321,6 +323,15 @@ export async function connectPtyHost(opts: HostLaunchOptions): Promise<PtyBacken
     if (wait) await delay(wait)
 
     const socket = await tryConnect(address)
+    if (socket && !isPipeAddress(address) && !(isOwnedByUs(address) && isOwnedByUs(path.dirname(address), true))) {
+      // Something answers at our address that this user did not create, or in
+      // a folder others can write to. Greeting it would hand our token to
+      // whoever that is, so it gets nothing — and retrying cannot help, since
+      // our own broker could never bind there while it does.
+      socket.destroy()
+      console.error(`[ptyhost] ${address} is not this user's; not connecting to it`)
+      break
+    }
     if (socket) {
       try {
         const token = readFileSync(tokenPath, 'utf8').trim()

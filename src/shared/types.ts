@@ -2436,6 +2436,24 @@ export interface ChangedFile {
 }
 
 /**
+ * Your answer when one pane asks to act on another. `always` lasts until the
+ * app quits. See `CROSS_PANE` in `main/controlServer.ts`.
+ */
+export type CrossPaneDecision = 'once' | 'always' | 'deny'
+
+/** A pane asking to act on another, as the window shows it. */
+export interface CrossPaneRequest {
+  /** Matches the answer to the question; meaningless otherwise. */
+  id: string
+  /** The asking pane, named the way the sidebar names it. */
+  from: string
+  /** The pane it wants to act on. */
+  to: string
+  /** The control method: `read-screen`, `send`, `send-key` or `answer-agent`. */
+  method: string
+}
+
+/**
  * What the next push would send, worked out before it is sent.
  *
  * Counted from the saves that exist on no remote branch — the same set the
@@ -2663,6 +2681,11 @@ export interface GitResult {
   hint?: string
   /** Anything git said on the way, shown when it is worth reading. */
   output?: string
+  /**
+   * Ended by Stop. Not a failure, and not shown as one: nothing went wrong,
+   * somebody changed their mind, and `hint` says what state that left.
+   */
+  stopped?: boolean
 }
 
 /** One agent whose hooks Settings can install, and whether they are in place. */

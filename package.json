@@ -14,6 +14,7 @@
     "dev": "node build.mjs --watch --electron",
     "typecheck": "tsc --noEmit",
     "test": "node tests/run.mjs",
+    "test:ui": "node tests/ui.e2e.mjs",
     "package": "node build.mjs && electron-builder && node tools/collect.mjs",
     "package:win": "node build.mjs && electron-builder --win && node tools/collect.mjs",
     "package:mac": "node build.mjs && electron-builder --mac && node tools/collect.mjs",
@@ -29,6 +30,7 @@
     "@lydell/node-pty": "1.2.0-beta.14"
   },
   "devDependencies": {
+    "@electron/fuses": "^2.1.3",
     "@types/node": "^22.10.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
@@ -53,12 +55,13 @@
     "directories": {
       "output": "out/electron-pack"
     },
-    "afterPack": "tools/stampExe.mjs",
+    "afterPack": "tools/afterPack.mjs",
     "electronLanguages": [
       "en-US"
     ],
     "files": [
       "out/electron/**/*",
+      "!out/electron/**/*.map",
       "package.json"
     ],
     "asarUnpack": [

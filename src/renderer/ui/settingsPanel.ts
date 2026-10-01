@@ -1,4 +1,5 @@
 import { backend } from '../../backend'
+import { fileManagerName } from '../../shared/fileManager'
 import { store } from '../state'
 import { playSound, SOUND_OPTIONS } from '../sound'
 import { renderThemeSection } from './themeEditor'
@@ -665,7 +666,7 @@ async function render(): Promise<void> {
       field(
         'Dragging a file out of the app',
         'What other programs receive when you drag a row out of the file tree. ' +
-          '“The file itself” starts the same kind of drag Explorer does, so it can ' +
+          `“The file itself” starts the same kind of drag ${fileManagerName(backend().capabilities.platform)} does, so it can ` +
           'be dropped into FileZilla to upload, onto a message to send, or into an ' +
           'email to attach. “Its location” sends the path as text, which is what a ' +
           'terminal wants typed at a prompt. Either way, dropping onto this app’s ' +
@@ -825,7 +826,7 @@ async function render(): Promise<void> {
       field(
         'Editor for “Open in editor”',
         'Program a file is handed to from the tree and the reader pane. Blank ' +
-          'uses whatever Windows associates with the extension. The reader is ' +
+          `uses whatever ${backend().capabilities.platform === 'windows' ? 'Windows associates' : 'the system opens'} with the extension. The reader is ` +
           'read-only on purpose — editing is your editor’s job, not a ' +
           'terminal’s.',
         text(s.externalEditor, 'code', (v) => patch({ externalEditor: v }))
@@ -835,13 +836,20 @@ async function render(): Promise<void> {
         'Where a new browser pane opens. Blank uses the built-in default.',
         text(s.browserHome, DEFAULT_URL, (v) => patch({ browserHome: v }))
       ),
-      field(
-        'Add “Open in ia_workspaces” to Explorer',
-        'Right-click a folder to open it as a workspace. Written to your own ' +
-          'registry hive, so no admin rights are needed. Windows 11 files it ' +
-          'under “Show more options”.',
-        contextMenuToggle()
-      )
+      // Windows only: it writes a registry key, and there is no registry — and
+      // no Explorer — anywhere else. Offered on a Mac it was a switch that did
+      // nothing, under the name of a program that does not exist there.
+      ...(backend().capabilities.platform === 'windows'
+        ? [
+            field(
+              'Add “Open in ia_workspaces” to Explorer',
+              'Right-click a folder to open it as a workspace. Written to your own ' +
+                'registry hive, so no admin rights are needed. Windows 11 files it ' +
+                'under “Show more options”.',
+              contextMenuToggle()
+            ),
+          ]
+        : [])
     )
   )
 

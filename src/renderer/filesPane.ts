@@ -18,6 +18,7 @@ import { remoteHostOfPane, store } from './state'
 import { sortEntries } from '../shared/images'
 import { isCanvasPath } from '../shared/canvas'
 import { isDocumentPath } from '../shared/docs'
+import { openWithSystemLabel, revealLabel } from '../shared/fileManager'
 import { formatSize } from '../shared/gitSize'
 import { isMediaPath, mediaKind } from '../shared/media'
 import type { FileEntry, GitStatusMap, Settings } from '../shared/types'
@@ -1601,7 +1602,7 @@ export class FilesPane {
               ? []
               : [{ label: 'Open in reader', onClick: () => this.hooks.openReader(entry.path) }]),
             { label: 'Open in external editor', onClick: () => this.hooks.openInEditor(entry.path) },
-            { label: 'Open with Windows', onClick: () => void backend().openInExplorer(entry.path) },
+            { label: openWithSystemLabel(backend().capabilities.platform), onClick: () => void backend().openInExplorer(entry.path) },
           ]),
       { label: 'New terminal here', onClick: () => this.hooks.openTerminalAt(folder) },
       {
@@ -1649,7 +1650,7 @@ export class FilesPane {
         },
       },
       { label: 'Copy name', onClick: () => void copyText(entry.name) },
-      { label: 'Reveal in Explorer', onClick: () => void backend().openInExplorer(folder) },
+      { label: revealLabel(backend().capabilities.platform), onClick: () => void backend().openInExplorer(folder) },
     ])
   }
 
@@ -1680,7 +1681,7 @@ export class FilesPane {
       'separator',
       { label: 'Copy path', onClick: () => void copyText(this.cwd) },
       { label: 'Copy name', onClick: () => void copyText(folderLeaf(this.cwd)) },
-      { label: 'Reveal in Explorer', onClick: () => void backend().openInExplorer(this.cwd) },
+      { label: revealLabel(backend().capabilities.platform), onClick: () => void backend().openInExplorer(this.cwd) },
     ])
   }
 
@@ -1759,7 +1760,7 @@ export class FilesPane {
       },
       'separator',
       { label: 'Copy folder path', onClick: () => void copyText(this.cwd) },
-      { label: 'Reveal in Explorer', onClick: () => void backend().openInExplorer(this.cwd) },
+      { label: revealLabel(backend().capabilities.platform), onClick: () => void backend().openInExplorer(this.cwd) },
     ])
   }
 

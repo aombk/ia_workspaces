@@ -57,6 +57,8 @@ export class ReaderPane implements AuxPane {
   private readonly body: HTMLDivElement
   private readonly pathLabel: HTMLSpanElement
   private disposed = false
+  /** Bumped by every load, so only the latest one draws. */
+  private loadToken = 0
   /** The live PDF viewer, when this file is one. See `teardownDocument`. */
   private embed: HTMLEmbedElement | null = null
   /** Bumped per load, to keep every generation's URL its own. See `showDocument`. */
@@ -168,7 +170,7 @@ export class ReaderPane implements AuxPane {
    * there is no cache to go stale, and a folder of notes is not enough files
    * for the difference to be noticeable.
    */
-  private async renderBacklinks(): Promise<void> {
+  private async renderBacklinks(token: number): Promise<void> {
     if (!MARKDOWN.test(this.path)) return
     const dir = folderOf(this.path)
     const me = fileStem(this.path)
@@ -179,7 +181,10 @@ export class ReaderPane implements AuxPane {
     } catch {
       return
     }
-    if (this.disposed) return
+    // Only for the draw that asked. A tick, a reload and a file changing on
+    // disk each load again, and two loads close together used to finish as
+    // two cards stacked under one note.
+    if (this.disposed || token !== this.loadToken) return
 
     const others = [...new Set(hits.map((h) => h.path))].filter((p) => p !== this.path)
     if (!others.length) return
@@ -206,6 +211,7 @@ export class ReaderPane implements AuxPane {
   }
 
   private async load(): Promise<void> {
+    const token = ++this.loadToken
     // Before the read rather than after it, and that ordering is the whole
     // point: `readText` decodes what it finds as UTF-8 and gives up past a
     // size, so asking it for a drawing set returns a truncated page of
@@ -227,7 +233,8 @@ export class ReaderPane implements AuxPane {
 
     try {
       const text = await backend().readText(this.path)
-      if (this.disposed) return
+      // A later load owns the page now; this one's text is already stale.
+      if (this.disposed || token !== this.loadToken) return
       this.body.replaceChildren()
       if (MARKDOWN.test(this.path)) {
         this.body.classList.add('markdown')
@@ -239,7 +246,7 @@ export class ReaderPane implements AuxPane {
         // After the document, and not awaited: a search across the folder is
         // slower than reading one file, and the note should be on screen while
         // it runs rather than after it.
-        void this.renderBacklinks()
+        void this.renderBacklinks(token)
       } else {
         this.body.classList.remove('markdown')
         const pre = document.createElement('pre')
@@ -248,7 +255,7 @@ export class ReaderPane implements AuxPane {
         this.body.appendChild(pre)
       }
     } catch (err) {
-      if (this.disposed) return
+      if (this.disposed || token !== this.loadToken) return
       this.body.replaceChildren()
       const problem = document.createElement('div')
       problem.className = 'reader-error'
@@ -488,8 +495,4 @@ export class ReaderPane implements AuxPane {
     this.teardownDocument()
     this.teardownMedia()
   }
-}
-
-export function isMarkdown(path: string): boolean {
-  return MARKDOWN.test(path)
 }

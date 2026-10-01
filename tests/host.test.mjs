@@ -342,9 +342,13 @@ console.log('End to end over a socket')
   const tokenPath = path.join(out, 'test.token')
 
   const fakes = []
+  // Binding waits on a probe of the address now, so the suite waits for it.
+  let listening
+  const ready = new Promise((r) => (listening = r))
   const server = startHostServer({
     address,
     tokenPath,
+    onListening: () => listening(),
     idleCheckMs: 1_000_000, // never during the test
     // Nor the short empty-exit: this suite connects and disconnects constantly
     // while holding nothing, which is exactly what that timer reacts to.
@@ -363,6 +367,8 @@ console.log('End to end over a socket')
       return fake
     },
   })
+
+  await ready
 
   /** A minimal client: framing, hello, and request/reply by `ref`. */
   function connect() {
@@ -527,6 +533,203 @@ console.log('End to end over a socket')
 
   server.close()
   await settle()
+}
+
+// ------------------------------------------------------------ backpressure
+console.log('Backpressure')
+{
+  const fakePty = () => {
+    const fake = {
+      pid: 7,
+      paused: 0,
+      resumed: 0,
+      write() {},
+      resize() {},
+      kill() {},
+      pause() { fake.paused++ },
+      resume() { fake.resumed++ },
+      onData(cb) { fake._data = cb },
+      onExit(cb) { fake._exit = cb },
+    }
+    return fake
+  }
+  const spec = (id) => ({ id, file: 'sh', args: [], cwd: '/', env: {}, cols: 80, rows: 24 })
+
+  check('a blocked client pauses the shell, and catching up resumes it', () => {
+    let pty
+    const table = new SessionTable(() => (pty = fakePty()), { onData() {}, onExit() {} })
+    table.create(spec('a'))
+    table.attach('a', 'c1')
+    table.block('a', 'c1')
+    table.block('a', 'c1')
+    assert.equal(pty.paused, 1, 'paused once, however often it is told')
+    table.unblockClient('c1')
+    assert.equal(pty.resumed, 1)
+  })
+
+  check('two blocked clients both have to catch up', () => {
+    let pty
+    const table = new SessionTable(() => (pty = fakePty()), { onData() {}, onExit() {} })
+    table.create(spec('a'))
+    table.attach('a', 'c1')
+    table.attach('a', 'c2')
+    table.block('a', 'c1')
+    table.block('a', 'c2')
+    table.unblockClient('c1')
+    assert.equal(pty.resumed, 0, 'c2 is still behind')
+    table.detachAll('c2') // c2 leaves instead of catching up
+    assert.equal(pty.resumed, 1, 'a client that left holds nothing back')
+  })
+
+  check('a session nobody is attached to cannot be paused', () => {
+    // Its output has nowhere to go but the ring, and the ring is the point.
+    let pty
+    const table = new SessionTable(() => (pty = fakePty()), { onData() {}, onExit() {} })
+    table.create(spec('a'))
+    table.block('a', 'c1')
+    assert.equal(pty.paused, 0)
+  })
+
+  await checkAsync('a client that stops reading pauses its shells until it drains', async () => {
+    const address =
+      process.platform === 'win32'
+        ? `\\\\.\\pipe\\iaw-hosttest-bp-${process.pid}`
+        : path.join(out, 'bp.sock')
+    const tokenPath = path.join(out, 'bp.token')
+    let pty
+    let listening
+    const ready = new Promise((r) => (listening = r))
+    const server = startHostServer({
+      address,
+      tokenPath,
+      idleCheckMs: 1_000_000,
+      emptyExitMs: 1_000_000,
+      clientHighWater: 64 * 1024,
+      spawner: () => (pty = fakePty()),
+      onListening: () => listening(),
+    })
+    await ready
+
+    const socket = net.connect(address)
+    await new Promise((r) => socket.once('connect', r))
+    const token = fs.readFileSync(tokenPath, 'utf8')
+    socket.write(P.encodeJson({ t: 'hello', ref: 1, token, protocol: P.PROTOCOL_VERSION }))
+    socket.write(P.encodeJson({ t: 'spawn', ref: 2, id: 'bp', file: 'sh', args: [], cwd: '/', env: {}, cols: 80, rows: 24 }))
+    socket.write(P.encodeJson({ t: 'attach', ref: 3, id: 'bp' }))
+    await new Promise((r) => setTimeout(r, 60))
+    socket.pause() // the app stops reading
+
+    const chunk = 'x'.repeat(32 * 1024)
+    for (let i = 0; i < 400 && pty.paused === 0; i++) {
+      pty._data(chunk)
+      await new Promise((r) => setImmediate(r))
+    }
+    assert.equal(pty.paused, 1, 'the shell was paused rather than queued without limit')
+
+    socket.on('data', () => {})
+    socket.resume() // and catches up
+    for (let i = 0; i < 100 && pty.resumed === 0; i++) await new Promise((r) => setTimeout(r, 10))
+    assert.equal(pty.resumed, 1, 'and resumed once the client drained')
+
+    socket.destroy()
+    server.close()
+  })
+}
+
+// ------------------------------------------------------------- two brokers
+console.log('Two brokers, one address')
+if (process.platform !== 'win32') {
+  const start = (address, tokenPath) =>
+    new Promise((resolve) => {
+      const server = startHostServer({
+        address,
+        tokenPath,
+        idleCheckMs: 1_000_000,
+        emptyExitMs: 1_000_000,
+        spawner: () => { throw new Error('unused') },
+        onListening: () => resolve({ server, ok: true }),
+        onListenError: (err) => resolve({ server, ok: false, err }),
+      })
+    })
+
+  /** Connects and greets; resolves with the reply, or null when nobody answers. */
+  const greet = (address, token) =>
+    new Promise((resolve) => {
+      const socket = net.connect(address)
+      socket.on('error', () => resolve(null))
+      const reader = new P.FrameReader((kind, payload) => {
+        resolve(P.decodeJson(payload))
+        socket.destroy()
+      }, () => resolve(null))
+      socket.on('data', (c) => reader.push(c))
+      socket.on('connect', () =>
+        socket.write(P.encodeJson({ t: 'hello', ref: 1, token, protocol: P.PROTOCOL_VERSION }))
+      )
+    })
+
+  await checkAsync('a second broker on a live address loses, and leaves the first intact', async () => {
+    const address = path.join(out, 'two.sock')
+    const tokenPath = path.join(out, 'two.token')
+    const first = await start(address, tokenPath)
+    assert.equal(first.ok, true)
+    const firstToken = fs.readFileSync(tokenPath, 'utf8')
+
+    const second = await start(address, tokenPath)
+    assert.equal(second.ok, false)
+    assert.equal(second.err.code, 'EADDRINUSE', 'the ordinary race outcome, so the loser exits quietly')
+    second.server.close()
+    await new Promise((r) => setTimeout(r, 30))
+
+    assert.ok(fs.existsSync(address), 'the live socket was not unlinked')
+    assert.equal(fs.readFileSync(tokenPath, 'utf8'), firstToken, 'nor its token replaced or removed')
+    assert.equal((await greet(address, firstToken))?.t, 'hello', 'and the first broker still answers')
+    first.server.close()
+  })
+
+  await checkAsync('a stale socket left by a crash is replaced', async () => {
+    const address = path.join(out, 'stale.sock')
+    const tokenPath = path.join(out, 'stale.token')
+    // A listener killed outright leaves its socket file behind, answering nobody.
+    const { spawn } = await import('node:child_process')
+    const child = spawn(process.execPath, [
+      '-e',
+      `require('net').createServer().listen(${JSON.stringify(address)}, () => console.log('up'))`,
+    ])
+    await new Promise((r) => child.stdout.once('data', r))
+    child.kill('SIGKILL')
+    await new Promise((r) => child.once('exit', r))
+    assert.ok(fs.existsSync(address), 'the crash left the file')
+
+    const broker = await start(address, tokenPath)
+    assert.equal(broker.ok, true)
+    assert.equal((await greet(address, fs.readFileSync(tokenPath, 'utf8')))?.t, 'hello')
+    broker.server.close()
+  })
+
+  await checkAsync('a broker displaced after binding does not take its successor down with it', async () => {
+    // The narrow race the probe cannot close: the first broker's socket is
+    // unlinked out from under it and a second binds in its place. When the
+    // first exits it must not unlink the second's socket — which closing a
+    // listening unix socket does by itself — nor delete the second's token.
+    const address = path.join(out, 'displaced.sock')
+    const tokenPath = path.join(out, 'displaced.token')
+    const first = await start(address, tokenPath)
+    assert.equal(first.ok, true)
+    fs.rmSync(address)
+    const second = await start(address, tokenPath)
+    assert.equal(second.ok, true)
+    const secondToken = fs.readFileSync(tokenPath, 'utf8')
+
+    first.server.close()
+    await new Promise((r) => setTimeout(r, 30))
+
+    assert.ok(fs.existsSync(address), "the successor's socket is still there")
+    assert.equal(fs.readFileSync(tokenPath, 'utf8'), secondToken, 'and so is its token')
+    assert.equal((await greet(address, secondToken))?.t, 'hello', 'and it still answers')
+    second.server.close()
+    await new Promise((r) => setTimeout(r, 30))
+    assert.equal(fs.existsSync(tokenPath), false, 'its own exit still tidies up after itself')
+  })
 }
 
 console.log(`\n${passed} checks passed`)

@@ -245,14 +245,12 @@ fi
 
 [[ -d node_modules ]] || { echo "[*] installing dependencies"; npm install || fail "npm install failed"; }
 
-echo "[*] typecheck"
-npm run typecheck || fail "typecheck failed — fix the types before building a release"
-
-echo "[*] tests"
-npm test || fail "tests failed — fix them before building a release"
-
-echo "[*] bundling"
-node build.mjs || fail "bundle failed"
+# One step, because build.mjs is the gate now: it runs the type check and the
+# unit suites before it bundles, and the interface tests against the bundle
+# after, and exits non-zero if any of them fail. Running them here as well only
+# ran every test twice.
+echo "[*] typecheck, tests, bundling, interface tests"
+node build.mjs || fail "the build or its tests failed — see above; fix them before building a release"
 
 # Before packaging, not before the tests: this only matters to what gets packed,
 # and npm prunes the foreign-architecture prebuild on every install — so doing it

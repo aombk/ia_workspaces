@@ -30,6 +30,8 @@ function nodePtySpawner(spec: SpawnSpec): PtyLike {
     write: (data) => pty.write(data),
     resize: (cols, rows) => pty.resize(cols, rows),
     kill: () => pty.kill(),
+    pause: () => pty.pause(),
+    resume: () => pty.resume(),
     onData: (cb) => pty.onData(cb),
     // node-pty reports a code-less exit as null despite its types; the session
     // table only ever stores what it is given, so it is normalised here.
@@ -57,11 +59,13 @@ export function main(): void {
     onIdleExit: () => process.exit(0),
     onListening: () => console.log(`[ptyhost] listening on ${address} pid=${process.pid}`),
     onListenError: (err) => {
-      // Another broker already owns the address. That is the ordinary outcome
-      // of two app instances starting at once rather than a fault: the loser
-      // exits quietly and the winner serves them both. Exit 0, because a
-      // non-zero code here would have the client conclude the broker is
-      // unavailable when in fact one is running perfectly well.
+      // Another broker already owns the address — it answered the probe, or
+      // won the bind. That is the ordinary outcome of two app instances
+      // starting at once rather than a fault: the loser exits quietly and the
+      // winner serves them both. Exit 0, because a non-zero code here would
+      // have the client conclude the broker is unavailable when in fact one is
+      // running perfectly well. Its `close` touches neither the winner's
+      // socket nor its token; see `startHostServer`.
       const expected = err.code === 'EADDRINUSE' || err.code === 'EACCES'
       if (!expected) console.error('[ptyhost] could not listen', err)
       server.close()

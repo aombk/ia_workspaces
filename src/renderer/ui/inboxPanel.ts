@@ -47,10 +47,6 @@ export function closeInbox(): void {
   button().classList.remove('active')
 }
 
-export function inboxIsOpen(): boolean {
-  return !root().hidden
-}
-
 /**
  * Keeps the sidebar button's badge current, and the list if it is open.
  *

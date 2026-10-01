@@ -18,6 +18,7 @@
  *   be started deliberately, and because it belongs beside the thing it times.
  */
 import type { AuxPane } from './auxPane'
+import { Redraw } from './redraw'
 import { store } from './state'
 import { backend } from '../backend'
 import { joinPath } from '../shared/platform'
@@ -52,6 +53,9 @@ export class FocusPane implements AuxPane {
   private readonly body: HTMLDivElement
   private unwatch: (() => void) | null = null
   private disposed = false
+  private readonly redraw: Redraw
+  /** The timer's countdown, kept so a tick can update it alone. */
+  private clock: HTMLElement | null = null
 
   /** The task file's lines, held so a toggle can rewrite exactly one of them. */
   private lines: string[] = []
@@ -80,14 +84,37 @@ export class FocusPane implements AuxPane {
     this.body.className = 'focus-body'
     this.element.appendChild(this.body)
 
+    this.redraw = new Redraw(this.element)
     this.render()
-    this.unwatch = watchTime(() => this.render())
+    this.unwatch = watchTime(() => this.refresh())
     refreshTimeNow()
     void this.loadTasks()
   }
 
   sync(): void {
-    this.render()
+    this.refresh()
+  }
+
+  /**
+   * Everything the picture is drawn from. The clock's seconds are not in it:
+   * they are written into the one element that shows them — see `onTick` —
+   * rather than redrawing the card, and its buttons, every second.
+   */
+  private inputs(): readonly unknown[] {
+    return [
+      this.workspace()?.cwd,
+      timeSpans(),
+      this.tasks,
+      this.taskError,
+      this.endsAt,
+      this.onBreak,
+      dayKey(Date.now()),
+    ]
+  }
+
+  /** Redraws for a change from outside, if it changed anything shown. */
+  private refresh(): void {
+    if (this.redraw.due(this.inputs())) this.render()
   }
 
   dispose(): void {
@@ -104,6 +131,7 @@ export class FocusPane implements AuxPane {
 
   private render(): void {
     if (this.disposed) return
+    this.redraw.drew(this.inputs())
     const workspace = this.workspace()
     this.body.replaceChildren()
 
@@ -310,6 +338,7 @@ export class FocusPane implements AuxPane {
     clock.className = 'focus-clock' + (this.endsAt ? ' running' : '')
     clock.textContent = this.endsAt ? clockText(left) : `${WORK_MIN}:00`
     card.appendChild(clock)
+    this.clock = clock
 
     const buttons = document.createElement('div')
     buttons.className = 'focus-buttons'
@@ -358,7 +387,9 @@ export class FocusPane implements AuxPane {
   private onTick(): void {
     if (this.disposed) return
     if (Date.now() < this.endsAt) {
-      this.render()
+      // The seconds only. Redrawing the card every second replaced the Stop
+      // button under the cursor often enough to swallow the click on it.
+      if (this.clock) this.clock.textContent = clockText(Math.max(0, this.endsAt - Date.now()))
       return
     }
 

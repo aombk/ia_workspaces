@@ -38,6 +38,8 @@ import type {
   GitResult,
   GitProgress,
   SendSize,
+  CrossPaneDecision,
+  CrossPaneRequest,
   HistoryFilter,
   HostTool,
   CryptoReading,
@@ -128,6 +130,8 @@ export interface Backend {
 
   loadState(): Promise<unknown>
   saveState(state: unknown): Promise<void>
+  /** Saves synchronously, for the moment the window is closing. See preload. */
+  saveStateSync(state: unknown): void
   /** Fires when another ia_workspaces instance writes the shared workspace file. */
   onExternalStateChange(cb: (state: unknown) => void): () => void
 
@@ -323,6 +327,8 @@ export interface Backend {
    * how many entries went.
    */
   forgetCommand(command: string, cwd?: string): Promise<number>
+  /** Your answer to a pane asking to act on another. */
+  answerControlApproval(id: string, decision: CrossPaneDecision): Promise<void>
 
   /**
    * Transcripts of panes that have been closed.
@@ -395,6 +401,8 @@ export interface Backend {
     send(cwd: string): Promise<GitResult>
     /** What `send` would upload, worked out before anything is sent. Null when there is nothing to tell. */
     sendSize(cwd: string): Promise<SendSize | null>
+    /** Stops a push or fetch part-way. Returns whether one was running. */
+    stop(cwd: string): Promise<boolean>
     /** Looks at what is new on GitHub without touching anything here. */
     peek(cwd: string): Promise<GitResult>
     bringIn(cwd: string): Promise<GitResult>
@@ -746,6 +754,8 @@ export interface Backend {
     ptyMeta(cb: (p: TerminalMeta) => void): () => void
     /** Observed activity and declared agent state, per pane. */
     paneStatus(cb: (s: PaneStatus) => void): () => void
+    /** A pane asking to act on another, for you to allow or refuse. */
+    controlApproval(cb: (r: CrossPaneRequest) => void): () => void
     /** Explorer's "Open in ia_workspaces" handed us a folder. */
     openFolder(cb: (folder: string) => void): () => void
     alert(cb: (a: TerminalAlert) => void): () => void

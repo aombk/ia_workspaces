@@ -19,10 +19,6 @@ export function beginDrag(subject: DragSubject): void {
   current = subject
 }
 
-export function currentDrag(): DragSubject | null {
-  return current
-}
-
 /** The tab being dragged, or null when it is anything else. */
 export function draggingTab(): { id: string; from: string } | null {
   return current?.kind === 'tab' ? current : null

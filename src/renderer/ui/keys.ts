@@ -12,7 +12,7 @@
  * through `backend()` on every keystroke would be a call per event.
  */
 import { backend } from '../../backend'
-import { hasPrimaryModifier, modifierLabel, type PlatformKind } from '../../shared/platform'
+import { hasPrimaryModifier, type PlatformKind } from '../../shared/platform'
 
 let cached: PlatformKind | null = null
 
@@ -43,29 +43,6 @@ export function isMac(): boolean {
   return platform() === 'macos'
 }
 
-/** The primary modifier *and* nothing else that would change the meaning. */
-export function isPrimaryOnly(e: {
-  ctrlKey: boolean
-  metaKey: boolean
-  altKey: boolean
-  shiftKey: boolean
-}): boolean {
-  return isPrimary(e) && !e.altKey && !e.shiftKey
-}
-
-/**
- * True when this event carries the *other* platform's modifier and no more.
- *
- * The one thing worth keeping from `ctrlKey || metaKey`: a Mac user who has
- * spent years on the Windows build will press Ctrl. Rather than silently doing
- * nothing, callers that want to be forgiving can check this and act — but they
- * have to opt in, so the terminal (where Ctrl genuinely means something else)
- * does not.
- */
-export function isForeignPrimary(e: { ctrlKey: boolean; metaKey: boolean }): boolean {
-  return platform() === 'macos' ? e.ctrlKey && !e.metaKey : e.metaKey && !e.ctrlKey
-}
-
 /**
  * The combination that moves between panes and workspaces.
  *
@@ -85,18 +62,4 @@ export function isNavigation(e: {
 }): boolean {
   if (!e.altKey) return false
   return platform() === 'macos' ? e.metaKey : !e.ctrlKey
-}
-
-/**
- * How to write a shortcut for this platform: `⌘⇧K` on a Mac, `Ctrl+Shift+K`
- * elsewhere. Used by the command palette and the settings panel so the hints
- * match the keys that actually work.
- */
-export function shortcutLabel(parts: { shift?: boolean; alt?: boolean; key: string }): string {
-  const m = modifierLabel(platform())
-  const bits = [m.primary]
-  if (parts.alt) bits.push(m.alt)
-  if (parts.shift) bits.push(m.shift)
-  bits.push(parts.key.toUpperCase())
-  return bits.join(m.joiner)
 }

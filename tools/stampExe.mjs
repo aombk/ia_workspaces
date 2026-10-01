@@ -9,7 +9,7 @@
  * icon. Nothing here signs anything, so none of that toolchain is needed: this
  * runs rcedit over the packed exe on its own.
  *
- * Wired in as electron-builder's `afterPack` hook, so it lands before the
+ * Called from electron-builder's `afterPack` hook (`afterPack.mjs`), so it lands before the
  * installer and the portable bundle are built around the packed folder — both
  * then carry the branded exe. The artifacts themselves are deliberately left
  * alone: an NSIS installer and a portable SFX both keep data appended past the
@@ -47,7 +47,3 @@ export async function stamp(exe) {
   console.log(`[stamp] ${path.relative(root, exe)}`)
 }
 
-export default async function afterPack(context) {
-  if (context.electronPlatformName !== 'win32') return
-  await stamp(path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`))
-}

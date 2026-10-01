@@ -15,6 +15,7 @@
  * "how is this project going", and this one answers "where did today go".
  */
 import type { AuxPane } from './auxPane'
+import { Redraw } from './redraw'
 import { backend } from '../backend'
 import { allHistory, refreshPaneHistory, watchHistory } from './ui/paneHistory'
 import { byDay, dayKey, durationMs, refreshTimeNow, timeSpans, watchTime } from './ui/timeMonitor'
@@ -38,6 +39,7 @@ export class DayPane implements AuxPane {
   private readonly body: HTMLDivElement
   private readonly stops: (() => void)[] = []
   private disposed = false
+  private readonly redraw: Redraw
 
   /** Which day is being shown. Zero is today, one is yesterday. */
   private back = 0
@@ -69,16 +71,38 @@ export class DayPane implements AuxPane {
     this.body.className = 'day-body'
     this.element.appendChild(this.body)
 
+    this.redraw = new Redraw(this.element)
     this.render()
-    this.stops.push(watchTime(() => this.render()))
-    this.stops.push(watchHistory(() => this.render()))
+    this.stops.push(watchTime(() => this.refresh()))
+    this.stops.push(watchHistory(() => this.refresh()))
     refreshTimeNow()
     refreshPaneHistory(true)
     void this.loadCommits()
   }
 
   sync(): void {
-    this.render()
+    this.refresh()
+  }
+
+  /**
+   * Everything the picture is drawn from that can change behind its back. The
+   * day shown, the scope and the commits are this pane's own, and every change
+   * to them redraws directly.
+   */
+  private inputs(): readonly unknown[] {
+    return [
+      store.workspaceOfPane(this.paneId)?.cwd,
+      timeSpans(),
+      allHistory(),
+      this.back,
+      this.here,
+      dayKey(Date.now()),
+    ]
+  }
+
+  /** Redraws for a change from outside, if it changed anything shown. */
+  private refresh(): void {
+    if (this.redraw.due(this.inputs())) this.render()
   }
 
   dispose(): void {
@@ -172,6 +196,7 @@ export class DayPane implements AuxPane {
 
   private render(): void {
     if (this.disposed) return
+    this.redraw.drew(this.inputs())
     this.body.replaceChildren()
 
     this.body.appendChild(this.header())

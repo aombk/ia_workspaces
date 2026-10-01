@@ -61,6 +61,11 @@ const state = {
   ],
 }
 
+// What the stand-in for "you" answers when one pane asks to act on another,
+// and every question it was asked. See `approveCrossPane` in main.ts.
+let approveAnswer = false
+const approvals = []
+
 // The same dispatch main.ts installs, minus the parts that need a live PTY.
 const server = startControlServer('test', (req, ctx) => {
   switch (req.method) {
@@ -125,6 +130,9 @@ const server = startControlServer('test', (req, ctx) => {
       return { ok: true, data: { text: 'line one\nline two' } }
   }
   return { ok: false, error: 'unknown method' }
+}, async (from, to, method) => {
+  approvals.push({ from, to, method })
+  return approveAnswer
 })
 
 // Wait for the listener; a named pipe binds asynchronously.
@@ -133,7 +141,7 @@ await sleep(150)
 process.env.IAW_PANE_ID = PANE
 process.env.IAW_WORKSPACE_ID = 'w1'
 process.env.IAW_PIPE = server.address
-process.env.IAW_TOKEN = server.token
+process.env.IAW_TOKEN = server.tokenFor(PANE)
 
 // Output capture, attributed by async context rather than by swapping the
 // stream around each call. Several of these tests run two CLI calls at once —
@@ -305,6 +313,64 @@ await check('send-key takes its key positionally', async () => {
   written.length = 0
   await cli('send-key', 'c', '--ctrl')
   assert.deepEqual(written, ['c'])
+})
+
+// ------------------------------------------------------------ one pane, another
+//
+// Every pane used to share one token, and a request merely named the pane it
+// was about — so a script in one pane could read another's screen, type into
+// it, or approve the agent waiting there, indistinguishable from that pane
+// acting on itself. Now each pane's token is its own, and reaching into a
+// different pane waits for a person.
+
+await check('a pane cannot pass itself off as another', async () => {
+  const own = process.env.IAW_TOKEN
+  // The token names its pane; renaming it without the secret breaks the seal.
+  process.env.IAW_TOKEN = own.replace(PANE, 'someone-else')
+  const res = await cli('ping')
+  process.env.IAW_TOKEN = own
+  assert.notEqual(res.code, 0)
+  assert.match(res.stderr, /unauthorized/)
+})
+
+await check('acting on its own pane asks nobody', async () => {
+  approvals.length = 0
+  const res = await cli('read-screen')
+  assert.equal(res.code, 0, res.stderr)
+  assert.deepEqual(approvals, [])
+})
+
+await check('reading another pane\u2019s screen asks first, and a no is a no', async () => {
+  approvals.length = 0
+  approveAnswer = false
+  const res = await cli('read-screen', '--pane', 'other-pane')
+  assert.notEqual(res.code, 0)
+  assert.match(res.stderr, /denied/)
+  // Asked about exactly this, by the pane the token belongs to — not by
+  // whatever the request claimed.
+  assert.deepEqual(approvals, [{ from: PANE, to: 'other-pane', method: 'read-screen' }])
+})
+
+await check('and with a yes it goes through', async () => {
+  approveAnswer = true
+  const res = await cli('read-screen', '--pane', 'other-pane')
+  assert.equal(res.code, 0, res.stderr)
+  assert.match(res.stdout, /line one/)
+})
+
+await check('typing and keys into another pane are asked about the same way', async () => {
+  approvals.length = 0
+  approveAnswer = false
+  written.length = 0
+  const typed = await cli('send', '--pane', 'other-pane', '--text', 'rm -rf ~')
+  const keyed = await cli('send-key', '--pane', 'other-pane', '--key', 'enter')
+  assert.notEqual(typed.code, 0)
+  assert.notEqual(keyed.code, 0)
+  assert.deepEqual(written, [], 'nothing reached the other pane')
+  assert.deepEqual(
+    approvals.map((a) => a.method),
+    ['send', 'send-key']
+  )
 })
 
 server.close()

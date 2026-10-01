@@ -141,6 +141,57 @@ await check('a name given to a split pane comes back', async () => {
   assert.equal(tab.panes[1].customTitle, null)
 })
 
+// The same bug three more times: each of these is written with the pane and was
+// dropped on the way back in, so a compare pane came back comparing nothing and
+// a pane's history ring and column guide reset on every launch.
+await check("a compare pane's files, history ring and column guide come back", async () => {
+  await load({
+    version: 4,
+    workspaces: [
+      {
+        ...ws('w', 'dev'),
+        tabs: [
+          {
+            id: 't',
+            customTitle: null,
+            panes: [
+              {
+                id: 'c',
+                kind: 'compare',
+                cwd: 'C:\\Projects',
+                autoTitle: '',
+                compareLeft: 'C:\\Projects\\a.txt',
+                compareRight: 'C:\\Projects\\b.txt',
+              },
+              { id: 'e', kind: 'editor', cwd: 'C:\\Projects', autoTitle: '', columnGuide: true },
+              { id: 's', cwd: 'C:\\Projects', autoTitle: '', historyScope: 'terminal' },
+              // Garbage in a hand-edited file falls back rather than arriving.
+              { id: 'x', cwd: 'C:\\Projects', autoTitle: '', historyScope: 'galaxy', columnGuide: 'yes' },
+            ],
+            layout: {
+              kind: 'split',
+              direction: 'row',
+              children: ['c', 'e', 's', 'x'].map((paneId) => ({ kind: 'leaf', paneId })),
+              sizes: [0.25, 0.25, 0.25, 0.25],
+            },
+            activePaneId: 'c',
+          },
+        ],
+        activeTabId: 't',
+      },
+    ],
+    activeWorkspaceId: 'w',
+  })
+
+  const [compare, editor, shell, junk] = store.workspaces[0].tabs[0].panes
+  assert.equal(compare.compareLeft, 'C:\\Projects\\a.txt')
+  assert.equal(compare.compareRight, 'C:\\Projects\\b.txt')
+  assert.equal(editor.columnGuide, true)
+  assert.equal(shell.historyScope, 'terminal')
+  assert.equal(junk.historyScope, undefined)
+  assert.equal(junk.columnGuide, undefined)
+})
+
 await check('a v1 group becomes a workspace holding its members', async () => {
   // Groups were a separate entity for one release. A sidebar arranged with them
   // must come back arranged the same way, with one concept in it instead of two.

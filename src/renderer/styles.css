@@ -8289,6 +8289,30 @@ html.translucent .titlebar {
   color: var(--text-faint);
 }
 
+/* Stop, at the end of the progress line. Outlined rather than filled: it is
+   an escape hatch, not the thing the bar is for. */
+.git-progress__stop {
+  flex: none;
+  padding: 1px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: calc(11px * var(--ui-text, 1));
+  cursor: pointer;
+}
+
+.git-progress__stop:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--text);
+}
+
+.git-progress__stop:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .git-progress__track {
   position: relative;
   height: 3px;

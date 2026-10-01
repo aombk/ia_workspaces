@@ -153,9 +153,3 @@ export function filesTouched(file: string | undefined): { path: string; wrote: b
   }
   return [...seen].map(([path, wrote]) => ({ path, wrote }))
 }
-
-/** The conversation a transcript belongs to, for its name and its own cost. */
-export function conversationOf(file: string | undefined) {
-  if (!file) return null
-  return latest?.conversations.find((c) => c.file === file) ?? null
-}

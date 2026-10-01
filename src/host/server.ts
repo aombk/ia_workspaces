@@ -12,7 +12,7 @@
  */
 import net from 'node:net'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import {
   FRAME_BACKLOG,
@@ -29,6 +29,7 @@ import {
 } from './protocol'
 import { SessionTable, type Spawner } from './sessions'
 import { isPipeAddress } from '../shared/platform'
+import { ensurePrivateDir } from './paths'
 
 /**
  * How long the broker lingers with nothing to hold.
@@ -49,12 +50,35 @@ const IDLE_CHECK_MS = 30 * 1000
  * restarting reconnects within a second, and `iaw host` connects merely to ask.
  */
 const EMPTY_EXIT_MS = 3000
+/**
+ * How much unsent output a client may have queued before its shells are paused.
+ *
+ * Well above the socket's own high-water mark, because pausing a pty for every
+ * 16 KB burst would put latency on ordinary output for no benefit; this is
+ * about a client that has stopped keeping up, not one that is momentarily busy.
+ */
+const CLIENT_HIGH_WATER = 1024 * 1024
+/**
+ * How long a client may stay that far behind before it is taken to be hung.
+ *
+ * Pausing is right for a slow reader and wrong for a dead one: a wedged app
+ * holding its socket open would otherwise freeze every shell attached to it
+ * indefinitely. Dropping the connection detaches it like any other departure,
+ * the shells resume into their rings, and a client that recovers reattaches
+ * and is handed what it missed.
+ */
+const CLIENT_STALL_MS = 60 * 1000
+/** How long to wait for an existing broker to answer before calling it alive. */
+const PROBE_TIMEOUT_MS = 1000
 
 interface Client {
   id: string
   socket: net.Socket
   reader: FrameReader
   authed: boolean
+  /** Over the high-water mark and waiting for 'drain'; its shells are paused. */
+  congested: boolean
+  stallTimer: NodeJS.Timeout | null
 }
 
 export interface HostServer {
@@ -74,13 +98,17 @@ export interface HostServerOptions {
   idleCheckMs?: number
   /** Overridable so tests are not shut down by their own disconnects. */
   emptyExitMs?: number
+  /** Overridable so tests can congest a client without megabytes of output. */
+  clientHighWater?: number
+  clientStallMs?: number
   onIdleExit?: () => void
   /** Ready to serve. The token file exists by the time this fires. */
   onListening?: () => void
   /**
    * Could not bind. `EADDRINUSE` is the ordinary case rather than a fault —
    * two app instances racing to start the broker, where the loser should exit
-   * quietly and let the winner serve them both.
+   * quietly and let the winner serve them both. Also reported, with that code,
+   * when a broker already answers at the address: see `probe`.
    */
   onListenError?: (err: NodeJS.ErrnoException) => void
 }
@@ -101,7 +129,7 @@ export function startHostServer(opts: HostServerOptions): HostServer {
       // Re-checked rather than trusted: a client may have connected and a
       // session may have been created while this was pending.
       if (clients.size > 0 || !sessions.idle) return
-      server.close()
+      stopListening()
       opts.onIdleExit?.()
     }, opts.emptyExitMs ?? EMPTY_EXIT_MS)
     emptyTimer.unref?.()
@@ -111,7 +139,14 @@ export function startHostServer(opts: HostServerOptions): HostServer {
     onData: (id, data, attached) => {
       for (const clientId of attached) {
         const client = clients.get(clientId)
-        if (client?.authed) write(client, encodeData(FRAME_DATA, id, data))
+        if (!client?.authed) continue
+        write(client, encodeData(FRAME_DATA, id, data))
+        // Backpressure. A shell that prints faster than its client reads used
+        // to queue without limit in this process — the one process whose
+        // death takes every shell with it. Paused instead, until the client
+        // drains. Only a shell with a client attached can be paused at all,
+        // so one nobody is watching keeps printing into its ring as before.
+        if (client.congested) sessions.block(id, client.id)
       }
     },
     onExit: (id, exit) => {
@@ -126,6 +161,21 @@ export function startHostServer(opts: HostServerOptions): HostServer {
   function write(client: Client, frame: Buffer): void {
     if (client.socket.destroyed) return
     client.socket.write(frame)
+    if (client.congested) return
+    if (client.socket.writableLength <= (opts.clientHighWater ?? CLIENT_HIGH_WATER)) return
+    // Past the socket's own high-water mark, so this write returned false and
+    // a 'drain' is owed — that is what lifts the pause.
+    client.congested = true
+    client.stallTimer = setTimeout(() => client.socket.destroy(), opts.clientStallMs ?? CLIENT_STALL_MS)
+    client.stallTimer.unref?.()
+  }
+
+  function uncongest(client: Client): void {
+    if (client.stallTimer) clearTimeout(client.stallTimer)
+    client.stallTimer = null
+    if (!client.congested) return
+    client.congested = false
+    sessions.unblockClient(client.id)
   }
 
   function reply(client: Client, message: HostMessage): void {
@@ -224,7 +274,7 @@ export function startHostServer(opts: HostServerOptions): HostServer {
       case 'shutdown':
         reply(client, { t: 'ok', ref: message.ref })
         sessions.killAll()
-        server.close()
+        stopListening()
         for (const c of clients.values()) c.socket.destroy()
         opts.onIdleExit?.()
         return
@@ -241,6 +291,8 @@ export function startHostServer(opts: HostServerOptions): HostServer {
       id,
       socket,
       authed: false,
+      congested: false,
+      stallTimer: null,
       reader: new FrameReader(
         (kind, payload) => {
           if (kind === FRAME_JSON) {
@@ -276,7 +328,11 @@ export function startHostServer(opts: HostServerOptions): HostServer {
     }
 
     socket.on('data', (chunk) => client.reader.push(chunk))
+    socket.on('drain', () => uncongest(client))
     const gone = () => {
+      // Unblocked before it is detached: a client that left owes no 'drain',
+      // and its shells must not stay paused on its account.
+      uncongest(client)
       clients.delete(id)
       // Detaching is all that happens: the sessions keep running, which is the
       // entire point of this process existing.
@@ -305,48 +361,126 @@ export function startHostServer(opts: HostServerOptions): HostServer {
     })
   })
 
-  // A socket is a file and a crash leaves it behind; a pipe is a kernel object
-  // and unlinking its "path" would be meaningless at best.
-  if (!isPipeAddress(opts.address)) {
-    mkdirSync(path.dirname(opts.address), { recursive: true })
-    try {
-      rmSync(opts.address, { force: true })
-    } catch {
-      /* listen will report anything that matters */
-    }
-  }
-
-  // The token is written only once the address is ours.
+  // A socket is a file and a crash leaves it behind, so a stale one has to be
+  // removed before anything can bind there. The trap is removing one that is
+  // *not* stale: a second broker that unlinked a live broker's socket would
+  // bind in its place, strand the first (alive, holding shells, unreachable),
+  // and later have its own socket and token deleted when the first one exited.
+  // So the address is asked first, and only a socket nobody answers on is
+  // removed. A pipe is a kernel object and has nothing to remove.
   //
-  // Ordering it the other way round would be tidier for clients — the file
-  // would exist before anything could connect — but it would have the loser of
-  // a startup race overwrite the winner's secret and lock every client out. So
-  // binding comes first and clients retry the read, which is the cheaper of the
-  // two problems by a wide margin. 0600 because a POSIX data directory is not
-  // necessarily private; Windows ignores the mode and AppData already is.
+  // The token is written only once the address is ours. Ordering it the other
+  // way round would be tidier for clients — the file would exist before
+  // anything could connect — but it would have the loser of a startup race
+  // overwrite the winner's secret and lock every client out. So binding comes
+  // first and clients retry the read, which is the cheaper of the two problems
+  // by a wide margin. 0600 because a POSIX data directory is not necessarily
+  // private; Windows ignores the mode and AppData already is.
   let ownsToken = false
+  let closed = false
+  /** The socket file we bound, to tell it apart from one that replaced it. */
+  let bound: { dev: number; ino: number } | null = null
+  const isSocketFile = !isPipeAddress(opts.address)
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     opts.onListenError?.(err)
   })
 
-  server.listen(opts.address, () => {
+  function listen(): void {
+    if (closed) return
+    server.listen(opts.address, () => {
+      if (isSocketFile) {
+        try {
+          const st = statSync(opts.address)
+          bound = { dev: st.dev, ino: st.ino }
+        } catch {
+          /* checked again whenever it matters */
+        }
+      }
+      try {
+        mkdirSync(path.dirname(opts.tokenPath), { recursive: true })
+        writeFileSync(opts.tokenPath, token, { encoding: 'utf8', mode: 0o600 })
+        ownsToken = true
+      } catch (err) {
+        opts.onListenError?.(err as NodeJS.ErrnoException)
+        return
+      }
+      opts.onListening?.()
+    })
+  }
+
+  if (!isSocketFile) {
+    listen()
+  } else {
+    void (async () => {
+      try {
+        ensurePrivateDir(path.dirname(opts.address))
+      } catch (err) {
+        opts.onListenError?.(err as NodeJS.ErrnoException)
+        return
+      }
+      const state = await probe(opts.address)
+      if (closed) return
+      if (state === 'live') {
+        const err = new Error(`a session host is already listening on ${opts.address}`) as NodeJS.ErrnoException
+        err.code = 'EADDRINUSE'
+        opts.onListenError?.(err)
+        return
+      }
+      if (state === 'stale') {
+        try {
+          rmSync(opts.address, { force: true })
+        } catch {
+          /* listen will report anything that matters */
+        }
+      }
+      // Two brokers that both found it stale can still both get here; the
+      // second `listen` then fails EADDRINUSE and that one exits. The window
+      // that remains — one unlinking just after the other bound — is narrow,
+      // and `close` below is what keeps it from also costing the winner its
+      // socket and token.
+      listen()
+    })()
+  }
+
+  /**
+   * Whether the socket at the address is still the one this process bound.
+   *
+   * Closing a listening unix socket unlinks its path — libuv does it, not us —
+   * so a broker whose address has since been taken over must not close it the
+   * ordinary way, or it deletes the socket of the broker that replaced it.
+   */
+  function stillOurs(): boolean {
+    if (!isSocketFile) return true
+    if (!bound) return false
     try {
-      mkdirSync(path.dirname(opts.tokenPath), { recursive: true })
-      writeFileSync(opts.tokenPath, token, { encoding: 'utf8', mode: 0o600 })
-      ownsToken = true
-    } catch (err) {
-      opts.onListenError?.(err as NodeJS.ErrnoException)
+      const st = statSync(opts.address)
+      return st.dev === bound.dev && st.ino === bound.ino
+    } catch {
+      return false
+    }
+  }
+
+  function stopListening(): void {
+    if (!server.listening) {
+      server.close()
       return
     }
-    opts.onListening?.()
-  })
+    if (stillOurs()) {
+      server.close()
+      return
+    }
+    // Displaced. The listening handle is left to die with the process rather
+    // than closed, because closing it would unlink a path that is no longer
+    // ours; unref'd so it does not keep the process alive on its own.
+    server.unref()
+  }
 
   const idleTimer = setInterval(() => {
     if (!sessions.idle || clients.size > 0 || emptySince === 0) return
     if (Date.now() - emptySince < (opts.idleExitMs ?? IDLE_EXIT_MS)) return
     clearInterval(idleTimer)
-    server.close()
+    stopListening()
     opts.onIdleExit?.()
   }, opts.idleCheckMs ?? IDLE_CHECK_MS)
   idleTimer.unref?.()
@@ -355,21 +489,53 @@ export function startHostServer(opts: HostServerOptions): HostServer {
     address: opts.address,
     sessions,
     close: () => {
+      if (closed) return
+      closed = true
       clearInterval(idleTimer)
       if (emptyTimer) clearTimeout(emptyTimer)
       for (const c of clients.values()) c.socket.destroy()
-      server.close()
-      // Only the broker that wrote the token may remove it. A loser of the
-      // startup race calls close() too, and deleting the winner's secret would
-      // lock out every client of a broker that is working perfectly.
+      stopListening()
+      // Only the broker that wrote the token may remove it, and only while it
+      // is still the token on disk. A loser of the startup race calls close()
+      // too, and so does a broker that was displaced after binding — and
+      // deleting the current broker's secret would lock out every client of a
+      // broker that is working perfectly.
       if (!ownsToken) return
       try {
-        rmSync(opts.tokenPath, { force: true })
+        if (readFileSync(opts.tokenPath, 'utf8') === token) rmSync(opts.tokenPath, { force: true })
       } catch {
         /* best effort */
       }
     },
   }
+}
+
+/**
+ * Asks whether anything is listening at a socket path.
+ *
+ * `stale` is a socket file nobody answers on (or nothing at all), which is safe
+ * to remove. Anything that connects is `live`, as is anything that takes too
+ * long to say: a broker too busy to accept for a second is still a broker, and
+ * the cost of guessing wrong is stranding it. Any other failure — the path is
+ * not ours to read, say — is `unknown`: nothing is removed, and `listen` then
+ * reports whatever is really wrong.
+ */
+function probe(address: string): Promise<'live' | 'stale' | 'unknown'> {
+  return new Promise((resolve) => {
+    const socket = net.connect(address)
+    const done = (state: 'live' | 'stale' | 'unknown') => {
+      clearTimeout(timer)
+      socket.removeAllListeners()
+      socket.on('error', () => undefined)
+      socket.destroy()
+      resolve(state)
+    }
+    const timer = setTimeout(() => done('live'), PROBE_TIMEOUT_MS)
+    socket.once('connect', () => done('live'))
+    socket.once('error', (err: NodeJS.ErrnoException) =>
+      done(err.code === 'ECONNREFUSED' || err.code === 'ENOENT' ? 'stale' : 'unknown')
+    )
+  })
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

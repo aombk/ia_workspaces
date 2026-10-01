@@ -1,4 +1,5 @@
 import { backend } from '../../backend'
+import { revealLabel } from '../../shared/fileManager'
 import { store, type SidebarRow } from '../state'
 import { NESTING_GLYPHS, WORKSPACE_COLORS } from '../../shared/types'
 import { showContextMenu, type MenuEntry } from './contextMenu'
@@ -7,11 +8,12 @@ import { showToast } from './toast'
 import { wslDistroOf, type WslAction } from '../../shared/wsl'
 import { availableShells, shellLabel, sshHosts, sshMenuLabel } from '../shells'
 import { attachInlineEditor } from './editing'
+import { heldFocus, moveFocus, replaceChildrenKeeping, restoreFocus } from './rowList'
 import { isPrimary } from './keys'
 import { stepZoom, ZOOM_DEFAULT } from '../auxPane'
 import { beginDrag, draggingTab, draggingWorkspace, endDrag } from './dragState'
 import { relayWarning } from './relayMonitor'
-import { programsMenu, refreshRunningApps } from './appsMenu'
+import { programsMenu, refreshRunningAppsLazily } from './appsMenu'
 import type { UiActions } from './actions'
 
 let actions: UiActions
@@ -174,7 +176,8 @@ export function renderSidebar(): void {
   // Which programs are up, kept fresh for the menu that lists them. Here rather
   // than in the click handler because a menu is built synchronously, and one
   // that waited for the host to answer would appear a moment after the click.
-  void refreshRunningApps()
+  // Throttled — see `refreshRunningAppsLazily`.
+  refreshRunningAppsLazily()
   const list = document.getElementById('workspace-list')!
   const active = store.state.activeWorkspaceId
   // Cleared rather than set to 1, so an untouched list carries no inline style
@@ -182,11 +185,29 @@ export function renderSidebar(): void {
   const zoom = store.settings.sidebarZoom || ZOOM_DEFAULT
   if (zoom === ZOOM_DEFAULT) list.style.removeProperty('zoom')
   else list.style.zoom = String(zoom)
-  list.replaceChildren()
 
-  for (const row of store.sidebarRows(store.state.sidebarCollapsed)) {
-    list.appendChild(workspaceRow(row, active))
-  }
+  // Both read before anything is replaced — see `rowList.ts`. The row being
+  // renamed is kept, field and all: rebuilding it put a fresh field holding
+  // the old name in front of you on every store change, mid-word.
+  const focus = heldFocus(list, 'data-workspace-id')
+  const editing = renaming
+    ? list.querySelector<HTMLElement>(
+        `.workspace[data-workspace-id="${CSS.escape(renaming)}"]:has(> .workspace-name-input)`
+      )
+    : null
+  const rowsShown = store.sidebarRows(store.state.sidebarCollapsed)
+  // One row is reachable with Tab and the arrows move between them: the one
+  // with the focus if a row has it, otherwise the workspace on screen.
+  const roving =
+    focus && rowsShown.some((r) => r.workspace.id === focus.key) ? focus.key : active
+
+  const rows = rowsShown.map((row) => {
+    const el = editing && row.workspace.id === renaming ? editing : workspaceRow(row, active)
+    el.tabIndex = row.workspace.id === roving ? 0 : -1
+    return el
+  })
+  replaceChildrenKeeping(list, rows, editing)
+  restoreFocus(list, 'data-workspace-id', focus)
 }
 
 /** How far one level of nesting indents, in pixels. */
@@ -350,6 +371,20 @@ ${workspace.cwd}`
   el.addEventListener('click', () => {
     if (renaming === workspace.id) return
     actions.selectWorkspace(workspace.id)
+  })
+  // The keyboard's way in. F2 is the app's own shortcut, which renames the
+  // focused row when one has the focus — see `wireKeyboard` in app.ts.
+  el.addEventListener('keydown', (e) => {
+    if (e.target !== el || e.altKey || e.ctrlKey || e.metaKey) return
+    const step =
+      e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : e.key === 'Home' ? 'first' : e.key === 'End' ? 'last' : null
+    if (step !== null) {
+      e.preventDefault()
+      moveFocus(el, '.workspace', step)
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      actions.selectWorkspace(workspace.id)
+    }
   })
   el.addEventListener('dblclick', () => startRename(workspace.id))
   el.addEventListener('contextmenu', (e) => {
@@ -695,7 +730,7 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
     { label: 'Rename…', shortcut: 'F2', onClick: () => startRename(workspaceId) },
     { label: 'Change folder…', onClick: () => actions.changeWorkspaceFolder(workspaceId) },
     { label: 'New worktree…', onClick: () => actions.newWorktree(workspaceId) },
-    { label: 'Reveal in Explorer', onClick: () => actions.openInExplorer(workspace.cwd) },
+    { label: revealLabel(backend().capabilities.platform), onClick: () => actions.openInExplorer(workspace.cwd) },
     // The programs this workspace opens, and whether their windows come and go
     // with it. Absent entirely on a host that cannot place another program's
     // window — see `programsMenu`.

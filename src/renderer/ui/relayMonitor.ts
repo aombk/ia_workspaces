@@ -96,16 +96,6 @@ let latest: Relay = { machine: '', keys: {}, byProject: {}, commandsByProject: {
 let timer: ReturnType<typeof setTimeout> | null = null
 const listeners = new Set<() => void>()
 
-/** Everything the shared folder knows, as of the last sweep. */
-export function latestRelay(): Relay {
-  return latest
-}
-
-/** Whether Relay is on at all — that is, whether a shared folder is set. */
-export function relayOn(): boolean {
-  return latest.problem !== 'off'
-}
-
 /** Called whenever a sweep lands, for anything that draws one. */
 export function watchRelay(fn: () => void): () => void {
   listeners.add(fn)

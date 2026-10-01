@@ -12,6 +12,7 @@
  * is the DOM, the loading, and the dragging.
  */
 import { backend } from '../backend'
+import { revealLabel } from '../shared/fileManager'
 import { trashName } from '../shared/platform'
 import { store, type TreeSelection } from './state'
 import { showContextMenu, type MenuEntry } from './ui/contextMenu'
@@ -35,15 +36,21 @@ import {
 } from '../shared/images'
 import type { BoardPlacement } from '../shared/types'
 
+/**
+ * Each takes the gallery's own pane id, because the answer belongs to the
+ * workspace the gallery is in — not to whichever one is on screen. Two
+ * workspaces can each hold a gallery, and one asking about "the" tree used to
+ * get the other's.
+ */
 export interface ImagesPaneHooks {
-  /** The folder the workspace's file tree is showing. */
-  treeFolder(): string
+  /** The folder this pane's workspace's file tree is showing. */
+  treeFolder(paneId: string): string
   /** The row highlighted in that tree. `path` is '' when nothing is. */
-  treeSelection(): TreeSelection
+  treeSelection(paneId: string): TreeSelection
   /** Hand an image to whatever the OS opens it with. */
   openExternally(path: string): void
-  /** Show an image in a reader-style split, for a proper look at one. */
-  revealInTree(path: string): void
+  /** Select an image in this pane's workspace's file tree. */
+  revealInTree(paneId: string, path: string): void
 }
 
 /** Height a row aims for before it is solved to the width. */
@@ -489,12 +496,12 @@ export class ImagesPane implements AuxPane {
    * `.md` — means neither, so the gallery simply stays on the folder.
    */
   private resolve(): { folder: string; single: string } {
-    const selection = this.hooks.treeSelection()
+    const selection = this.hooks.treeSelection(this.paneId)
     if (selection.path && selection.isDir) {
       return { folder: selection.path, single: '' }
     }
     return {
-      folder: this.hooks.treeFolder(),
+      folder: this.hooks.treeFolder(this.paneId),
       single: selection.path && isImagePath(selection.path) ? selection.path : '',
     }
   }
@@ -919,8 +926,8 @@ export class ImagesPane implements AuxPane {
         : { label: 'Maximize', shortcut: 'double-click', onClick: () => this.setMaximized(path) },
       { label: 'Open with the system viewer', onClick: () => this.hooks.openExternally(path) },
       'separator',
-      { label: 'Show in file tree', onClick: () => this.hooks.revealInTree(path) },
-      { label: 'Show in Explorer', onClick: () => void backend().revealItem(path) },
+      { label: 'Show in file tree', onClick: () => this.hooks.revealInTree(this.paneId, path) },
+      { label: revealLabel(backend().capabilities.platform), onClick: () => void backend().revealItem(path) },
       'separator',
       { label: 'Copy path', onClick: () => void copyText(path) },
       { label: 'Copy name', onClick: () => void copyText(fileName(path)) },

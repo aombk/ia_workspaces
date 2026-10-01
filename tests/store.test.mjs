@@ -194,4 +194,38 @@ check('patching does not resurrect what a pending change removed', () => {
   assert.equal(new Store(dir).state.workspaces.length, 2, 'the removal survived the resize')
 })
 
+// Another instance's write arriving while one of ours is still waiting on its
+// debounce. The watcher used to adopt the other document into the cache, and
+// the pending timer then flushed *that*: the local edit vanished without either
+// instance ever having written over it on purpose.
+{
+  const { store, dir, file } = fresh()
+  store.save(doc(3))
+  store.flush()
+  const heard = []
+  store.watchExternal((state) => heard.push(state))
+  // Our own flush just now would mute the watcher for a moment; this test is
+  // about a write that is not ours, so the mute is lifted.
+  store.lastSelfWrite = 0
+
+  store.save(doc(1)) // the local edit, pending for 400ms
+  // Another instance, through the same durable path, with a different idea.
+  const other = new Store(dir)
+  other.save(doc(7))
+  other.flush()
+  // Long enough for the watcher's 250ms debounce, short of the 400ms save.
+  await new Promise((r) => setTimeout(r, 330))
+  assert.equal(store.state.workspaces.length, 1, 'the pending local edit is still what this process holds')
+  await new Promise((r) => setTimeout(r, 300))
+  store.dispose()
+  assert.equal(
+    JSON.parse(fs.readFileSync(file, 'utf8')).workspaces.length,
+    1,
+    'and it is what reached the disk, not the document adopted under it'
+  )
+  assert.ok(!heard.some((s) => s.workspaces?.length === 7), 'the external one was not adopted while ours was pending')
+  passed++
+  console.log('  ok', 'an external write does not swallow a local edit still waiting to be saved')
+}
+
 console.log(`\n${passed} checks passed`)

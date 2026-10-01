@@ -15,6 +15,7 @@
  * markup, so text can only ever become text.
  */
 import { encodeImagePath } from '../shared/images'
+import { isNetworkPath } from '../shared/pathUrl'
 import { renderFlowchart } from './flowchart'
 
 /** How a document that can be written to answers a tick. See `toggleTaskLine`. */
@@ -73,9 +74,17 @@ export function folderOf(file: string): string {
  * to defend here: the pane can already open any file on disk, so a path that
  * climbs out of the folder grants no reach the user did not already have.
  */
-function resolveImage(src: string, baseDir: string): string | null {
+export function resolveImage(src: string, baseDir: string): string | null {
   if (!baseDir) return null
-  if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return null
+  // A URL scheme — `https:`, `data:` — is not a file. Two characters at
+  // least: a lone letter and a colon is a Windows drive, and matching it here
+  // meant `![](C:\pics\a.png)` never rendered, whatever the comment below says.
+  if (/^[a-z][a-z0-9+.-]+:/i.test(src)) return null
+  // A document pointing at another machine. Loading it would connect there —
+  // on Windows, authenticating as you — on the strength of a file somebody
+  // else wrote. See `isNetworkPath`. A relative path cannot reach another
+  // machine, so images beside a document opened from a share still load.
+  if (isNetworkPath(src)) return null
 
   const sep = baseDir.includes('\\') ? '\\' : '/'
   // Already absolute — a POSIX root, a drive letter or a UNC share.

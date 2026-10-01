@@ -13,7 +13,7 @@
  * travel with each entry anyway, so a per-pane view remains possible.
  */
 import { readDurable, writeDurable } from './durableWrite'
-import type { HistoryEntry } from '../shared/types'
+import type { HistoryEntry, TerminalMeta } from '../shared/types'
 
 /**
  * How much to keep.
@@ -44,6 +44,22 @@ const RESUME_LINE = /^claude --resume [0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$
 
 export class CommandHistory {
   private entries: HistoryEntry[] = []
+  /**
+   * Per pane, the command an outcome would belong to — or null when the line
+   * that started it was not recorded, or its outcome has already landed.
+   *
+   * An outcome carries no command of its own: the shell reports "the last
+   * thing exited 1" and nothing else. Stamping it onto whatever this pane
+   * recorded most recently was right only while every submitted line was
+   * recorded, and several are not — the resume line this app types, a paste
+   * over `MAX_COMMAND`. Their outcomes landed on the unrelated command before
+   * them. So an outcome is spent on the line that opened this slot, once, and
+   * a line that is not recorded opens it empty.
+   *
+   * In memory only: an outcome from a shell that started before this process
+   * did has nothing here to match, which is the right answer for it.
+   */
+  private readonly open = new Map<string, { command: string; cwd: string } | null>()
   private dirty = false
   private timer: NodeJS.Timeout | null = null
 
@@ -91,7 +107,13 @@ export class CommandHistory {
    */
   add(command: string, cwd: string, paneId?: string): void {
     const text = command.trim()
-    if (!text || text.length > MAX_COMMAND) return
+    if (!text || text.length > MAX_COMMAND) {
+      // Not kept, but it is still the command now running in that pane; its
+      // outcome must not fall through to the one before it.
+      if (paneId) this.open.set(paneId, null)
+      return
+    }
+    if (paneId) this.open.set(paneId, { command: text, cwd })
 
     const at = Date.now()
     const existing = this.entries.findIndex((e) => e.command === text && e.cwd === cwd)
@@ -122,6 +144,23 @@ export class CommandHistory {
   }
 
   /**
+   * A submitted line as the PTY layer reports it, synthetic ones included.
+   *
+   * The resume line this app types is not history, but the shell will still
+   * report its outcome, and that outcome has to be recognised as belonging to
+   * a line that was not kept. Taking the whole report rather than having the
+   * caller filter it is what lets this side know a line was submitted at all.
+   */
+  record(meta: Pick<TerminalMeta, 'paneId' | 'lastCommand' | 'cwd' | 'synthetic'>): void {
+    if (!meta.lastCommand) return
+    if (meta.synthetic) {
+      this.open.set(meta.paneId, null)
+      return
+    }
+    this.add(meta.lastCommand, meta.cwd ?? '', meta.paneId)
+  }
+
+  /**
    * Stamps the outcome onto the command a pane most recently started.
    *
    * Found by pane rather than by position: `add` puts the newest at the front of
@@ -132,10 +171,20 @@ export class CommandHistory {
    * A command that never reports — no shell integration, a pane killed
    * mid-command — simply keeps `lastCode` undefined, which reads as "not known"
    * everywhere and never as "succeeded".
+   *
+   * And only the command that is still waiting for one — see `open`. A second
+   * outcome with no line submitted in between, or one for a line that was not
+   * kept, stamps nothing rather than something wrong.
    */
   finish(paneId: string, exitCode: number, ms: number): void {
     if (!paneId) return
-    const entry = this.entries.find((e) => e.paneId === paneId)
+    const slot = this.open.get(paneId)
+    this.open.delete(paneId)
+    if (!slot) return
+    // Matched on what identifies an entry, not on the pane: a second pane
+    // re-running the same line in the same folder moves the one entry, and it
+    // is still the right place for this outcome.
+    const entry = this.entries.find((e) => e.command === slot.command && e.cwd === slot.cwd)
     if (!entry) return
 
     entry.lastCode = exitCode

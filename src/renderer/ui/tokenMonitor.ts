@@ -390,14 +390,6 @@ export function freshOf(t: TokenTotals): number {
   return t.input + t.output + t.cacheWrite5m + t.cacheWrite1h
 }
 
-/** What one conversation has spent, for the tab it is running in. */
-export function sessionTokens(id: string): { fresh: number; total: number; cost: number } | null {
-  const found = latest?.sessions.find((s) => s.id === id)
-  return found
-    ? { fresh: freshOf(found.totals), total: totalOf(found.totals), cost: found.cost }
-    : null
-}
-
 /**
  * `8.4M`, `240K`, `1.2B` — two significant figures and a suffix.
  *

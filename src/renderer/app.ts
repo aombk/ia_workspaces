@@ -1,5 +1,6 @@
 import './styles.css'
 import { backend } from '../backend'
+import { fileManagerName } from '../shared/fileManager'
 import { store, paneLabel, shellFor, tabLabel } from './state'
 import { attachZoomWheel, TerminalManager } from './terminals'
 import { FilesPane } from './filesPane'
@@ -27,7 +28,7 @@ import {
   jumpToOldestUnread,
 } from './ui/notificationPanel'
 import { hideContextMenu, setMenuAccent } from './ui/contextMenu'
-import { confirmDialog, promptDialog } from './ui/confirm'
+import { choiceDialog, confirmDialog, promptDialog } from './ui/confirm'
 import { showToast } from './ui/toast'
 import { checkAppSupport, setRectSource, syncApps } from './ui/externalApps'
 import type { WorkspaceFile } from '../shared/workspaceFile'
@@ -36,6 +37,8 @@ import { initCanvasPanes } from './canvasPane'
 import { DEFAULT_SETTINGS, isTerminalPane } from '../shared/types'
 import { OPENABLE_PANES } from '../shared/types'
 import type {
+  CrossPaneDecision,
+  CrossPaneRequest,
   NotificationRecord,
   OpenViewRequest,
   PaneState,
@@ -187,13 +190,13 @@ export async function start(): Promise<void> {
   terminals.setImagesHooks({
     // The gallery belongs to the workspace its own pane is in, not to whichever
     // workspace happens to be on screen — two workspaces can each hold one.
-    treeFolder: () => store.treeFolder(store.activeWorkspace?.id ?? ''),
-    treeSelection: () => store.treeSelection(store.activeWorkspace?.id ?? ''),
+    treeFolder: (paneId) => store.treeFolder(store.workspaceOfPane(paneId)?.id ?? ''),
+    treeSelection: (paneId) => store.treeSelection(store.workspaceOfPane(paneId)?.id ?? ''),
     openExternally: (path) => void backend().openInExplorer(path),
     // Always a file: this comes from the gallery's own right-click menu, and
     // everything in there is an image.
-    revealInTree: (path) => {
-      const workspace = store.activeWorkspace
+    revealInTree: (paneId, path) => {
+      const workspace = store.workspaceOfPane(paneId)
       if (workspace) store.setTreeSelection(workspace.id, path, false)
     },
   })
@@ -370,7 +373,7 @@ function renderStatus(): void {
   const pane = store.activePane
   const cwd = document.getElementById('status-cwd')!
   cwd.textContent = pane?.cwd ?? store.activeWorkspace?.cwd ?? ''
-  cwd.title = cwd.textContent ? `${cwd.textContent}\nClick to open in Explorer` : ''
+  cwd.title = cwd.textContent ? `${cwd.textContent}\nClick to open in ${fileManagerName(backend().capabilities.platform)}` : ''
 
   // What the pane is *running*, which is two questions this used to get wrong.
   //
@@ -1372,8 +1375,43 @@ function wireDockedTree(): void {
 
 // ---------------------------------------------------------------------- alerts
 
+/**
+ * What each cross-pane request would do, in words. The method names are the
+ * CLI's; these are what is actually at stake.
+ */
+const CROSS_PANE_ACTIONS: Record<string, string> = {
+  'read-screen': 'read what is on the screen of',
+  send: 'type into',
+  'send-key': 'press keys in',
+  'answer-agent': 'answer the agent waiting in',
+}
+
+/**
+ * One pane asking to act on another. See `approveCrossPane` in `main.ts`.
+ *
+ * In the window rather than a system dialog, so it names the panes the way the
+ * sidebar does and does not take over the whole screen — you can still look at
+ * both panes before answering.
+ */
+async function askCrossPane(request: CrossPaneRequest): Promise<void> {
+  const action = CROSS_PANE_ACTIONS[request.method] ?? 'act on'
+  const decision = await choiceDialog<CrossPaneDecision>({
+    title: 'Allow one pane to act on another?',
+    body:
+      `“${request.from}” wants to ${action} “${request.to}”.\n\n` +
+      'Something running in that pane asked, through the iaw command. If you did not expect it, deny it.',
+    choices: [
+      { value: 'deny', label: 'Deny', escape: true },
+      { value: 'once', label: 'Allow once' },
+      { value: 'always', label: 'Always allow this pane', primary: true },
+    ],
+  })
+  await backend().answerControlApproval(request.id, decision)
+}
+
 function wireAlerts(): void {
   backend().on.alert(handleAlert)
+  backend().on.controlApproval((request) => void askCrossPane(request))
 
   backend().on.paneStatus(({ paneId, activity, agent }) => {
     if (activity) store.setPaneActivity(paneId, activity)
@@ -1896,7 +1934,17 @@ function wireKeyboard(): void {
       }
       if (e.key === 'F2') {
         e.preventDefault()
-        if (e.shiftKey) {
+        // A tab or workspace row the keyboard is on is the thing to rename,
+        // whichever one is on screen.
+        const row = document.activeElement
+        const focusedTab = row instanceof HTMLElement && row.matches('.tab[data-tab-id]') ? row.dataset.tabId : null
+        const focusedWorkspace =
+          row instanceof HTMLElement && row.matches('.workspace[data-workspace-id]') ? row.dataset.workspaceId : null
+        if (focusedTab) {
+          startRenameTab(focusedTab)
+        } else if (focusedWorkspace) {
+          startRename(focusedWorkspace)
+        } else if (e.shiftKey) {
           if (workspace) startRename(workspace.id)
         } else if (tab && tab.panes.length > 1) {
           // With a split open, the pane is the thing you meant to rename.

@@ -179,6 +179,17 @@ class WorkspaceState {
     this.emit()
 
     backend().onExternalStateChange((external) => this.mergeExternal(normalize(external)))
+
+    // The two ways the app ends, and each needs its own hook. Closing the
+    // window unloads this page, so `pagehide` runs here first. Quitting
+    // (Cmd+Q, a logout) reaches main before any window closes, so main calls
+    // this itself — by name, through `executeJavaScript`, which returns only
+    // once it has run, and so once the save inside it has landed. Either way
+    // the save goes synchronously; see `flushNow`.
+    // Optional-called: the store also runs in the test suites against a bare
+    // stand-in for `window`, which has timers and nothing else.
+    window.addEventListener?.('pagehide', () => this.flushNow())
+    ;(window as unknown as { __iawFlushState?: () => void }).__iawFlushState = () => this.flushNow()
   }
 
   /**
@@ -253,6 +264,27 @@ class WorkspaceState {
       this.saveTimer = null
       void backend().saveState(forDisk(this.data))
     }, 250)
+  }
+
+  /**
+   * Sends a save still waiting on its timer, now, and blocks until main has it.
+   *
+   * The debounce above is what lets every keystroke of a rename call `save`
+   * without a disk write each — and it is also a quarter of a second in which
+   * the change exists only in this window. Quitting inside it lost the change:
+   * main flushes its own copy and kills itself, and the one in here never left.
+   * Nothing to do when no save is pending, which is nearly always.
+   */
+  flushNow(): void {
+    if (this.saveTimer === null) return
+    window.clearTimeout(this.saveTimer)
+    this.saveTimer = null
+    try {
+      backend().saveStateSync(forDisk(this.data))
+    } catch {
+      // A host without a synchronous save. The ordinary one may still land.
+      void backend().saveState(forDisk(this.data))
+    }
   }
 
   // ---------------------------------------------------------------- getters
@@ -1995,6 +2027,16 @@ function normalize(raw: unknown): PersistedState {
             : undefined,
           wordWrap: typeof p.wordWrap === 'boolean' ? p.wordWrap : undefined,
           lineNumbers: typeof p.lineNumbers === 'boolean' ? p.lineNumbers : undefined,
+          // The same story as `customTitle` above, three more times: saved with
+          // the rest of the pane and dropped here, so a compare pane came back
+          // comparing nothing and a pane's history ring and column guide went
+          // back to the defaults on every launch.
+          columnGuide: typeof p.columnGuide === 'boolean' ? p.columnGuide : undefined,
+          historyScope: HISTORY_SCOPES.includes(p.historyScope as HistoryScope)
+            ? (p.historyScope as HistoryScope)
+            : undefined,
+          compareLeft: typeof p.compareLeft === 'string' ? p.compareLeft : undefined,
+          compareRight: typeof p.compareRight === 'string' ? p.compareRight : undefined,
           autosave: typeof p.autosave === 'boolean' ? p.autosave : undefined,
           url: typeof p.url === 'string' ? p.url : undefined,
           wslDistro: typeof p.wslDistro === 'string' ? p.wslDistro : undefined,
@@ -2355,6 +2397,9 @@ function forDisk(data: PersistedState): PersistedState {
   }
   return clone
 }
+
+/** Every value a pane's `historyScope` may hold, for reading one back. */
+const HISTORY_SCOPES: readonly HistoryScope[] = ['terminal', 'machine', 'everywhere']
 
 function readPaneKind(raw: unknown): PaneState['kind'] {
   // `readWireKind` owns both the `notes` translation and the list of what this

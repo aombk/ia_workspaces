@@ -836,7 +836,8 @@ export class ChangesView implements GitView {
     await this.ctx.run(
       () => backend().git.send(this.ctx.root()),
       `Sent. Your saves are on ${where}.`,
-      'Sending your saves'
+      'Sending your saves',
+      true
     )
   }
 

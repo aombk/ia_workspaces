@@ -237,11 +237,6 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`
 }
 
-/** Retained alias: `xtermTheme` now takes settings and resolves both themes. */
-export function themeFor(settings: Settings): ITheme {
-  return xtermTheme(settings)
-}
-
 // ------------------------------------------------- Windows Terminal import
 
 interface WtScheme {

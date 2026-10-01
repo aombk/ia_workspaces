@@ -23,7 +23,7 @@ await build({
   outdir: out,
   external: ['electron'],
 })
-const { seal, unseal, redact } = await import(`file://${out}/crypto.js`)
+const { seal, unseal, unsealAsync, redact, keyDerivations } = await import(`file://${out}/crypto.js`)
 
 let passed = 0
 const check = (name, fn) => {
@@ -112,5 +112,28 @@ check('an ordinary command is left exactly as it was', () => {
     assert.equal(redact(command), command)
   }
 })
+
+// The relay sweep opens every machine's file every minute; each one keeps its
+// salt until rewritten, so the second opening must not pay for scrypt again.
+check('opening the same file twice derives its key once', () => {
+  const blob = seal('{"commands":[]}', PASS)
+  const before = keyDerivations()
+  assert.ok(unseal(blob, PASS))
+  assert.ok(unseal(blob, PASS))
+  assert.equal(keyDerivations() - before, 0, 'sealing it already derived the key')
+  const other = seal('x', 'another passphrase entirely')
+  const mid = keyDerivations()
+  assert.equal(unseal(other, PASS), null)
+  assert.equal(unseal(other, PASS), null)
+  assert.equal(keyDerivations() - mid, 1, 'a wrong passphrase is derived once too, then remembered')
+})
+
+{
+  const blob = seal('async', PASS)
+  assert.equal(await unsealAsync(blob, PASS), 'async')
+  assert.equal(await unsealAsync(seal('async', 'other'), PASS), null)
+  passed++
+  console.log('  ok', 'the off-thread opening agrees with the synchronous one')
+}
 
 console.log(`\n${passed} checks passed`)

@@ -36,6 +36,9 @@ export interface PtyLike {
   kill(): void
   onData(cb: (data: string) => void): void
   onExit(cb: (e: { exitCode: number; signal?: number }) => void): void
+  /** Stop reading the shell's output; it blocks once the kernel buffer fills. */
+  pause?(): void
+  resume?(): void
 }
 
 export type Spawner = (spec: SpawnSpec) => PtyLike
@@ -51,6 +54,11 @@ interface Session {
   meta?: unknown
   /** Client ids currently receiving this session's output. */
   attached: Set<string>
+  /**
+   * Attached clients too far behind to be sent more. While any are, the pty
+   * is paused — see `block`.
+   */
+  blockedBy: Set<string>
   exit?: { exitCode: number; signal?: number }
   /**
    * Clients that have confirmed they saw the exit.
@@ -127,6 +135,7 @@ export class SessionTable {
       startedAt: this.now(),
       meta: spec.meta,
       attached: new Set(),
+      blockedBy: new Set(),
       acked: new Set(),
       discarded: false,
     }
@@ -187,12 +196,53 @@ export class SessionTable {
   detach(id: string, clientId: string): boolean {
     const session = this.sessions.get(id)
     if (!session) return false
+    this.unblock(session, clientId)
     return session.attached.delete(clientId)
   }
 
   /** A client went away entirely — drop it from every session at once. */
   detachAll(clientId: string): void {
-    for (const session of this.sessions.values()) session.attached.delete(clientId)
+    for (const session of this.sessions.values()) {
+      this.unblock(session, clientId)
+      session.attached.delete(clientId)
+    }
+  }
+
+  /**
+   * A client cannot take any more of this session's output right now.
+   *
+   * The shell is paused rather than its output queued: queueing is unbounded
+   * memory in the one process that must not die, and a paused pty simply
+   * blocks the program writing to it, which is what a slow terminal has
+   * always done. Only an attached client can block — a session nobody is
+   * watching keeps printing into its ring, which is the point of the ring.
+   */
+  block(id: string, clientId: string): void {
+    const session = this.sessions.get(id)
+    if (!session?.pty || !session.attached.has(clientId)) return
+    const was = session.blockedBy.size
+    session.blockedBy.add(clientId)
+    if (was === 0) {
+      try {
+        session.pty.pause?.()
+      } catch {
+        /* the shell may be on its way out */
+      }
+    }
+  }
+
+  /** The client caught up: whatever it was holding back may run again. */
+  unblockClient(clientId: string): void {
+    for (const session of this.sessions.values()) this.unblock(session, clientId)
+  }
+
+  private unblock(session: Session, clientId: string): void {
+    if (!session.blockedBy.delete(clientId) || session.blockedBy.size > 0) return
+    try {
+      session.pty?.resume?.()
+    } catch {
+      /* already gone */
+    }
   }
 
   write(id: string, data: Buffer): boolean {

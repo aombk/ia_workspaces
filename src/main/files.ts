@@ -1,6 +1,7 @@
 import { cp, readdir, readFile, stat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises'
 import { execFile, spawn } from 'node:child_process'
 import path from 'node:path'
+import { gitArgs, gitEnv } from './gitEnv'
 import { isHiddenEntry } from '../shared/platform'
 import { isImagePath } from '../shared/images'
 import type { FileEntry, GitStatusMap, SearchHit } from '../shared/types'
@@ -132,8 +133,8 @@ export async function compareFiles(left: string, right: string): Promise<string>
   const text = await new Promise<string>((resolve, reject) => {
     execFile(
       'git',
-      ['diff', '--no-index', '--no-color', '--', left, right],
-      { maxBuffer: MAX_DIFF_BYTES * 4, windowsHide: true },
+      gitArgs(['diff', '--no-index', '--no-color', '--no-ext-diff', '--', left, right]),
+      { maxBuffer: MAX_DIFF_BYTES * 4, windowsHide: true, env: gitEnv() },
       (err, stdout) => {
         // Exit 1 means "they differ", which is the ordinary outcome here.
         if (stdout) resolve(stdout)
@@ -160,16 +161,16 @@ export async function compareFiles(left: string, right: string): Promise<string>
 export async function gitDiff(cwd: string, target: string, untracked: boolean): Promise<string> {
   const args =
     untracked && target
-      ? ['diff', '--no-index', '--no-color', '--', '/dev/null', target]
-      : ['diff', 'HEAD', '--no-color', '--', target || '.']
+      ? ['diff', '--no-index', '--no-color', '--no-ext-diff', '--', '/dev/null', target]
+      : ['diff', 'HEAD', '--no-color', '--no-ext-diff', '--', target || '.']
 
   // `git diff --no-index` exits 1 when the files differ, which is the normal
   // case here rather than a failure — so stdout is trusted over the exit code.
   const text = await new Promise<string>((resolve, reject) => {
     execFile(
       'git',
-      args,
-      { cwd, maxBuffer: MAX_DIFF_BYTES * 4, windowsHide: true },
+      gitArgs(args),
+      { cwd, maxBuffer: MAX_DIFF_BYTES * 4, windowsHide: true, env: gitEnv() },
       (err, stdout) => {
         if (stdout) resolve(stdout)
         else if (err) reject(err)
@@ -227,8 +228,8 @@ export async function searchWorkspace(
   const stdout = await new Promise<string>((resolve) => {
     execFile(
       'git',
-      args,
-      { cwd, maxBuffer: 16 * 1024 * 1024, windowsHide: true, timeout: 20000 },
+      gitArgs(args),
+      { cwd, maxBuffer: 16 * 1024 * 1024, windowsHide: true, timeout: 20000, env: gitEnv() },
       (_e, out) => resolve(out ?? '')
     )
   })
@@ -246,7 +247,12 @@ export async function searchWorkspace(
     if (!Number.isFinite(number)) continue
     let text = rest.slice(at + 1).trim()
     if (text.length > MAX_HIT_LEN) text = `${text.slice(0, MAX_HIT_LEN)}\u2026`
-    hits.push({ path: path.join(cwd, target.replace(/\//g, '\\')), line: number, text })
+    // git always answers with forward slashes. Split on them and let `join` use
+    // this platform's separator: rewriting them to backslashes was right on
+    // Windows and, on macOS and Linux, produced `src\main\a.ts` — a file
+    // name with backslashes in it, which is to say a file that does not exist,
+    // so every hit in a subfolder opened nothing.
+    hits.push({ path: path.join(cwd, ...target.split('/')), line: number, text })
   }
   return hits
 }
@@ -641,8 +647,8 @@ export function gitStatus(cwd: string): Promise<GitStatusMap> {
   return new Promise((resolve) => {
     execFile(
       'git',
-      ['status', '--porcelain', '--untracked-files=normal'],
-      { cwd, timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+      gitArgs(['status', '--porcelain', '--untracked-files=normal']),
+      { cwd, timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: gitEnv() },
       (error, stdout) => {
         if (error) {
           resolve({})

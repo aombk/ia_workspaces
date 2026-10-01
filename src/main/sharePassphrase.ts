@@ -17,7 +17,7 @@
  * Linux box, typically. Written down in the file itself, so anybody looking at
  * it can see which it is rather than assuming the better one.
  */
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
+import { chmodSync, readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { safeStorage } from 'electron'
 
@@ -55,7 +55,15 @@ export function setSharePassphrase(dataDir: string, passphrase: string): boolean
     } else {
       stored = { how: 'plain', value: passphrase }
     }
-    writeFileSync(target, JSON.stringify(stored), 'utf8')
+    // 0600 because the fallback form is the passphrase in the clear. The mode
+    // only applies when the file is created, so a file an older build wrote is
+    // tightened explicitly as well.
+    writeFileSync(target, JSON.stringify(stored), { encoding: 'utf8', mode: 0o600 })
+    try {
+      chmodSync(target, 0o600)
+    } catch {
+      /* Windows, or a filesystem without modes */
+    }
     return true
   } catch {
     return false

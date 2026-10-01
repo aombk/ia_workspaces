@@ -104,7 +104,10 @@ export class ScrollbackStore {
     private readonly enabled: () => boolean
   ) {
     try {
-      mkdirSync(dir, { recursive: true })
+      // 0700 and 0600 below: this is everything every pane printed, tokens and
+      // pasted secrets included, and a POSIX data directory is not necessarily
+      // private. Windows ignores the modes and AppData already is.
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
       // A dump interrupted by a power cut leaves its tmp behind; readers skip
       // them, but nothing else would ever remove them.
       for (const name of readdirSync(dir)) {
@@ -292,7 +295,7 @@ export class ScrollbackStore {
       const target = this.fileFor(id)
       const tmp = `${target}.tmp.${randomBytes(6).toString('hex')}`
       try {
-        writeFileSync(tmp, Buffer.concat([header(this.sizes.get(id)), data]))
+        writeFileSync(tmp, Buffer.concat([header(this.sizes.get(id)), data]), { mode: 0o600 })
         renameSync(tmp, target)
       } catch {
         try {
@@ -339,7 +342,7 @@ export class ScrollbackStore {
     this.dirty.clear()
     try {
       rmSync(this.dir, { recursive: true, force: true })
-      mkdirSync(this.dir, { recursive: true })
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 })
     } catch {
       /* best effort */
     }
@@ -376,7 +379,7 @@ async function writeAtomic(target: string, data: Buffer): Promise<void> {
   // Same directory as the destination: a cross-filesystem rename fails EXDEV.
   const tmp = `${target}.tmp.${randomBytes(6).toString('hex')}`
   try {
-    await writeFile(tmp, data)
+    await writeFile(tmp, data, { mode: 0o600 })
     await renameWithRetry(tmp, target)
   } catch (err) {
     try {

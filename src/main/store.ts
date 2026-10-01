@@ -191,6 +191,15 @@ export class Store {
         if (Date.now() - this.lastSelfWrite < 1500) return
         if (this.watchDebounce) clearTimeout(this.watchDebounce)
         this.watchDebounce = setTimeout(() => {
+          this.watchDebounce = null
+          // A local edit is still waiting to be written. Adopting the other
+          // instance's document now would put it in the cache, and the pending
+          // timer would then flush *that* — the local edit gone without either
+          // side having overwritten anything on purpose. The same rule `state`
+          // follows: while a write is pending, this process's view is the newer
+          // one. Its flush lands on top, and the other instance hears about it
+          // through its own watcher, which is how the two converge.
+          if (this.writeTimer) return
           const fresh = this.read()
           if (fresh === null) return
           this.cache = fresh

@@ -29,6 +29,7 @@
  * admitted gap, and 0 °C is very plausible and very wrong.
  */
 import type { AuxPane } from './auxPane'
+import { Redraw } from './redraw'
 import type {
   AirQuality,
   DiskStats,
@@ -110,6 +111,7 @@ export class MonitorPane implements AuxPane {
   private crypto: CryptoReading | null = null
   private cryptoTimer: ReturnType<typeof setInterval> | null = null
   private disposed = false
+  private readonly redraw: Redraw
 
   constructor(readonly paneId: string) {
     this.element = document.createElement('div')
@@ -136,10 +138,19 @@ export class MonitorPane implements AuxPane {
       this.openBlockMenu(e.clientX, e.clientY)
     })
 
-    this.unwatch = watchSystem((stats, history) => this.render(stats, history), POLL_MS)
+    this.redraw = new Redraw(this.element)
+    // A sample is news whatever the inputs say — the history behind the graphs
+    // grows in place — but only for a panel somebody can see. A hidden one is
+    // drawn when it comes back; see `applyDock`.
+    this.unwatch = watchSystem(() => {
+      this.redraw.invalidate()
+      this.refresh()
+    }, POLL_MS)
     // Toggling a block should land immediately rather than on the next sample,
-    // which is up to two seconds away.
-    this.unsubscribe = store.subscribe(() => this.render(latestSystem(), systemHistory()))
+    // which is up to two seconds away. Every other store change — which during
+    // agent output is several a second — leaves the panel alone: rebuilding it
+    // for nothing threw away whatever block was being dragged or clicked.
+    this.unsubscribe = store.subscribe(() => this.refresh())
 
     // Its own clock, and a slow one. The collector caches for ten minutes, so
     // this mostly returns without touching the network — see `refreshWeather`.
@@ -158,8 +169,32 @@ export class MonitorPane implements AuxPane {
     this.cryptoTimer = setInterval(() => void this.refreshCrypto(), 120_000)
   }
 
+  /** Draws the panel if anything it shows has changed and it is on screen. */
+  sync(): void {
+    this.refresh()
+  }
+
+  /** What the panel is drawn from, besides the graphs' own history. */
+  private inputs(): readonly unknown[] {
+    const state = store.state
+    return [
+      latestSystem(),
+      state.monitorHidden,
+      state.monitorOrder,
+      store.settings,
+      latestUsage(),
+      this.weather,
+      this.crypto,
+    ]
+  }
+
+  private refresh(): void {
+    if (this.redraw.due(this.inputs())) this.render(latestSystem(), systemHistory())
+  }
+
   private render(stats: SystemStats | null, history: SystemHistory): void {
     if (this.disposed) return
+    this.redraw.drew(this.inputs())
 
     if (!stats) {
       const problem = document.createElement('div')

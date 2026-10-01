@@ -149,8 +149,11 @@ export interface PtyManagerDeps {
   notifyPipe: () => string
   /** Folder holding each pane's recallable commands, for the integration script. */
   historyDir: () => string
-  /** Proof a caller is talking to us from inside one of our panes. */
-  token: string
+  /**
+   * The token a pane's shell carries as `IAW_TOKEN` — that pane's own, which
+   * is how the app knows which pane a request comes from. See `controlServer.ts`.
+   */
+  tokenFor: (paneId: string) => string
   /** Folder holding the `iaw.cmd` shim, prepended to each pane's PATH. */
   binDir: string | null
   scrollback: ScrollbackStore
@@ -175,6 +178,17 @@ export class PtyManager {
    * rather than pinned on the shell that is now running there.
    */
   private readonly killed = new Map<string, number>()
+  /**
+   * Spawns still on their way, by pane id.
+   *
+   * `spawn` awaits twice before the broker has a shell to show for it — the
+   * replay is prepared, the broker is connected to — and a pane closed in that
+   * window used to find no `Session` to end. The shell then started anyway,
+   * with nothing that would ever kill it: invisible, holding a process tree,
+   * and keeping the broker from idling out. A kill now marks the ticket, and
+   * the spawn ends what it started the moment the broker hands it over.
+   */
+  private readonly spawning = new Map<string, { cancelled: boolean; done: Promise<unknown> }>()
   /** How long after a kill an exit is still the killed shell's. */
   private static readonly KILL_ECHO_MS = 5_000
   /** Grace given to a slept shell's children before they count as orphans. */
@@ -325,8 +339,32 @@ export class PtyManager {
   }
 
   async spawn(req: SpawnRequest): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (this.sessions.has(req.paneId)) return { ok: true }
+    for (;;) {
+      if (this.sessions.has(req.paneId)) return { ok: true }
+      const inFlight = this.spawning.get(req.paneId)
+      if (!inFlight) break
+      // The same pane asked for twice while starting: one shell, one answer.
+      if (!inFlight.cancelled) return inFlight.done as ReturnType<PtyManager['spawn']>
+      // A "reopen as" right behind a kill. The old spawn is still going to
+      // reach the broker and then end what it made there, under this same id;
+      // starting ours before that settles would race it for the id and could
+      // attach this pane to the shell that is about to be killed.
+      await inFlight.done.catch(() => undefined)
+    }
 
+    const ticket = { cancelled: false, done: Promise.resolve() as Promise<unknown> }
+    const done = this.spawnShell(req, ticket).finally(() => {
+      if (this.spawning.get(req.paneId) === ticket) this.spawning.delete(req.paneId)
+    })
+    ticket.done = done
+    this.spawning.set(req.paneId, ticket)
+    return done
+  }
+
+  private async spawnShell(
+    req: SpawnRequest,
+    ticket: { cancelled: boolean }
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
     const settings = this.getSettings()
     const resolved = resolveShell(req.shell, settings, {
       distro: req.wslDistro,
@@ -385,7 +423,7 @@ export class PtyManager {
           IAW_PANE_ID: req.paneId,
           IAW_WORKSPACE_ID: req.workspaceId,
           IAW_PIPE: this.deps.notifyPipe(),
-          IAW_TOKEN: this.deps.token,
+          IAW_TOKEN: this.deps.tokenFor(req.paneId),
           // Where this pane's recallable commands are written. The integration
           // script binds the arrows and reads `$IAW_HISTORY_DIR/$IAW_PANE_ID.txt`.
           IAW_HISTORY_DIR: this.deps.historyDir(),
@@ -398,6 +436,15 @@ export class PtyManager {
       ),
     })
     if (!started.ok) return { ok: false, error: started.error }
+
+    // Closed while we were getting here. Whatever `kill` sent the broker went
+    // before this shell existed, so it is ended now — and stamped as killed, so
+    // its exit is taken as the echo it is rather than news about the pane.
+    if (ticket.cancelled) {
+      host.kill(req.paneId)
+      this.killed.set(req.paneId, Date.now())
+      return { ok: false, error: 'the pane was closed while its shell was starting' }
+    }
 
     // Two very different things can have just happened, and everything below
     // turns on which. A NEW shell wants the previous run's screen painted above
@@ -469,9 +516,10 @@ export class PtyManager {
       },
       onCommandEnd: (code) => this.handleCommandEnd(session, code),
       onCommandLine: (command) => {
-        // Re-running the same line is the common case at a prompt; there is
-        // nothing for the renderer to persist when nothing changed.
-        if (command === session.lastCommand) return
+        // Reported even when it repeats the last line. The renderer already
+        // ignores a `lastCommand` it has, but the history does not: a repeat
+        // is a run, and its outcome is about to arrive — swallowing the line
+        // here left that outcome nothing to belong to.
         session.lastCommand = command
         // Ours, coming back to us: the shell reports the resume line exactly as
         // it reports a typed one, because it *was* typed — by `sendPendingCommand`.
@@ -601,6 +649,12 @@ export class PtyManager {
     session.pendingCommand = null
     this.flush(session)
     this.activity.stop(session.id)
+    // Whatever the agent last declared died with it. Left in place, a pane
+    // whose shell exited on its own stayed "blocked" in the inbox, kept its
+    // "waiting for you" badge, and held any `iaw ask` caller until its timeout
+    // — all for a process that no longer exists. `kill` and `sleep` already
+    // did this; an exit nobody asked for is the same ending.
+    this.agents.release(session.id)
     this.deps.pidMap.unregister(session.pid)
     // The pane outlives its shell — keep the screen so a restart still has it.
     void this.deps.scrollback.flush(session.id)
@@ -654,6 +708,13 @@ export class PtyManager {
     for (const session of this.sessions.values()) {
       if (session.exited || session.detached) continue
       session.detached = true
+      // Nothing typed here can reach the shell any more, so neither can an
+      // answer: a pane left "blocked" would be a question nobody can respond
+      // to, and an `iaw ask` waiter on it is settled as abandoned now rather
+      // than at its timeout. A resume line still queued is dropped for the
+      // same reason.
+      this.agents.release(session.id)
+      this.cancelPendingCommand(session)
       this.hooks.onData({
         paneId: session.id,
         data:
@@ -677,7 +738,11 @@ export class PtyManager {
    */
   private sendPendingCommand(session: Session): void {
     const command = session.pendingCommand
-    if (!command || session.exited) return
+    if (!command || session.exited || session.detached) return
+    // The pane's id outlives this session: "reopen as" kills it and spawns a
+    // replacement under the same id, and a timer armed for the old one must
+    // not type its resume line into the new shell.
+    if (this.sessions.get(session.id) !== session) return
     // A prompt marker inside replayed output is a fact about the past, exactly
     // like a replayed bell — it is not the shell saying it is ready for input
     // *now*. Acting on one types into a live agent on the strength of a prompt
@@ -693,6 +758,13 @@ export class PtyManager {
     // only way this side can tell our own line from a typed one.
     session.autoCommand = command
     this.backend?.write(session.id, command + '\r')
+  }
+
+  /** Drops a queued resume line and the fallback timer that would send it. */
+  private cancelPendingCommand(session: Session): void {
+    if (session.pendingCommandTimer) clearTimeout(session.pendingCommandTimer)
+    session.pendingCommandTimer = null
+    session.pendingCommand = null
   }
 
   /**
@@ -759,6 +831,9 @@ export class PtyManager {
    */
   kill(paneId: string): void {
     const s = this.sessions.get(paneId)
+    // A spawn still in flight has no session yet; see `spawning`.
+    const starting = this.spawning.get(paneId)
+    if (starting) starting.cancelled = true
     this.activity.stop(paneId)
     this.agents.release(paneId)
     // The last moment the transcript exists. `drop` below is right for the
@@ -775,9 +850,25 @@ export class PtyManager {
     }
     this.killed.set(paneId, now)
     if (!s) return
+    this.retire(s)
     this.deps.pidMap.unregister(s.pid)
-    if (s.flushTimer) clearTimeout(s.flushTimer)
     this.sessions.delete(paneId)
+  }
+
+  /**
+   * Stops everything a session still has scheduled, for a session being ended
+   * on purpose.
+   *
+   * Marked exited as well, because timers are not the only late arrivals: a pid
+   * retry or a prompt marker already in the pipe would otherwise act on a
+   * session that is gone — re-registering a dead shell in the pid map, or
+   * typing a resume line into whatever holds the pane's id next.
+   */
+  private retire(s: Session): void {
+    s.exited = true
+    if (s.flushTimer) clearTimeout(s.flushTimer)
+    s.flushTimer = null
+    this.cancelPendingCommand(s)
   }
 
   /**
@@ -798,6 +889,8 @@ export class PtyManager {
    */
   async sleep(paneId: string): Promise<void> {
     const s = this.sessions.get(paneId)
+    const starting = this.spawning.get(paneId)
+    if (starting) starting.cancelled = true
     if (!s) return
     this.activity.stop(paneId)
     this.agents.release(paneId)
@@ -808,8 +901,8 @@ export class PtyManager {
     // The pane writes its own line about going to sleep; an exit notice from
     // the shell we just ended would be the same news, worded as a failure.
     this.killed.set(paneId, Date.now())
+    this.retire(s)
     this.deps.pidMap.unregister(s.pid)
-    if (s.flushTimer) clearTimeout(s.flushTimer)
     this.sessions.delete(paneId)
     await this.reapAfterSleep(s)
   }
@@ -860,7 +953,7 @@ export class PtyManager {
     const keep = this.getSettings().keepSessionsAlive
     for (const id of [...this.sessions.keys()]) {
       const s = this.sessions.get(id)
-      if (s?.flushTimer) clearTimeout(s.flushTimer)
+      if (s) this.retire(s)
       if (!keep) this.backend?.kill(id)
       this.activity.stop(id)
       this.sessions.delete(id)
@@ -1176,7 +1269,7 @@ export class PtyManager {
         paneId: session.id,
         workspaceId: session.workspaceId,
         pipe: this.deps.notifyPipe(),
-        token: this.deps.token,
+        token: this.deps.tokenFor(session.id),
       })
       return
     }

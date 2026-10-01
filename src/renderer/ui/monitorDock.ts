@@ -42,7 +42,6 @@ const MIN_DOCK = 140
 const MIN_REST = 320
 
 let pane: MonitorPane | null = null
-let body: HTMLElement | null = null
 
 const shell = () => document.getElementById('shell') as HTMLElement
 const handle = () => document.getElementById('monitor-handle') as HTMLElement
@@ -111,6 +110,8 @@ function applyDock(): void {
 
   applySize()
   renderHeader()
+  // The panel skips drawing while hidden, so coming back is when it catches up.
+  pane.sync()
 }
 
 function applySize(): void {
@@ -130,7 +131,7 @@ function applySize(): void {
 // ---------------------------------------------------------------- header
 
 function bodyElement(built: MonitorPane): HTMLElement {
-  body = document.createElement('div')
+  const body = document.createElement('div')
   body.className = 'monitor-dock__body'
   body.appendChild(built.element)
   return body
@@ -305,14 +306,4 @@ function wireResizer(): void {
     store.setMonitorDock(store.monitorDock, 300)
     applySize()
   })
-}
-
-/** True while the panel is on screen, for anything that wants to say so. */
-export function monitorDockOpen(): boolean {
-  return store.monitorDock !== 'off'
-}
-
-/** Kept so a hidden pane's element is reachable for tests and teardown. */
-export function monitorDockBody(): HTMLElement | null {
-  return body
 }

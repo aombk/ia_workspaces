@@ -30,6 +30,7 @@ export function createElectronBackend(): Backend {
 
     loadState: () => api.loadState(),
     saveState: (state) => api.saveState(state),
+    saveStateSync: (state) => api.saveStateSync(state),
     onExternalStateChange: (cb) => api.on.externalState(cb),
 
     listShells: () => api.listShells(),
@@ -58,6 +59,7 @@ export function createElectronBackend(): Backend {
     sessionHost: () => api.sessionHost(),
     commandHistory: () => api.commandHistory(),
     forgetCommand: (command, cwd) => api.forgetCommand(command, cwd),
+    answerControlApproval: (id, decision) => api.answerControlApproval(id, decision),
     vault: {
       list: () => api.vaultList(),
       folder: () => api.vaultFolder(),
@@ -82,6 +84,7 @@ export function createElectronBackend(): Backend {
       save: (cwd, message) => api.git.save(cwd, message),
       send: (cwd) => api.git.send(cwd),
       sendSize: (cwd) => api.git.sendSize(cwd),
+      stop: (cwd) => api.git.stop(cwd),
       peek: (cwd) => api.git.peek(cwd),
       bringIn: (cwd) => api.git.bringIn(cwd),
       goTo: (cwd, branch) => api.git.goTo(cwd, branch),
@@ -185,6 +188,7 @@ export function createElectronBackend(): Backend {
       ptyExit: (cb) => api.on.ptyExit(cb),
       ptyMeta: (cb) => api.on.ptyMeta(cb),
       paneStatus: (cb) => api.on.paneStatus(cb),
+      controlApproval: (cb) => api.on.controlApproval(cb),
       openFolder: (cb) => api.on.openFolder(cb),
       alert: (cb) => api.on.alert(cb),
       focusTerminal: (cb) => api.on.focusTerminal(cb),

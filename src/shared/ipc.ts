@@ -7,6 +7,8 @@ export const IPC = {
   // renderer -> main (invoke)
   loadState: 'state:load',
   saveState: 'state:save',
+  /** The same, answered before the window may close. See `flushState`. */
+  saveStateSync: 'state:saveSync',
   listShells: 'shell:list',
   pickFolder: 'dialog:pickFolder',
   pickSaveFile: 'dialog:pickSaveFile',
@@ -58,6 +60,8 @@ export const IPC = {
   gitSave: 'git:save',
   gitSend: 'git:send',
   gitSendSize: 'git:sendSize',
+  gitStop: 'git:stop',
+  controlApprovalAnswer: 'control:approvalAnswer',
   gitPeek: 'git:peek',
   gitBringIn: 'git:bringIn',
   gitGoTo: 'git:goTo',
@@ -152,6 +156,8 @@ export const IPC = {
   onExternalState: 'state:external',
   onMenuAction: 'menu:action',
   onGitProgress: 'git:progress',
+  /** A pane asking to act on another; the window asks you. */
+  onControlApproval: 'control:approval',
 } as const
 
 export type MenuAction =

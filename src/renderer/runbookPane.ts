@@ -24,6 +24,7 @@
  * not a decision this app gets to make.
  */
 import type { AuxPane } from './auxPane'
+import { Redraw } from './redraw'
 import { store } from './state'
 import { allHistory, refreshPaneHistory, watchHistory } from './ui/paneHistory'
 import { typeIntoPane } from './ui/paneInput'
@@ -38,6 +39,7 @@ export class RunbookPane implements AuxPane {
   private readonly body: HTMLDivElement
   private unwatch: (() => void) | null = null
   private disposed = false
+  private readonly redraw: Redraw
 
   constructor(
     readonly paneId: string,
@@ -57,8 +59,9 @@ export class RunbookPane implements AuxPane {
     this.body.className = 'runbook-body'
     this.element.appendChild(this.body)
 
+    this.redraw = new Redraw(this.element)
     this.render()
-    this.unwatch = watchHistory(() => this.render())
+    this.unwatch = watchHistory(() => this.refresh())
     // Forced, because the cache is normally kept warm by typing in a terminal
     // and somebody opening this pane may not have typed in one for an hour.
     refreshPaneHistory(true)
@@ -66,7 +69,17 @@ export class RunbookPane implements AuxPane {
 
   /** Cheap and idempotent: the workspace's folder can change under this. */
   sync(): void {
-    this.render()
+    this.refresh()
+  }
+
+  /** The folder and the history are the whole picture. */
+  private inputs(): readonly unknown[] {
+    return [store.workspaces.find((w) => w.id === this.workspaceId)?.cwd, allHistory()]
+  }
+
+  /** Redraws for a change from outside, if it changed anything shown. */
+  private refresh(): void {
+    if (this.redraw.due(this.inputs())) this.render()
   }
 
   dispose(): void {
@@ -77,6 +90,7 @@ export class RunbookPane implements AuxPane {
 
   private render(): void {
     if (this.disposed) return
+    this.redraw.drew(this.inputs())
     const workspace = store.workspaces.find((w) => w.id === this.workspaceId)
     this.body.replaceChildren()
 

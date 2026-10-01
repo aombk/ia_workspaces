@@ -106,6 +106,56 @@ check('the outcome lands on the pane that ran it, not on whatever is newest', ()
   assert.equal(older.lastCode, 2)
 })
 
+// An outcome carries no command, only a pane. Lines that are submitted but not
+// kept — the resume line this app types, a paste too long to be a command —
+// still finish, and their exit code used to land on whatever the pane recorded
+// before them.
+check('the resume line this app types does not stamp its outcome on the command before it', () => {
+  const h = fresh()
+  h.record({ paneId: PANE, lastCommand: 'npm test', cwd: CWD })
+  h.finish(PANE, 0, 100)
+  h.record({ paneId: PANE, lastCommand: 'claude --resume 5a60f12b-7389-4c1c-a1fc-51e74d18b584', cwd: CWD, synthetic: true })
+  h.finish(PANE, 130, 60_000)
+  const entry = only(h)
+  assert.equal(entry.command, 'npm test')
+  assert.equal(entry.lastCode, 0, 'npm test passed; the agent exiting 130 is not its result')
+  assert.equal(entry.fails, 0)
+})
+
+check('a line too long to keep does not stamp its outcome on the command before it', () => {
+  const h = fresh()
+  h.add('make', CWD, PANE)
+  h.finish(PANE, 0, 100)
+  h.add('x'.repeat(5000), CWD, PANE)
+  h.finish(PANE, 1, 100)
+  const entry = only(h)
+  assert.equal(entry.lastCode, 0)
+  assert.equal(entry.fails, 0)
+})
+
+check('an outcome with no line submitted since the last one stamps nothing', () => {
+  // A resumed agent pane whose previous command never reported (the shell was
+  // slept mid-run) and whose resume line went unrecorded: nothing open, nothing
+  // to stamp.
+  const h = fresh()
+  h.add('build', CWD, PANE)
+  h.finish(PANE, 0, 100)
+  h.finish(PANE, 2, 100)
+  const entry = only(h)
+  assert.equal(entry.lastCode, 0)
+  assert.equal(entry.fails, 0)
+})
+
+check('the same line from another pane keeps the outcome on the one entry', () => {
+  const h = fresh()
+  h.add('npm test', CWD, 'pane-a')
+  h.add('npm test', CWD, 'pane-b')
+  h.finish('pane-a', 1, 100)
+  const entry = only(h)
+  assert.equal(entry.lastCode, 1)
+  assert.equal(entry.runs, 2)
+})
+
 check("an entry with no folder is kept, but belongs to no project", () => {
   // Every entry recorded before the folder travelled with the line has an
   // empty `cwd`. They are still worth recalling, and they must not be filed

@@ -163,6 +163,9 @@ const ASK_TIMEOUT_MAX_S = 3600
  * these are not: nothing on the far end knows the words `bridge` or `token`.
  */
 const LOCAL_VERBS = ['bridge', 'token', 'host'] as const
+
+/** Verbs that act on another pane only with your say-so. Mirrors `CROSS_PANE`. */
+const CROSS_PANE_VERBS: ReadonlySet<string> = new Set(['read-screen', 'send', 'send-key', 'answer-agent'])
 type LocalVerb = (typeof LOCAL_VERBS)[number]
 
 export function isCliVerb(arg: string | undefined): boolean {
@@ -229,13 +232,28 @@ export async function runCli(argv: string[], userDataPath: string): Promise<numb
   // may be held to the ordinary reply deadline — waiting is their whole job.
   // `ask` waits for a human; `events --follow` waits for something to happen.
   const followMs = request.value.follow
+  // A third: acting on a pane other than this one waits for you to allow it in
+  // the app (see `CROSS_PANE` in `controlServer.ts`). The app gives up and
+  // refuses after two minutes, so this waits a little longer than that. Which
+  // pane "this one" is comes from the token, which names it.
+  const ownPane = identity.token.slice(0, Math.max(0, identity.token.lastIndexOf('.')))
+  const crossPane =
+    CROSS_PANE_VERBS.has(verb) && !!request.value.paneId && request.value.paneId !== ownPane
   const deadline =
     verb === 'ask'
       ? askTimeoutMs(args) + 10_000
       : followMs
         ? followMs + 10_000
-        : undefined
+        : crossPane
+          ? 130_000
+          : undefined
+  // Said only once it is clearly waiting, so an answer already given — "always
+  // allow" — prints nothing extra on every later call.
+  const notice = crossPane
+    ? setTimeout(() => process.stderr.write('iaw: waiting for you to allow this in ia_workspaces\u2026\n'), 1000)
+    : null
   const res = await send(identity, request.value, deadline)
+  if (notice) clearTimeout(notice)
   if (!res.ok) {
     // Same bargain as above: a pane that has since closed, or an app that has
     // since quit, is not something an agent hook should shout about.

@@ -40,6 +40,8 @@ import type {
   GitResult,
   GitProgress,
   SendSize,
+  CrossPaneDecision,
+  CrossPaneRequest,
   HistoryFilter,
   HostTool,
   CryptoReading,
@@ -73,6 +75,17 @@ const api = {
 
   loadState: (): Promise<unknown> => ipcRenderer.invoke(IPC.loadState),
   saveState: (state: unknown): Promise<void> => ipcRenderer.invoke(IPC.saveState, state),
+  /**
+   * Saves and does not return until main has the document.
+   *
+   * Synchronous on purpose, and used only on the way out: a window that is
+   * closing will not wait for an `invoke` to come back, and a quit kills main
+   * the moment it has flushed — so the only save certain to land is one that
+   * blocks until it has.
+   */
+  saveStateSync: (state: unknown): void => {
+    ipcRenderer.sendSync(IPC.saveStateSync, state)
+  },
 
   listShells: (): Promise<ShellProfile[]> => ipcRenderer.invoke(IPC.listShells),
   pickFolder: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke(IPC.pickFolder, defaultPath),
@@ -152,6 +165,8 @@ const api = {
   commandHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke(IPC.commandHistory),
   forgetCommand: (command: string, cwd?: string): Promise<number> =>
     ipcRenderer.invoke(IPC.forgetCommand, command, cwd),
+  answerControlApproval: (id: string, decision: CrossPaneDecision): Promise<void> =>
+    ipcRenderer.invoke(IPC.controlApprovalAnswer, id, decision),
   vaultList: (): Promise<VaultEntry[]> => ipcRenderer.invoke(IPC.vaultList),
   vaultFolder: (): Promise<string> => ipcRenderer.invoke(IPC.vaultFolder),
   worktreeList: (cwd: string): Promise<Worktree[]> => ipcRenderer.invoke(IPC.worktreeList, cwd),
@@ -190,6 +205,7 @@ const api = {
     save: (cwd: string, message: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitSave, cwd, message),
     send: (cwd: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitSend, cwd),
     sendSize: (cwd: string): Promise<SendSize | null> => ipcRenderer.invoke(IPC.gitSendSize, cwd),
+    stop: (cwd: string): Promise<boolean> => ipcRenderer.invoke(IPC.gitStop, cwd),
     peek: (cwd: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitPeek, cwd),
     bringIn: (cwd: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitBringIn, cwd),
     goTo: (cwd: string, branch: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitGoTo, cwd, branch),
@@ -335,6 +351,7 @@ const api = {
     ptyExit: (cb: (p: PtyExit) => void) => subscribe(IPC.onPtyExit, cb),
     ptyMeta: (cb: (p: TerminalMeta) => void) => subscribe(IPC.onPtyMeta, cb),
     paneStatus: (cb: (s: PaneStatus) => void) => subscribe(IPC.onPaneStatus, cb),
+    controlApproval: (cb: (r: CrossPaneRequest) => void) => subscribe(IPC.onControlApproval, cb),
     openFolder: (cb: (folder: string) => void) => subscribe(IPC.onOpenFolder, cb),
     alert: (cb: (a: TerminalAlert) => void) => subscribe(IPC.onAlert, cb),
     focusTerminal: (cb: (p: { workspaceId: string; paneId: string }) => void) =>
