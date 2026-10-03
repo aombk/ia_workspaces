@@ -7730,6 +7730,13 @@ html.translucent .titlebar {
   image-rendering: pixelated;
 }
 
+/* Hidden entries (dotfiles, Windows hidden/system) sit a step dimmer than
+   the rest, folders included, so they read as secondary at a glance. */
+.files-row.hidden-entry:not(:hover, .selected),
+.files-row.hidden-entry:not(:hover, .selected).dir .files-name {
+  color: var(--text-faint);
+}
+
 /* A cut row, until it is pasted. Faded rather than removed: the file is still
    there, and this is the only thing on screen saying it is about to move. */
 .files-row.cut {

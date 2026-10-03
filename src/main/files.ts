@@ -457,7 +457,8 @@ export async function readDirectory(dir: string, showHidden: boolean): Promise<F
       // a checkout is hidden by convention there whether or not its attribute
       // is set, which is what a developer expects to see. The attribute check
       // below adds the other half, and answers false where there is none.
-      if (!showHidden && isHiddenEntry(name)) return null
+      let hidden = isHiddenEntry(name)
+      if (!showHidden && hidden) return null
 
       const full = path.join(dir, name)
       let size = 0
@@ -467,12 +468,15 @@ export async function readDirectory(dir: string, showHidden: boolean): Promise<F
         size = info.size
         modified = info.mtimeMs
         // Hidden/system files have no dot prefix on Windows.
-        if (!showHidden && isWindowsHidden(info as unknown as Record<string, unknown>)) return null
+        if (isWindowsHidden(info as unknown as Record<string, unknown>)) {
+          if (!showHidden) return null
+          hidden = true
+        }
       } catch {
         /* unreadable entry still gets listed */
       }
 
-      return { name, path: full, isDir: dirent.isDirectory(), size, modified }
+      return { name, path: full, isDir: dirent.isDirectory(), size, modified, ...(hidden && { hidden }) }
     })
   )
 

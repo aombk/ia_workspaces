@@ -463,7 +463,7 @@ set SKIP_INSTALLER=1         :: portable only, for fast iteration
 
 ```bash
 ./build_macos.sh             # signs, notarizes and staples a universal .dmg, plus a .pkg
-./build_macos.sh --test      # unsigned, for this machine only
+./build_macos.sh --dev       # .app signed with your Apple Development cert, no notarization
 ./build_linux.sh             # AppImage, plus a tar.gz with an install script
 ```
 
@@ -512,8 +512,16 @@ environment rather than from anything committed here:
 | `NOTARYTOOL_PROFILE` | The `notarytool` keychain profile to notarize with (default `notar`). |
 
 It checks for both the certificate and the profile before starting the slow
-part rather than an hour in. `--test` skips signing entirely, which produces
-something Gatekeeper will refuse anywhere but the machine that built it.
+part rather than an hour in.
+
+`--dev` is the one to use while iterating. It builds only the `.app`, for this
+Mac's architecture, and signs it with your Apple Development certificate — no
+team id, notary profile or upload needed. macOS remembers permissions such as
+Accessibility by the app's signature, and that certificate is the same from one
+build to the next, so grants survive a rebuild. `--no-sign` skips signing
+entirely, which produces something Gatekeeper will refuse anywhere but the
+machine that built it, and makes macOS ask for every permission again after
+each build.
 
 Each script typechecks and runs the tests before building anything, then
 gathers the artifact into `build/`, clearing anything else it finds there so the

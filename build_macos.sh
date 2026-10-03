@@ -37,12 +37,15 @@
 #       --apple-id "<you@example.com>" --team-id "<your team id>" \
 #       --password "<app-specific-password>"
 #
-# With no Apple account, `--test` builds an unsigned .app that runs on this
-# machine and nowhere else.
+# For builds you only run yourself, `--dev` signs with an Apple Development
+# certificate instead and skips notarization. With no Apple account at all,
+# `--no-sign` builds an unsigned .app that runs on this machine and nowhere else.
 #
 # Flags:
+#   --dev         Development build: just the .app, for this Mac's architecture,
+#                 signed with your Apple Development certificate. No .dmg, no
+#                 notarization. Use it while iterating — see below.
 #   --no-sign     UNSIGNED build; no codesign, notarize or staple.
-#   --test        Alias for --no-sign.
 #   --pkg         Also build the .pkg installer. Adds a pkgbuild plus a second
 #                 220MB notarization upload and staple — roughly three minutes.
 #   --no-pkg      Accepted and does nothing; skipping the .pkg is the default.
@@ -50,10 +53,20 @@
 #
 # An unsigned .app is refused by Gatekeeper on any machine that did not build
 # it. For your own use, right-click → Open gets past that once, which is what
-# --test is for; anything you intend to move to another Mac wants the default.
+# --no-sign is for; anything you intend to move to another Mac wants the default.
 #
 # Signing is left to electron-builder because the .app has to be signed before
 # it goes into the .dmg, and only electron-builder can sequence that.
+#
+# --dev exists because macOS remembers what you granted an app — Accessibility,
+# Screen Recording, Full Disk Access — by its signature. An unsigned (--no-sign)
+# build is a new app every time, so every grant has to be made again after
+# every rebuild. A development certificate is the same from one build to the
+# next, so the grants survive. It needs no team id and no notary profile, only
+# an "Apple Development" certificate in the keychain (Xcode → Settings →
+# Accounts makes one); APPLE_DEV_SIGN_ID picks between several. The app is left
+# in out/electron-pack/mac-<arch>/ and is not copied into build/, which holds
+# only things that can leave this machine.
 # Notarization is done here, afterwards, to the finished .dmg — which is the
 # thing that actually leaves this machine.
 #
@@ -97,6 +110,7 @@ SIGN_ID="${APPLE_SIGN_ID:-}"
 NOTARY_PROFILE="${NOTARYTOOL_PROFILE:-notar}"
 
 DO_SIGN=1
+DO_DEV=0
 DO_PKG=0
 DO_CLEAN=0
 ASSUME_YES=0
@@ -104,19 +118,24 @@ WANT_HOSTS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --no-sign|--test) DO_SIGN=0; shift ;;
+    --dev) DO_DEV=1; DO_SIGN=0; shift ;;
+    --no-sign) DO_SIGN=0; DO_DEV=0; shift ;;
     --pkg) DO_PKG=1; shift ;;
     --no-pkg) DO_PKG=0; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --hosts)  WANT_HOSTS=1; shift ;;
     --clean)          DO_CLEAN=1; shift ;;
-    -h|--help)        sed -n '2,53p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,69p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1"; exit 1 ;;
   esac
 done
 
 echo
-echo "=== ia_workspaces macOS release build ==="
+if [[ $DO_DEV -eq 1 ]]; then
+  echo "=== ia_workspaces macOS development build ==="
+else
+  echo "=== ia_workspaces macOS release build ==="
+fi
 echo
 
 fail() { echo "[x] $1"; exit 1; }
@@ -146,7 +165,7 @@ ask() {
   esac
 }
 
-if [[ $WANT_HOSTS -eq 1 ]]; then
+if [[ $WANT_HOSTS -eq 1 && $DO_DEV -eq 0 ]]; then
   DO_TAURI=1
   DO_WAILS=1
   ask "Build the Electron host?" DO_ELECTRON
@@ -206,9 +225,9 @@ if [[ $DO_SIGN -eq 1 ]]; then
   # Checked before the grep below, which would match every identity in the
   # keychain against an empty string and report success with nothing set.
   [[ -n "$TEAM_ID" ]] \
-    || fail "APPLE_TEAM_ID is not set, so there is no identity to sign with. Set it (see the header), or use --test for an unsigned build."
+    || fail "APPLE_TEAM_ID is not set, so there is no identity to sign with. Set it (see the header), or use --dev for a development build."
   security find-identity -v -p codesigning 2>/dev/null | grep -q "$TEAM_ID" \
-    || fail "no Developer ID certificate for team $TEAM_ID in the keychain. Use --test for an unsigned build."
+    || fail "no Developer ID certificate for team $TEAM_ID in the keychain. Use --dev for a development build."
   # The common name carries the account holder's name between the type and the
   # team id — "Developer ID Application: Some Name (TEAMID)" — so it cannot be
   # constructed from the team id alone. Read the real one out of the keychain,
@@ -220,7 +239,7 @@ if [[ $DO_SIGN -eq 1 ]]; then
       || fail "no \"Developer ID Application\" certificate for team $TEAM_ID in the keychain — only that kind can sign the .app. Set APPLE_SIGN_ID to its common name if it is named unusually."
   fi
   xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
-    || fail "notarytool profile \"$NOTARY_PROFILE\" not found. See the header for how to create it, or use --test."
+    || fail "notarytool profile \"$NOTARY_PROFILE\" not found. See the header for how to create it, or use --dev."
   # A different certificate from the one above: apps are signed with "Developer
   # ID Application", installer packages with "Developer ID Installer", and
   # having the first does not give you the second. Warned rather than fatal —
@@ -236,11 +255,23 @@ if [[ $DO_SIGN -eq 1 ]]; then
   # what `security find-identity` prints and what everyone calls the certificate.
   export CSC_NAME="${SIGN_ID#Developer ID Application: }"
   echo "[*] signing as: $SIGN_ID"
+elif [[ $DO_DEV -eq 1 ]]; then
+  # electron-builder is kept out of it (see tools/signDev.mjs for why); the
+  # identity is found here so a missing one fails before the build, not after.
+  DEV_SIGN_ID="${APPLE_DEV_SIGN_ID:-}"
+  if [[ -z "$DEV_SIGN_ID" ]]; then
+    DEV_SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+                     | grep -o '"Apple Development: [^"]*"' | head -1 | tr -d '"')"
+  fi
+  [[ -n "$DEV_SIGN_ID" ]] \
+    || fail "no \"Apple Development\" certificate in the keychain. Create one in Xcode → Settings → Accounts → Manage Certificates, or use --no-sign for an unsigned build."
+  export CSC_IDENTITY_AUTO_DISCOVERY=false
+  echo "[*] development build, signing as: $DEV_SIGN_ID"
 else
   # electron-builder signs whenever it finds an identity, so opting out has to
   # be explicit rather than merely leaving CSC_NAME unset.
   export CSC_IDENTITY_AUTO_DISCOVERY=false
-  echo "[-] unsigned build (--test): Gatekeeper will refuse this on another Mac"
+  echo "[-] unsigned build (--no-sign): Gatekeeper will refuse this on another Mac"
 fi
 
 [[ -d node_modules ]] || { echo "[*] installing dependencies"; npm install || fail "npm install failed"; }
@@ -251,6 +282,27 @@ fi
 # ran every test twice.
 echo "[*] typecheck, tests, bundling, interface tests"
 node build.mjs || fail "the build or its tests failed — see above; fix them before building a release"
+
+# Development: one architecture, no disk image, signed in place, and done. None
+# of what follows — the universal check, the installer, build/, notarization —
+# is about a build that never leaves this machine.
+if [[ $DO_DEV -eq 1 ]]; then
+  case "$(uname -m)" in
+    arm64) DEV_ARCH="arm64"; DEV_DIR="mac-arm64" ;;
+    *)     DEV_ARCH="x64";   DEV_DIR="mac" ;;
+  esac
+  echo "[*] packaging (.app only, $DEV_ARCH)"
+  npx electron-builder --mac dir "--$DEV_ARCH" || fail "packaging failed"
+  DEV_APP="out/electron-pack/$DEV_DIR/ia_workspaces.app"
+  [[ -d "$DEV_APP" ]] || fail "packaging reported success but $DEV_APP is not there"
+  node tools/signDev.mjs "$DEV_APP" "$DEV_SIGN_ID" || fail "signing failed"
+  codesign --verify --deep --strict "$DEV_APP" || fail "the signature on $DEV_APP does not verify"
+  echo
+  echo "=== done ==="
+  echo "$PWD/$DEV_APP"
+  echo
+  exit 0
+fi
 
 # Before packaging, not before the tests: this only matters to what gets packed,
 # and npm prunes the foreign-architecture prebuild on every install — so doing it

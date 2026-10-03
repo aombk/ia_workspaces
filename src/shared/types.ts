@@ -1604,6 +1604,8 @@ export interface FileEntry {
   size: number
   /** Epoch milliseconds. */
   modified: number
+  /** Dot-named, or carrying the Windows hidden/system attribute. */
+  hidden?: boolean
 }
 
 /**

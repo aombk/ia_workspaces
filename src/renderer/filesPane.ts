@@ -794,6 +794,7 @@ export class FilesPane {
     const row = document.createElement('div')
     row.className = 'files-row' + (entry.isDir ? ' dir' : '')
     if (this.selection.has(entry.path)) row.classList.add('selected')
+    if (entry.hidden) row.classList.add('hidden-entry')
     // A cut entry is faded until it is pasted, the way Explorer does it — the
     // file is still there, and this is the only thing on screen saying it is
     // about to move.
@@ -1258,6 +1259,12 @@ export class FilesPane {
       return
     }
 
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && this.onNavKey(e)) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
+
     const ctrl = e.ctrlKey || e.metaKey
     if (!ctrl || e.altKey) return
     const key = e.key.toLowerCase()
@@ -1293,6 +1300,77 @@ export class FilesPane {
       selected.map((x) => x.path),
       key === 'x' ? 'cut' : 'copy'
     )
+  }
+
+  /**
+   * Arrow keys, Home/End and Enter, the way every tree view has them.
+   *
+   * Up and Down move the highlight (Shift grows a range from the anchor, as a
+   * shift-click does). Right opens a folder, or steps into it when it is
+   * already open; Left folds it, or climbs to the parent row. Enter does what
+   * a double-click does. Returns whether the key was one of these.
+   */
+  private onNavKey(e: KeyboardEvent): boolean {
+    const nav = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter']
+    if (!nav.includes(e.key)) return false
+    const rows = this.rows()
+    if (!rows.length) return true
+
+    const lead = this.selected ?? this.anchor
+    const index = rows.findIndex((r) => r.entry.path === lead)
+    const current = index === -1 ? null : rows[index]
+
+    const moveTo = (i: number) => {
+      const target = rows[Math.max(0, Math.min(rows.length - 1, i))].entry
+      if (e.shiftKey && this.anchor) {
+        this.setSelection(this.rangeTo(target.path), target.path, target.isDir)
+      } else {
+        this.anchor = target.path
+        this.setSelection([target.path], target.path, target.isDir)
+      }
+      this.rowEls.get(target.path)?.scrollIntoView({ block: 'nearest' })
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        moveTo(current ? index + 1 : 0)
+        break
+      case 'ArrowUp':
+        moveTo(current ? index - 1 : rows.length - 1)
+        break
+      case 'Home':
+        moveTo(0)
+        break
+      case 'End':
+        moveTo(rows.length - 1)
+        break
+      case 'ArrowRight':
+        if (!current) moveTo(0)
+        else if (current.entry.isDir) {
+          if (!this.expanded.has(current.entry.path)) void this.toggle(current.entry)
+          else if (rows[index + 1]?.depth > current.depth) moveTo(index + 1)
+        }
+        break
+      case 'ArrowLeft':
+        if (!current) moveTo(0)
+        else if (current.entry.isDir && this.expanded.has(current.entry.path)) {
+          void this.toggle(current.entry)
+        } else {
+          for (let i = index - 1; i >= 0; i--) {
+            if (rows[i].depth < current.depth) {
+              moveTo(i)
+              break
+            }
+          }
+        }
+        break
+      case 'Enter':
+        if (!current) break
+        if (current.entry.isDir) this.navigate(current.entry.path)
+        else void backend().openInExplorer(current.entry.path)
+        break
+    }
+    return true
   }
 
   /** The lead row's entry, if it is still in the listing. */
