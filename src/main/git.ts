@@ -111,16 +111,27 @@ export async function stopOperation(cwd: string): Promise<boolean> {
  * running `ssh`. Killing only the first can leave the second holding the
  * connection open until it notices, which is exactly the hang being stopped. On
  * macOS and Linux the child was started as the leader of its own group, so the
- * whole group goes at once; Windows ends the tree with its parent.
+ * whole group goes at once. Windows has no groups, and ending git there leaves
+ * its children running, so the tree is walked with `taskkill /T` while git is
+ * still alive to walk it from.
  */
 function killTree(child: ReturnType<typeof spawn>): void {
-  if (process.platform !== 'win32' && child.pid) {
-    try {
-      process.kill(-child.pid, 'SIGTERM')
-      return
-    } catch {
-      // Already gone, or not a group leader after all — fall through.
-    }
+  if (!child.pid) {
+    child.kill()
+    return
+  }
+  if (process.platform === 'win32') {
+    execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { timeout: 8000, windowsHide: true }, (err) => {
+      // Already gone, or taskkill unavailable — git at least.
+      if (err) child.kill()
+    })
+    return
+  }
+  try {
+    process.kill(-child.pid, 'SIGTERM')
+    return
+  } catch {
+    // Already gone, or not a group leader after all — fall through.
   }
   child.kill()
 }

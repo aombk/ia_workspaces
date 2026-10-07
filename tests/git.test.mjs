@@ -1306,6 +1306,11 @@ const HANG = 'sleep 4517'
 kgit('remote', 'add', 'origin', `ext::${HANG}`)
 const hangRunning = () => {
   try {
+    if (process.platform === 'win32') {
+      // Not counting this PowerShell, whose own command line names it too.
+      const ps = `@(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*${HANG}*' }).Count`
+      return Number(execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { encoding: 'utf8', windowsHide: true }).trim()) > 0
+    }
     return execFileSync('pgrep', ['-f', HANG], { encoding: 'utf8' }).trim().length > 0
   } catch {
     return false
@@ -1345,14 +1350,13 @@ await checkAsync('a push that hangs can be stopped, and says so rather than fail
   assert.ok(Date.now() - started < 10_000, 'it ended when stopped, not at the two-minute network timeout')
 })
 
-if (process.platform !== 'win32') {
-  await checkAsync('stopping ends the connection helper too, not just git', async () => {
-    // The transport's own process is what holds a stuck connection open.
-    // Killing git alone would leave it running.
-    await new Promise((r) => setTimeout(r, 300))
-    assert.equal(hangRunning(), false, `"${HANG}" is still running after Stop`)
-  })
-}
+await checkAsync('stopping ends the connection helper too, not just git', async () => {
+  // The transport's own process is what holds a stuck connection open.
+  // Killing git alone would leave it running — and, on Windows, holding this
+  // folder so the next run cannot clear it.
+  await new Promise((r) => setTimeout(r, 300))
+  assert.equal(hangRunning(), false, `"${HANG}" is still running after Stop`)
+})
 
 await checkAsync('after a stopped push the last save can be taken back, files kept and picked', async () => {
   let status = await G.repoStatus(stuck)
