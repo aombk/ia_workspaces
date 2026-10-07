@@ -39,7 +39,9 @@ await signAsync({
   app,
   identity,
   platform: 'darwin',
-  ignore: [/\.pak$/],
+  // A function, not `[/\.pak$/]`: osx-sign 1.3's option check turns an array
+  // into `undefined`, so a list here silently ignores nothing.
+  ignore: (file) => file.endsWith('.pak'),
   // No provisioning profile and no app-group entitlement: those are for the
   // App Store, and osx-sign goes looking for both unless told not to.
   preAutoEntitlements: false,

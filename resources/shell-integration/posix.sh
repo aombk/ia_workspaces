@@ -192,6 +192,10 @@ fi
 # Falls back to the shell's own recall whenever there is nothing to walk: no
 # file, an empty file, or a walk that has run off the end. So a pane whose
 # history is empty behaves exactly as it did before any of this existed.
+#
+# The reads below carry `|| [ -n "$__iaw_l" ]` because a bare `while read`
+# drops a last line with no newline after it — the app now ends every line,
+# but a file written by an older version does not.
 
 __iaw_hist_file=""
 if [ -n "$IAW_HISTORY_DIR" ] && [ -n "$IAW_PANE_ID" ]; then
@@ -210,7 +214,7 @@ if [ -n "$__iaw_hist_file" ]; then
       # the old scope until the pane closed.
       __iaw_hist_lines=()
       [ -r "$__iaw_hist_file" ] || return 1
-      while IFS= read -r __iaw_l; do
+      while IFS= read -r __iaw_l || [ -n "$__iaw_l" ]; do
         [ -n "$__iaw_l" ] && __iaw_hist_lines+=("$__iaw_l")
       done < "$__iaw_hist_file"
       [ ${#__iaw_hist_lines[@]} -gt 0 ]
@@ -267,7 +271,7 @@ if [ -n "$__iaw_hist_file" ]; then
     __iaw_hist_load() {
       __iaw_hist_lines=()
       [ -r "$__iaw_hist_file" ] || return 1
-      while IFS= read -r __iaw_l; do
+      while IFS= read -r __iaw_l || [ -n "$__iaw_l" ]; do
         [ -n "$__iaw_l" ] && __iaw_hist_lines+=("$__iaw_l")
       done < "$__iaw_hist_file"
       [ ${#__iaw_hist_lines[@]} -gt 0 ]

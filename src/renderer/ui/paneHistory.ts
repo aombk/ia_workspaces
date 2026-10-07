@@ -92,6 +92,8 @@ const cursors = new Map<string, number>()
 let entries: HistoryEntry[] = []
 let fetched = 0
 let inFlight = false
+/** A forced refresh asked for while another was in flight, owed once it lands. */
+let owed = false
 
 /**
  * The rings a pane can actually be set to.
@@ -198,13 +200,21 @@ export function forgetPane(paneId: string): void {
 /**
  * Re-reads the history if the copy in hand is old enough to matter.
  *
- * Called on focus and on a timer rather than after every command, because
- * nothing in the renderer is told when a line is submitted — and a list that is
- * twenty seconds stale costs one missing entry, while an IPC per keystroke
- * would cost something on every one.
+ * Forced whenever a pane submits a line (`ptyMeta` carrying `lastCommand`), so
+ * the command you just ran is the first thing Up recalls. The age-guarded call
+ * on every keystroke is the backstop for everything else that changes the list
+ * — a deleted entry, a scope flip.
+ *
+ * A forced call that finds one already in flight is owed rather than dropped:
+ * the read in flight may have left the main process before the new line was
+ * recorded, and dropping the second would leave the newest command missing
+ * until the next refresh, twenty seconds later.
  */
 export function refreshPaneHistory(force = false): void {
-  if (inFlight) return
+  if (inFlight) {
+    if (force) owed = true
+    return
+  }
   if (!force && Date.now() - fetched < REFRESH_MS) return
   inFlight = true
   void backend()
@@ -224,6 +234,10 @@ export function refreshPaneHistory(force = false): void {
     })
     .finally(() => {
       inFlight = false
+      if (owed) {
+        owed = false
+        refreshPaneHistory(true)
+      }
     })
 }
 

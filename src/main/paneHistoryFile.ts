@@ -55,10 +55,14 @@ export async function writePaneHistory(
   const file = path.join(dir, `${paneId}.txt`)
   const temp = `${file}.tmp`
 
+  // Every line terminated, the last one included. The handler reads with
+  // `while read`, which drops a final line with no newline after it — so the
+  // oldest entry was never walkable, and a pane with one command had none.
   const body = commands
     .filter((line) => line && !line.includes('\n') && !line.includes('\r'))
     .slice(0, MAX_LINES)
-    .join('\n')
+    .map((line) => line + '\n')
+    .join('')
 
   try {
     await mkdir(dir, { recursive: true })

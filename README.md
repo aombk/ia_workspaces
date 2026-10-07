@@ -463,7 +463,7 @@ set SKIP_INSTALLER=1         :: portable only, for fast iteration
 
 ```bash
 ./build_macos.sh             # signs, notarizes and staples a universal .dmg, plus a .pkg
-./build_macos.sh --dev       # .app signed with your Apple Development cert, no notarization
+./build_macos.sh --dev       # dev-signed app in dist/, plus .dmg and .pkg in build/; not notarized
 ./build_linux.sh             # AppImage, plus a tar.gz with an install script
 ```
 

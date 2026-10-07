@@ -254,6 +254,10 @@ export class TerminalManager {
 
     backend().on.ptyMeta(({ paneId, cwd, title, agentSession, lastCommand }) => {
       store.updatePaneMeta(paneId, { cwd, title, agentSession, lastCommand })
+      // A submitted line: the main process has just recorded it, so re-read now
+      // rather than up to twenty seconds from now. Otherwise Up straight after a
+      // command recalls the one before it.
+      if (lastCommand) refreshPaneHistory(true)
     })
   }
 

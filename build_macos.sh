@@ -42,11 +42,12 @@
 # `--no-sign` builds an unsigned .app that runs on this machine and nowhere else.
 #
 # Flags:
-#   --dev         Development build: just the .app, for this Mac's architecture,
-#                 signed with your Apple Development certificate. No .dmg, no
-#                 notarization. Use it while iterating — see below.
+#   --dev         Development build for this Mac's architecture, signed with
+#                 your Apple Development certificate, not notarized. The .app
+#                 lands in dist/, the .dmg and .pkg in build/ (--no-pkg skips
+#                 the .pkg). Use it while iterating.
 #   --no-sign     UNSIGNED build; no codesign, notarize or staple.
-#   --pkg         Also build the .pkg installer. Adds a pkgbuild plus a second
+#   --pkg         Also build the .pkg installer (always on with --dev). Adds a pkgbuild plus a second
 #                 220MB notarization upload and staple — roughly three minutes.
 #   --no-pkg      Accepted and does nothing; skipping the .pkg is the default.
 #   --clean       Wipe out/ first.
@@ -64,9 +65,11 @@
 # every rebuild. A development certificate is the same from one build to the
 # next, so the grants survive. It needs no team id and no notary profile, only
 # an "Apple Development" certificate in the keychain (Xcode → Settings →
-# Accounts makes one); APPLE_DEV_SIGN_ID picks between several. The app is left
-# in out/electron-pack/mac-<arch>/ and is not copied into build/, which holds
-# only things that can leave this machine.
+# Accounts makes one); APPLE_DEV_SIGN_ID picks between several. The app goes
+# to dist/ia_workspaces.app, where you run it from, and can be rebuilt while
+# that copy is running. The .dmg and .pkg go to build/ as usual, but are for
+# this Mac's architecture only and are not notarized: fine here, refused by
+# Gatekeeper on another Mac.
 # Notarization is done here, afterwards, to the finished .dmg — which is the
 # thing that actually leaves this machine.
 #
@@ -112,6 +115,7 @@ NOTARY_PROFILE="${NOTARYTOOL_PROFILE:-notar}"
 DO_SIGN=1
 DO_DEV=0
 DO_PKG=0
+PKG_ASKED=""
 DO_CLEAN=0
 ASSUME_YES=0
 WANT_HOSTS=0
@@ -120,15 +124,19 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dev) DO_DEV=1; DO_SIGN=0; shift ;;
     --no-sign) DO_SIGN=0; DO_DEV=0; shift ;;
-    --pkg) DO_PKG=1; shift ;;
-    --no-pkg) DO_PKG=0; shift ;;
+    --pkg) DO_PKG=1; PKG_ASKED=1; shift ;;
+    --no-pkg) DO_PKG=0; PKG_ASKED=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --hosts)  WANT_HOSTS=1; shift ;;
     --clean)          DO_CLEAN=1; shift ;;
-    -h|--help)        sed -n '2,69p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,72p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1"; exit 1 ;;
   esac
 done
+
+# A development build makes the .pkg by default: what makes it opt-in for a
+# release is the second notarization upload, and --dev does not notarize.
+[[ $DO_DEV -eq 1 && -z "$PKG_ASKED" ]] && DO_PKG=1
 
 echo
 if [[ $DO_DEV -eq 1 ]]; then
@@ -283,9 +291,11 @@ fi
 echo "[*] typecheck, tests, bundling, interface tests"
 node build.mjs || fail "the build or its tests failed — see above; fix them before building a release"
 
-# Development: one architecture, no disk image, signed in place, and done. None
-# of what follows — the universal check, the installer, build/, notarization —
-# is about a build that never leaves this machine.
+# Development: this Mac's architecture only, signed by tools/signDev.mjs, then
+# the .dmg made from that already-signed app. The installer and build/ below
+# are shared with a release; the universal check and notarization are not.
+DEV_APP=""
+RUNNING_PIDS=""
 if [[ $DO_DEV -eq 1 ]]; then
   case "$(uname -m)" in
     arm64) DEV_ARCH="arm64"; DEV_DIR="mac-arm64" ;;
@@ -297,12 +307,51 @@ if [[ $DO_DEV -eq 1 ]]; then
   [[ -d "$DEV_APP" ]] || fail "packaging reported success but $DEV_APP is not there"
   node tools/signDev.mjs "$DEV_APP" "$DEV_SIGN_ID" || fail "signing failed"
   codesign --verify --deep --strict "$DEV_APP" || fail "the signature on $DEV_APP does not verify"
-  echo
-  echo "=== done ==="
-  echo "$PWD/$DEV_APP"
-  echo
-  exit 0
-fi
+
+  # Into dist/, which is where you run it from. Not left in out/electron-pack,
+  # because the preflight above refuses to package over a copy running from
+  # there, and the next build would have to wait for you to quit.
+  #
+  # A copy already running from dist/ is moved aside rather than deleted:
+  # Electron reads its bundle lazily, so deleting it under a live process takes
+  # the process down — and with it this script, if your terminal is inside it.
+  # Your shells are safe either way (the broker holds them, not the app), and
+  # a relaunch picks up the new build with every pane reattached. The PIDs
+  # using a moved-aside copy are noted beside it, and it is cleared by a later
+  # build once all of them have exited.
+  DIST_APP="dist/ia_workspaces.app"
+  mkdir -p dist
+  shopt -s nullglob
+  for old in dist/.previous-*.app; do
+    alive=0
+    for pid in $(cat "$old.pids" 2>/dev/null); do
+      kill -0 "$pid" 2>/dev/null && alive=1 && break
+    done
+    [[ $alive -eq 0 ]] && rm -rf "$old" "$old.pids"
+  done
+  shopt -u nullglob
+
+  RUNNING_PIDS="$(pgrep -f "$PWD/$DIST_APP/" 2>/dev/null | tr '\n' ' ')"
+  if [[ -d "$DIST_APP" ]]; then
+    if [[ -n "$RUNNING_PIDS" ]]; then
+      ASIDE="dist/.previous-$(date +%s).app"
+      mv "$DIST_APP" "$ASIDE" || fail "could not move the running copy aside"
+      echo "$RUNNING_PIDS" > "$ASIDE.pids"
+    else
+      rm -rf "$DIST_APP" || fail "could not remove the old $DIST_APP"
+    fi
+  fi
+  ditto "$DEV_APP" "$DIST_APP" || fail "could not copy the app into dist/"
+
+  # Stale disk images first: tools/collect.mjs prefers a universal one, and a
+  # release build's would otherwise be collected in place of this one.
+  rm -f out/electron-pack/*.dmg out/electron-pack/*.dmg.blockmap
+  echo "[*] disk image (.dmg, $DEV_ARCH)"
+  # --prepackaged wraps the app as it is. Signing is already switched off for
+  # electron-builder, so the development signature goes into the image intact.
+  npx electron-builder --mac dmg "--$DEV_ARCH" --prepackaged "$DEV_APP" \
+    || fail "building the .dmg failed"
+else
 
 # Before packaging, not before the tests: this only matters to what gets packed,
 # and npm prunes the foreign-architecture prebuild on every install — so doing it
@@ -341,6 +390,8 @@ fi
 echo "[*] verifying the bundle is universal"
 node tools/verifyUniversal.mjs || fail "the packaged app is not universal — see above; do not ship this build"
 
+fi # release packaging
+
 # ---------------------------------------------------------------- installer
 # A .pkg beside the .dmg, and they are not the same offer. A disk image asks you
 # to drag the app somewhere; the installer puts it in an `iraisynn attinom`
@@ -369,6 +420,9 @@ for candidate in out/electron-pack/mac-universal/ia_workspaces.app \
                  "out/electron-pack/$OTHER_DIR/ia_workspaces.app"; do
   [[ -d "$candidate" ]] && APP_BUNDLE="$candidate" && break
 done
+# Named outright for a development build: a universal app left by an earlier
+# release would otherwise win the search above.
+[[ -n "$DEV_APP" ]] && APP_BUNDLE="$DEV_APP"
 
 if [[ $DO_PKG -eq 0 ]]; then
   # Both copies have to go, and neither is optional. tools/collect.mjs keeps
@@ -486,4 +540,12 @@ fi
 echo
 echo "=== done ==="
 ls -1 build 2>/dev/null
+if [[ $DO_DEV -eq 1 ]]; then
+  echo
+  echo "app: $PWD/dist/ia_workspaces.app"
+  if [[ -n "$RUNNING_PIDS" ]]; then
+    echo "ia_workspaces is running the previous build — quit and reopen it to switch."
+    echo "Your terminals keep running and reattach."
+  fi
+fi
 echo
