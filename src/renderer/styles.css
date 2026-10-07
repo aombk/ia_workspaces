@@ -5651,7 +5651,8 @@ thead .csv-cell {
   display: block;
   height: 100%;
   border-radius: var(--radius-sm);
-  background: var(--text-dim);
+  /* Claude's own orange: these are Claude's limits. */
+  background: #d97757;
 }
 
 .usage-row__value {

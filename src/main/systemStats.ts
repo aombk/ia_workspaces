@@ -364,21 +364,21 @@ async function macProbe(): Promise<PlatformProbe> {
 }
 
 /**
- * `/` and whatever is under `/Volumes`, sized with `statfs`.
+ * The volumes Finder would show, sized with `statfs`.
  *
- * Rather than parsing `df`: the sizes come from the same syscall either way,
- * and `df`'s columns move with the locale while `statfs` does not.
+ * The list comes from `mount` rather than a walk of `/Volumes`, because that
+ * folder holds a `Macintosh HD` symlink back to `/` — the boot drive twice —
+ * and the APFS `Recovery` volume, which Finder hides. `mount` says `nobrowse`
+ * for exactly the volumes Finder hides, and `local` keeps network shares out,
+ * the way the Windows probe keeps to fixed drives. The sizes still come from
+ * `statfs`, whose numbers do not move with the locale the way `df`'s do.
  */
 async function macDisks(): Promise<DiskStats[]> {
-  const candidates = ['/']
-  try {
-    for (const name of await readdir('/Volumes')) candidates.push(`/Volumes/${name}`)
-  } catch {
-    // No removable volumes mounted.
-  }
+  const mounts = parseMacMounts(await runCommand('mount', []).catch(() => ''))
+  if (!mounts.includes('/')) mounts.unshift('/')
 
   const out: DiskStats[] = []
-  for (const mount of candidates) {
+  for (const mount of mounts) {
     try {
       const info = await statfs(mount)
       if (!info.blocks) continue
@@ -395,23 +395,59 @@ async function macDisks(): Promise<DiskStats[]> {
   return out
 }
 
+/**
+ * Mount points worth a row, out of `mount`'s output: the root, and every local
+ * volume under `/Volumes` that Finder does not hide. Exported for the tests.
+ */
+export function parseMacMounts(raw: string): string[] {
+  const out: string[] = []
+  for (const line of raw.split('\n')) {
+    const match = /^\S+ on (.+) \(([^)]*)\)$/.exec(line.trim())
+    if (!match) continue
+    const [, mount, options] = match
+    const flags = options.split(',').map((flag) => flag.trim())
+    if (mount === '/') {
+      out.push(mount)
+      continue
+    }
+    if (!mount.startsWith('/Volumes/')) continue
+    if (flags.includes('nobrowse') || !flags.includes('local')) continue
+    out.push(mount)
+  }
+  return out
+}
+
 async function macNetworks(): Promise<Array<{ name: string; rx: number; tx: number }>> {
-  // `-ib` prints cumulative byte counters per interface, one line per address
-  // family — so the same interface appears several times and the first line,
-  // which is the link-level one, is the one carrying the totals.
-  const stdout = await runCommand('netstat', ['-ib']).catch(() => '')
+  // `-n` is not optional. Without it `netstat` reverse-resolves every address
+  // it prints, which took five seconds on a machine with a VPN up — past the
+  // probe timeout, so every poll waited four seconds and came back empty.
+  const stdout = await runCommand('netstat', ['-ibn']).catch(() => '')
+  return parseMacNetstat(stdout)
+}
+
+/**
+ * Cumulative byte counters per interface, out of `netstat -ibn`.
+ *
+ * One line per address family, so the same interface appears several times
+ * and the first line, the link-level one, carries the totals. The columns are
+ * read from the right: the `Address` column is blank for interfaces without a
+ * hardware address — `lo0`, every `utun` a VPN creates — and counting from the
+ * left then reads packet counts as bytes. Exported for the tests.
+ */
+export function parseMacNetstat(raw: string): Array<{ name: string; rx: number; tx: number }> {
   const out: Array<{ name: string; rx: number; tx: number }> = []
   const seen = new Set<string>()
-  for (const line of stdout.split('\n').slice(1)) {
+  for (const line of raw.split('\n').slice(1)) {
     const fields = line.trim().split(/\s+/)
     if (fields.length < 10) continue
-    const name = fields[0]
+    // A trailing `*` marks an interface that is down; it is the same interface.
+    const name = fields[0].replace(/\*$/, '')
     if (!name || name === 'lo0' || seen.has(name)) continue
-    const rx = Number(fields[6])
-    const tx = Number(fields[9])
+    seen.add(name)
+    const rx = Number(fields[fields.length - 5])
+    const tx = Number(fields[fields.length - 2])
     if (!Number.isFinite(rx) || !Number.isFinite(tx)) continue
     if (rx === 0 && tx === 0) continue
-    seen.add(name)
     out.push({ name, rx, tx })
   }
   return out
@@ -983,13 +1019,15 @@ async function macSlow(): Promise<SlowProbe> {
     macSensors(),
   ])
 
-  const io = parseIoreg(ioRaw)
-  const health = await macHealth(io, sensors)
+  // Disk images are not drives. Every mounted `.dmg` and every iOS simulator
+  // runtime Xcode keeps attached is one, and they would outnumber the SSD.
+  const io = parseIoreg(ioRaw).filter((drive) => drive.label !== 'Apple Disk Image')
+  const health = await macHealth(io, sensors.readings, parseMacSmart(sensors.raw))
 
   // Every reading is labelled with what it measures rather than one of them
   // being allowed to stand in for the rest. A pane that says "38 °C" without
   // saying of what will be read as the processor, whatever it actually is.
-  const temperatures: TemperatureStats[] = [...sensors]
+  const temperatures: TemperatureStats[] = [...sensors.readings]
   if (battery?.celsius != null && !temperatures.some((t) => t.device === 'Battery')) {
     temperatures.push({ name: 'Battery', celsius: battery.celsius, kind: 'other', device: 'Battery' })
   }
@@ -1006,7 +1044,7 @@ async function macSlow(): Promise<SlowProbe> {
     sources: {
       diskIo: io.length ? 'ioreg' : null,
       health: health.length ? 'diskutil' : null,
-      temperature: temperatures.length ? (sensors.length ? 'the bundled sensor helper' : 'ioreg') : null,
+      temperature: temperatures.length ? (sensors.readings.length ? 'the bundled sensor helper' : 'ioreg') : null,
       temperatureNote: temperatures.length ? null : MAC_TEMPERATURE_NOTE,
     },
   }
@@ -1103,12 +1141,85 @@ function macSensorsBinary(): string | null {
   return sensorBinary
 }
 
-/** The helper's two columns, or nothing at all where it did not run. */
-async function macSensors(): Promise<TemperatureStats[]> {
+/**
+ * The helper's temperatures, and its raw output for the drive-health lines that
+ * share the run. Nothing at all where it did not run.
+ */
+async function macSensors(): Promise<{ readings: TemperatureStats[]; raw: string }> {
   const binary = macSensorsBinary()
-  if (!binary) return []
-  const stdout = await runCommand(binary, []).catch(() => '')
-  return parseMacSensors(stdout)
+  if (!binary) return { readings: [], raw: '' }
+  const raw = await runCommand(binary, []).catch(() => '')
+  return { readings: parseMacSensors(raw), raw }
+}
+
+/** One drive's NVMe SMART log, as the helper prints it. */
+export interface MacSmart {
+  warning: number
+  kelvin: number
+  spare: number
+  spareThreshold: number
+  used: number
+  read: number
+  written: number
+  cycles: number
+  hours: number
+  unsafe: number
+  mediaErrors: number
+}
+
+/**
+ * The helper's `smart` lines, by BSD name.
+ *
+ * `smart <tab> disk0 <tab> key=value …` — named fields rather than positions so
+ * a helper and a collector from different builds cannot misread each other: a
+ * field one side does not know is simply absent. Exported for the tests.
+ */
+export function parseMacSmart(raw: string): Map<string, Partial<MacSmart>> {
+  const out = new Map<string, Partial<MacSmart>>()
+  for (const line of raw.split('\n')) {
+    const [tag, name, ...fields] = line.split('\t')
+    if (tag !== 'smart' || !name) continue
+    const entry: Partial<MacSmart> = {}
+    for (const field of fields) {
+      const [key, value] = field.split('=')
+      const parsed = Number(value)
+      if (key && Number.isFinite(parsed)) entry[key as keyof MacSmart] = parsed
+    }
+    out.set(name.trim(), entry)
+  }
+  return out
+}
+
+/**
+ * A drive's `diskutil` health with its SMART log laid over it.
+ *
+ * The log wins where both speak. `diskutil` calls Apple's own SSD "Not
+ * Supported", which is about its ATA-shaped question rather than the drive, so
+ * a clean log upgrades that `unknown` to `ok` — and a log reporting a critical
+ * warning, media errors or spare below its threshold downgrades anything to
+ * `warning`. Exported for the tests.
+ */
+export function applySmart(health: DiskHealth, smart: Partial<MacSmart> | undefined): DiskHealth {
+  if (!smart) return health
+  const troubled =
+    (smart.warning ?? 0) !== 0 ||
+    (smart.mediaErrors ?? 0) > 0 ||
+    (smart.spare !== undefined && smart.spareThreshold !== undefined && smart.spare < smart.spareThreshold)
+  // Kelvin, per the spec; 0 is a controller that has no sensor.
+  const celsius = smart.kelvin ? smart.kelvin - 273 : null
+  return {
+    ...health,
+    status: health.status === 'bad' ? 'bad' : troubled ? 'warning' : 'ok',
+    temperature: celsius ?? health.temperature,
+    // Can pass 100: the spec lets a drive keep counting past its rating.
+    wearPercent: smart.used ?? health.wearPercent,
+    powerOnHours: smart.hours ?? health.powerOnHours,
+    bytesRead: smart.read ?? null,
+    bytesWritten: smart.written ?? null,
+    sparePercent: smart.spare ?? null,
+    unsafeShutdowns: smart.unsafe ?? null,
+    mediaErrors: smart.mediaErrors ?? null,
+  }
 }
 
 /**
@@ -1292,7 +1403,8 @@ export function parseSmartBattery(raw: string): MacBattery | null {
  */
 async function macHealth(
   drives: SlowProbe['io'],
-  sensors: readonly TemperatureStats[]
+  sensors: readonly TemperatureStats[],
+  smart: Map<string, Partial<MacSmart>>
 ): Promise<DiskHealth[]> {
   // The NAND sensors are on the SoC's own storage controller, so the reading
   // belongs to the built-in drive and to no other. An external disk in an
@@ -1306,7 +1418,10 @@ async function macHealth(
       const info = parseDiskutilInfo(plist)
       if (!info) return null
       const { internal, ...health } = info
-      return { name: drive.label ?? drive.name, ...health, temperature: internal ? nand : null }
+      return applySmart(
+        { name: drive.label ?? drive.name, ...health, temperature: internal ? nand : null },
+        smart.get(drive.name)
+      )
     })
   )
   return answers.filter((entry): entry is DiskHealth => entry !== null)
@@ -1544,20 +1659,67 @@ async function readGpus(): Promise<{ gpus: GpuStats[]; source: string | null }> 
  * publish statistics of their own, per command queue, and they are not the card.
  */
 async function macGpus(): Promise<{ gpus: GpuStats[]; source: string | null }> {
-  const stdout = await runCommand('ioreg', ['-r', '-d', '1', '-w0', '-c', 'IOAccelerator']).catch(() => '')
-  const gpus = parseIoAccelerator(stdout)
+  const binary = macSensorsBinary()
+  const [stdout, extra] = await Promise.all([
+    runCommand('ioreg', ['-r', '-d', '1', '-w0', '-c', 'IOAccelerator']).catch(() => ''),
+    binary ? runCommand(binary, ['gpu']).catch(() => '') : Promise.resolve(''),
+  ])
+  const gpus = applyMacGpu(parseIoAccelerator(stdout), parseMacGpu(extra))
   return { gpus, source: gpus.length ? 'ioreg' : null }
+}
+
+export interface MacGpuExtra {
+  temperature: number | null
+  power: number | null
+  memoryLimit: number | null
+}
+
+/**
+ * The helper's `gpu` mode: `gpu-temp`, `gpu-power` and `gpu-memory-limit`, one
+ * per line, each absent when its source did not answer. Exported for the tests.
+ */
+export function parseMacGpu(raw: string): MacGpuExtra {
+  const out: MacGpuExtra = { temperature: null, power: null, memoryLimit: null }
+  for (const line of raw.split('\n')) {
+    const [tag, value] = line.split('\t')
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) continue
+    if (tag === 'gpu-temp') out.temperature = parsed
+    else if (tag === 'gpu-power') out.power = parsed
+    else if (tag === 'gpu-memory-limit' && parsed > 0) out.memoryLimit = parsed
+  }
+  return out
+}
+
+/**
+ * The helper's readings on the first accelerator — a Mac has one.
+ *
+ * The memory limit stands in for the total `parseIoAccelerator` leaves null:
+ * it is not VRAM, which a Mac does not have, but it is the ceiling a GPU
+ * program actually runs into, so a percentage of it means what a VRAM
+ * percentage means. Exported for the tests.
+ */
+export function applyMacGpu(gpus: GpuStats[], extra: MacGpuExtra): GpuStats[] {
+  return gpus.map((card, index) =>
+    index === 0
+      ? {
+          ...card,
+          temperature: card.temperature ?? extra.temperature,
+          power: card.power ?? extra.power,
+          memoryTotal: card.memoryTotal ?? extra.memoryLimit,
+        }
+      : card
+  )
 }
 
 /**
  * `PerformanceStatistics` per accelerator, and what the accelerator is called.
  *
- * Two readings are deliberately null rather than guessed. **Total memory**,
- * because Apple Silicon has none to report — the GPU shares the machine's
- * memory, so the honest answer is how much it is using and no denominator, and
- * filling in the system total would draw a card at 5% of the RAM as a card at 5%
- * of its VRAM. **Temperature and watts**, because those live in `powermetrics`
- * behind an administrator. Exported for the tests.
+ * Three readings are left null here and filled by `applyMacGpu` from the
+ * sensor helper, which can reach them and `ioreg` cannot: temperature, watts,
+ * and a memory ceiling. The ceiling is Metal's working-set limit rather than
+ * the system total — the GPU shares the machine's memory, and drawing a card at
+ * 5% of the RAM as 5% of its VRAM would be wrong. Exported for the tests.
  */
 export function parseIoAccelerator(raw: string): GpuStats[] {
   const out: GpuStats[] = []

@@ -1347,6 +1347,15 @@ export interface DiskHealth {
   wearPercent: number | null
   /** Hours the drive has been powered, which is the other half of its age. */
   powerOnHours: number | null
+  /** Lifetime bytes, from an NVMe SMART log where one was readable. */
+  bytesRead?: number | null
+  bytesWritten?: number | null
+  /** Percent of the spare blocks left. */
+  sparePercent?: number | null
+  /** Power lost without a clean shutdown. */
+  unsafeShutdowns?: number | null
+  /** Unrecovered data-integrity errors. Anything above zero is worth seeing. */
+  mediaErrors?: number | null
   /**
    * What the sensor source calls this drive, when that is not what the storage
    * stack calls it.

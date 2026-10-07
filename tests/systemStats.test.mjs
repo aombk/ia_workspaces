@@ -47,7 +47,13 @@ const {
   interesting,
   parseIoAccelerator,
   parseIoreg,
+  parseMacMounts,
+  parseMacNetstat,
   parseMacSensors,
+  parseMacSmart,
+  applySmart,
+  parseMacGpu,
+  applyMacGpu,
   parseSmartBattery,
   parseSwapusage,
   parseVmStat,
@@ -414,6 +420,33 @@ test('a drive whose name follows its counters is still named', () => {
 test('counters that never meet a name are still numbered', () => {
   const raw = '  |   "Statistics" = {"Bytes (Read)"=512,"Bytes (Write)"=1024}'
   assert.deepEqual(parseIoreg(raw).map((d) => d.name), ['disk0'])
+})
+
+test('macOS drives are the ones Finder shows, once each', () => {
+  const raw = [
+    '/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)',
+    '/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse, protect, root data)',
+    '/dev/disk3s3 on /Volumes/Recovery (apfs, local, journaled, nobrowse)',
+    '/dev/disk6s1 on /Library/Developer/CoreSimulator/Volumes/iOS_23F77 (apfs, sealed, local, nodev, nosuid, read-only, journaled, noatime, nobrowse)',
+    '/dev/disk9s1 on /Volumes/My Passport (exfat, local, nodev, nosuid, noowners)',
+    '//me@nas/share on /Volumes/share (smbfs, nodev, nosuid, mounted by me)',
+  ].join('\n')
+  assert.deepEqual(parseMacMounts(raw), ['/', '/Volumes/My Passport'])
+})
+
+test('macOS network counters are read from the right', () => {
+  const raw = [
+    'Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll',
+    'lo0        16384 <Link#1>                        218472     0  375212873   218472     0  375212873     0',
+    'gif0*      1280  <Link#2>                             0     0          0        0     0          0     0',
+    'en0        1500  <Link#11>   aa:bb:cc:dd:ee:ff  100000     0  900000000    50000     0   40000000     0',
+    'en0        1500  192.168.1     192.168.1.20     100000     -  900000000    50000     -   40000000     -',
+    'utun4      1380  <Link#20>                          294     0      49940    34478     0    3002097     0',
+  ].join('\n')
+  assert.deepEqual(parseMacNetstat(raw), [
+    { name: 'en0', rx: 900000000, tx: 40000000 },
+    { name: 'utun4', rx: 49940, tx: 3002097 },
+  ])
 })
 
 // ---------------------------------------------------------------- macOS bits
@@ -1074,6 +1107,55 @@ test('junk from either service comes back empty rather than throwing', () => {
 // ------------------------------------------------------------------- runner
 
 let failed = 0
+test('the helper\'s SMART lines are read by name, and skipped by the temperature reader', () => {
+  const raw = [
+    '33.22\tPMU tdev4',
+    'smart\tdisk0\twarning=0\tkelvin=304\tspare=100\tspareThreshold=99\tused=1\tread=15910806016000\twritten=9703540736000\tcycles=155\thours=241\tunsafe=11\tmediaErrors=0\tfuture=7',
+    '',
+  ].join('\n')
+
+  // A line the old reader does not know must not become a sensor.
+  assert.deepEqual(parseMacSensors(raw), [])
+
+  const smart = parseMacSmart(raw).get('disk0')
+  assert.equal(smart.used, 1)
+  assert.equal(smart.written, 9703540736000)
+  assert.equal(smart.hours, 241)
+  assert.equal(parseMacSmart('33.22\tPMU tdev4').size, 0)
+})
+
+test('a SMART log fills in what diskutil cannot, and can only make the verdict stricter', () => {
+  const base = { name: 'APPLE SSD', status: 'unknown', kind: 'ssd', size: 1, temperature: 30, wearPercent: null, powerOnHours: null }
+  const clean = { warning: 0, kelvin: 304, spare: 100, spareThreshold: 99, used: 1, hours: 241, written: 5, read: 6, unsafe: 11, mediaErrors: 0 }
+
+  const health = applySmart(base, clean)
+  assert.equal(health.status, 'ok', '"Not Supported" from diskutil is about diskutil, not the drive')
+  assert.equal(health.temperature, 31)
+  assert.equal(health.wearPercent, 1)
+  assert.equal(health.powerOnHours, 241)
+  assert.equal(health.bytesWritten, 5)
+
+  assert.equal(applySmart(base, { ...clean, mediaErrors: 2 }).status, 'warning')
+  assert.equal(applySmart(base, { ...clean, warning: 4 }).status, 'warning')
+  assert.equal(applySmart(base, { ...clean, spare: 50, spareThreshold: 60 }).status, 'warning')
+  assert.equal(applySmart({ ...base, status: 'bad' }, clean).status, 'bad')
+  assert.equal(applySmart(base, { ...clean, kelvin: 0 }).temperature, 30, 'no sensor keeps what was there')
+  assert.equal(applySmart(base, undefined), base)
+})
+
+test('the helper\'s graphics readings land on the first card', () => {
+  const extra = parseMacGpu('gpu-temp\t40.08\ngpu-power\t0.208\ngpu-memory-limit\t12713115648\n')
+  assert.deepEqual(extra, { temperature: 40.08, power: 0.208, memoryLimit: 12713115648 })
+  assert.deepEqual(parseMacGpu(''), { temperature: null, power: null, memoryLimit: null })
+
+  const card = { name: 'Apple M4', load: 11, temperature: null, memoryUsed: 508018688, memoryTotal: null, power: null }
+  const [merged] = applyMacGpu([card], extra)
+  assert.equal(merged.temperature, 40.08)
+  assert.equal(merged.power, 0.208)
+  assert.equal(merged.memoryTotal, 12713115648)
+  assert.deepEqual(applyMacGpu([card], parseMacGpu('')), [card], 'no helper changes nothing')
+})
+
 for (const [name, fn] of tests) {
   try {
     fn()
@@ -1087,3 +1169,4 @@ for (const [name, fn] of tests) {
 
 console.log(`\n${tests.length - failed}/${tests.length} checks passed`)
 if (failed) process.exit(1)
+

@@ -32,6 +32,7 @@ import type { AuxPane } from './auxPane'
 import { Redraw } from './redraw'
 import type {
   AirQuality,
+  DiskHealth,
   DiskStats,
   NetworkStats,
   SystemStats,
@@ -573,7 +574,9 @@ export class MonitorPane implements AuxPane {
             ? `${bytes(gpu.memoryUsed, 1)} of ${bytes(gpu.memoryTotal)} in use`
             : 'Graphics memory in use',
       },
-      { value: gpu.power === null ? null : `${gpu.power.toFixed(0)} W`, empty: '-- W', tone: 'idle', title: 'Power draw' },
+      // A tenth of a watt below ten: an idle Apple GPU draws well under one,
+      // and "0 W" would read as no reading at all.
+      { value: gpu.power === null ? null : `${gpu.power.toFixed(gpu.power < 10 ? 1 : 0)} W`, empty: '-- W', tone: 'idle', title: 'Power draw' },
     ])
 
     card.appendChild(
@@ -785,7 +788,7 @@ export class MonitorPane implements AuxPane {
       // the disk in it — and then both are true of different things, so both
       // are shown, in the order that reads as a sentence.
       label.textContent = health?.model && health.model !== name ? `${health.model} in ${name}` : name
-      label.title = io.name
+      label.title = driveDetail(io.name, health)
       head.appendChild(label)
       head.appendChild(
         this.figures([
@@ -1821,4 +1824,22 @@ function airIndexTone(air: AirQuality): Tone {
     return (['good', 'good', 'fair', 'mid', 'warn', 'high'] as const)[Math.round(air.index)] ?? 'idle'
   }
   return airTone(air.index, [20, 40, 60, 80])
+}
+
+/**
+ * A drive's tooltip: its device name, then whatever its health log says that
+ * has no column of its own. Lifetime figures, read once rather than watched.
+ */
+function driveDetail(device: string, health: DiskHealth | undefined): string {
+  const lines = [device]
+  if (!health) return lines.join('\n')
+  if (health.status === 'warning' || health.status === 'bad') lines.push('Health: needs attention')
+  if (health.wearPercent != null) lines.push(`Life used: ${health.wearPercent.toFixed(0)}%`)
+  if (health.sparePercent != null) lines.push(`Spare left: ${health.sparePercent}%`)
+  if (health.bytesWritten != null) lines.push(`Written: ${bytes(health.bytesWritten, 1)}`)
+  if (health.bytesRead != null) lines.push(`Read: ${bytes(health.bytesRead, 1)}`)
+  if (health.powerOnHours != null) lines.push(`Powered on: ${health.powerOnHours.toLocaleString()} h`)
+  if (health.unsafeShutdowns != null) lines.push(`Unsafe shutdowns: ${health.unsafeShutdowns}`)
+  if (health.mediaErrors != null) lines.push(`Media errors: ${health.mediaErrors}`)
+  return lines.join('\n')
 }

@@ -166,6 +166,8 @@ async function buildMacSensors() {
         path.join(root, 'src/native/macsensors.c'),
         '-framework', 'CoreFoundation',
         '-framework', 'IOKit',
+        '-framework', 'Metal',
+        '-lobjc',
       ],
       { stdio: 'inherit' }
     )
