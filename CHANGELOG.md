@@ -4,6 +4,17 @@ All notable changes to this project.
 
 ## [Unreleased]
 
+### Added
+
+- **Reconnect a copied folder with git.** A project backed
+  up or carried to another machine without its `.git` used to be a dead end —
+  download it again, or `git init` a second history that the copy online
+  refuses. The Git pane now offers *reconnect with git*:
+  it brings the history back and links the branch, without changing a single
+  file, so whatever differs shows up in Changes to keep or throw away. The
+  address is filled in from `gh` when the folder is named like one of your
+  repositories. If anything fails, the folder is left exactly as it was.
+
 ## [1.2.0] — 2026-10-07
 
 ### Added

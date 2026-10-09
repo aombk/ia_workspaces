@@ -32,7 +32,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { toolPath } from './toolPath'
 import { gitArgs } from './gitEnv'
@@ -1683,6 +1683,111 @@ export async function setOrigin(cwd: string, url: string): Promise<GitResult> {
   // changed — so this is belt and braces rather than necessary, and cheap.
   shapeCache.clear()
   return asResult(res)
+}
+
+/**
+ * Joins a folder copied without its `.git` back up with the project online.
+ *
+ * The case this is for: a project backed up or carried to another machine with
+ * everything except `.git`. The files are all there and git knows nothing about
+ * them, so the only ways on used to be "download it again and copy your files
+ * over the top", or `git init` — which starts a second, unrelated history that
+ * the copy online will refuse the first time it is sent.
+ *
+ * What it runs, and why each step is safe:
+ *
+ *   git init                     a new, empty `.git` — nothing else is touched
+ *   git remote add origin <url>
+ *   git fetch origin             the whole history, into `.git` only
+ *   git reset origin/<branch>    moves git's pointer and its index; NOT --hard,
+ *                                so not one file in the folder changes
+ *   git branch -u origin/<branch>
+ *
+ * Afterwards every file that differs from the copy online is an ordinary change
+ * in the Changes view, to save or throw away. Any step failing removes the
+ * `.git` this made, so the folder goes back to exactly what it was rather than
+ * being left half-connected.
+ */
+export async function reconnect(cwd: string, url: string): Promise<GitResult> {
+  const clean = url.trim()
+  if (!clean) return { ok: false, error: 'an address is required' }
+  const already = await checkoutRoot(cwd)
+  if (already) {
+    return { ok: false, error: 'already tracked', hint: `This folder is already part of a project git is watching (${already}).` }
+  }
+
+  const undo = async (res: GitRun | GitResult, hint?: string): Promise<GitResult> => {
+    // Only ever the `.git` made above: `checkoutRoot` said there was none.
+    await rm(path.join(cwd, '.git'), { recursive: true, force: true }).catch(() => {})
+    shapeCache.clear()
+    const result = 'out' in res ? asResult(res) : res
+    return { ...result, ok: false, hint: hint ?? result.hint }
+  }
+
+  let res = await run(cwd, ['init', '-b', 'main'])
+  if (!res.ok) res = await run(cwd, ['init'])
+  if (!res.ok) return undo(res)
+  res = await run(cwd, ['remote', 'add', 'origin', clean])
+  if (!res.ok) return undo(res)
+
+  report({ cwd, op: 'reconnect', phase: 'fetch', plain: 'Getting the history from online' })
+  const fetched = await runProgress(cwd, ['fetch', '--progress', 'origin'], { op: 'reconnect', network: true })
+  if (!fetched.ok) return undo(fetched)
+
+  // Whichever branch the copy online opens on. `set-head --auto` asks the
+  // server; the two common names are the fallback for a server that will not say.
+  await run(cwd, ['remote', 'set-head', 'origin', '--auto'], { network: true })
+  const head = await run(cwd, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+  let tracking = head.ok ? head.out.trim() : ''
+  if (!tracking) {
+    for (const name of ['origin/main', 'origin/master']) {
+      if ((await run(cwd, ['rev-parse', '--verify', '-q', name])).ok) {
+        tracking = name
+        break
+      }
+    }
+  }
+  if (!tracking) {
+    return undo(
+      { ok: false, error: 'nothing online' },
+      'The copy online has no saves yet, so there is nothing to join up with. Nothing here was changed — use "start tracking this folder with git" instead.'
+    )
+  }
+  const branch = tracking.replace(/^origin\//, '')
+
+  // Name the unborn branch after the one online before pointing it anywhere,
+  // so a project whose line is `master` does not come back as `main`.
+  res = await run(cwd, ['symbolic-ref', 'HEAD', `refs/heads/${branch}`])
+  if (!res.ok) return undo(res)
+  res = await run(cwd, ['reset', '-q', tracking])
+  if (!res.ok) return undo(res)
+  await run(cwd, ['branch', '--set-upstream-to', tracking])
+
+  shapeCache.clear()
+  return { ok: true }
+}
+
+/**
+ * A best guess at where a folder's copy online is, for the reconnect box.
+ *
+ * Asks `gh` for the signed-in user's repository named like the folder — the
+ * usual shape, since a clone is named after its repository. In whichever form
+ * `gh` is set to use, so the address agrees with how the user's other clones
+ * talk to GitHub. Empty when there is no `gh`, no sign-in, or no such project.
+ */
+export async function guessOrigin(cwd: string): Promise<string> {
+  const name = path.basename(cwd)
+  if (!name) return ''
+  const view = await runTool('gh', ['repo', 'view', name, '--json', 'url,sshUrl'], cwd, NETWORK_TIMEOUT_MS)
+  if (!view.ok) return ''
+  try {
+    const { url, sshUrl } = JSON.parse(view.out) as { url?: string; sshUrl?: string }
+    const protocol = await runTool('gh', ['config', 'get', 'git_protocol'], cwd)
+    if (protocol.out.trim() === 'ssh' && sshUrl) return sshUrl
+    return url ? `${url}.git` : ''
+  } catch {
+    return ''
+  }
 }
 
 /**

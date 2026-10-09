@@ -424,6 +424,10 @@ export interface Backend {
     init(cwd: string): Promise<GitResult>
     /** Points the project at its copy online. Refuses to move one already set. */
     setOrigin(cwd: string, url: string): Promise<GitResult>
+    /** Joins a folder copied without `.git` back up with its project online. Changes no files. */
+    reconnect(cwd: string, url: string): Promise<GitResult>
+    /** The signed-in `gh` user's repository named like the folder, or ''. */
+    guessOrigin(cwd: string): Promise<string>
     /** Which host CLIs are installed and signed in, for the one-button publish. */
     hostTools(cwd: string): Promise<HostTool[]>
     /** Makes the project online with the host's own tool, and sends everything. */

@@ -1068,6 +1068,8 @@ function bootApp(): void {
     handle(IPC.gitTag, (_e, cwd: string, sha: string, name: string) => git.addTag(cwd, sha, name))
     handle(IPC.gitInit, (_e, cwd: string) => git.initRepo(cwd))
     handle(IPC.gitSetOrigin, (_e, cwd: string, url: string) => git.setOrigin(cwd, url))
+    handle(IPC.gitReconnect, (_e, cwd: string, url: string) => git.reconnect(cwd, url))
+    handle(IPC.gitGuessOrigin, (_e, cwd: string) => git.guessOrigin(cwd))
     handle(IPC.gitHostTools, (_e, cwd: string) => git.hostTools(cwd))
     handle(
       IPC.gitCreateOnline,

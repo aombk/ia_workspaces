@@ -220,6 +220,8 @@ const api = {
       ipcRenderer.invoke(IPC.gitTag, cwd, sha, name),
     init: (cwd: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitInit, cwd),
     setOrigin: (cwd: string, url: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitSetOrigin, cwd, url),
+    reconnect: (cwd: string, url: string): Promise<GitResult> => ipcRenderer.invoke(IPC.gitReconnect, cwd, url),
+    guessOrigin: (cwd: string): Promise<string> => ipcRenderer.invoke(IPC.gitGuessOrigin, cwd),
     hostTools: (cwd: string): Promise<HostTool[]> => ipcRenderer.invoke(IPC.gitHostTools, cwd),
     createOnline: (
       cwd: string,

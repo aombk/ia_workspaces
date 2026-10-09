@@ -73,6 +73,8 @@ export const IPC = {
   gitTag: 'git:tag',
   gitInit: 'git:init',
   gitSetOrigin: 'git:setOrigin',
+  gitReconnect: 'git:reconnect',
+  gitGuessOrigin: 'git:guessOrigin',
   gitHostTools: 'git:hostTools',
   gitCreateOnline: 'git:createOnline',
   setAgentHooks: 'agent:setHooks',

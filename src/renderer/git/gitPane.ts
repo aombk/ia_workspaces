@@ -32,7 +32,7 @@ import { formatSize, REFUSED_FILE_BYTES } from '../../shared/gitSize'
 import type { GitProgress, GitResult, SendSize } from '../../shared/types'
 import { remoteHostOfPane, store } from '../state'
 import type { AuxPane } from '../auxPane'
-import { confirmDialog } from '../ui/confirm'
+import { confirmDialog, promptDialog } from '../ui/confirm'
 import {
   explain,
   gitButton,
@@ -81,6 +81,8 @@ export class GitPane implements AuxPane {
   private readonly bringBtn: HTMLButtonElement
   private readonly sendBtn: HTMLButtonElement
   private readonly publishBtn: HTMLButtonElement
+  /** Only while the folder is not a repository: see `reconnect`. */
+  private readonly reconnectBtn: HTMLButtonElement
 
   private readonly changes: ChangesView
   private readonly history: HistoryView
@@ -158,6 +160,13 @@ export class GitPane implements AuxPane {
     this.publishBtn = gitButton('put this project online', 'git remote add origin')
     this.publishBtn.addEventListener('click', () => void this.publish())
     this.actionsEl.appendChild(this.publishBtn)
+
+    this.reconnectBtn = gitButton('reconnect with git', 'git fetch + reset')
+    this.reconnectBtn.title =
+      'For a folder copied without its .git: gets the history from online and links it up. Not one of your files is changed — anything that differs shows up in Changes.'
+    this.reconnectBtn.hidden = true
+    this.reconnectBtn.addEventListener('click', () => void this.reconnect())
+    this.actionsEl.appendChild(this.reconnectBtn)
 
     this.bandEl = document.createElement('div')
     this.bandEl.className = 'history-band'
@@ -387,7 +396,7 @@ export class GitPane implements AuxPane {
     // An SSH workspace's folder is a path on the far machine — nothing in this
     // strip could be true about it, and the band beside it says so.
     if (remote) {
-      for (const btn of [this.peekBtn, this.bringBtn, this.sendBtn, this.publishBtn]) {
+      for (const btn of [this.peekBtn, this.bringBtn, this.sendBtn, this.publishBtn, this.reconnectBtn]) {
         btn.disabled = true
         btn.title = `This workspace's folder is on ${remote}. Run git in the terminal beside this pane.`
       }
@@ -450,6 +459,9 @@ export class GitPane implements AuxPane {
       setButtonLabel(this.sendBtn, `${refused ? '⚠ ' : ''}${sendLabel} · ${formatSize(size.bytes)}`)
       this.sendBtn.title += `\n\n${describeSend(size)}`
     }
+
+    this.reconnectBtn.hidden = root
+    this.reconnectBtn.disabled = this.busyFlag
 
     setButtonCommand(this.publishBtn, root ? 'git remote add origin' : 'git init')
     setButtonLabel(this.publishBtn, root ? 'put this project online' : 'start tracking this folder with git')
@@ -524,7 +536,9 @@ export class GitPane implements AuxPane {
       none.className = 'history-note'
       none.textContent =
         `${this.cwd} is not being tracked by git, so there are no saves and nothing to compare against. ` +
-        'The last button above — git init — walks through starting.'
+        'If this is a copy of a project that is already online — backed up or carried over without its .git — ' +
+        'use "reconnect with git": it brings the history back without changing your files. ' +
+        'Otherwise git init walks through starting a new one.'
       parts.push(none)
       this.bandEl.replaceChildren(...parts)
       this.bandEl.hidden = false
@@ -750,6 +764,35 @@ export class GitPane implements AuxPane {
       'Brought in. Your files are up to date.',
       `Bringing in ${where}'s saves`
     )
+  }
+
+  /**
+   * Links a folder copied without `.git` back to the project online.
+   *
+   * The address is guessed from `gh` where it can be — the signed-in user's
+   * repository named like the folder — and is always shown to be checked, since
+   * a wrong guess would join the folder to somebody else's history.
+   */
+  private async reconnect(): Promise<void> {
+    const cwd = this.cwd
+    const guess = await backend().git.guessOrigin(cwd)
+    const url = await promptDialog({
+      title: 'Reconnect with git',
+      body:
+        'The address of this project online. Its history is brought into this folder and linked up; ' +
+        'none of your files are changed. Anything that differs from online then shows in Changes — ' +
+        'if this copy is older than online, those differences would undo newer work, so look before saving.',
+      placeholder: 'https://github.com/you/project.git',
+      initial: guess,
+      confirmLabel: 'Reconnect',
+    })
+    if (!url) return
+    await this.run(
+      () => backend().git.reconnect(cwd, url),
+      'Reconnected. Anything that differs from online is in Changes.',
+      'Getting the history from online'
+    )
+    if (!this.disposed && this.snapshot?.status?.root) this.showView('changes')
   }
 
   private async publish(): Promise<void> {

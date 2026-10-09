@@ -96,6 +96,8 @@ export function createElectronBackend(): Backend {
       tag: (cwd, sha, name) => api.git.tag(cwd, sha, name),
       init: (cwd) => api.git.init(cwd),
       setOrigin: (cwd, url) => api.git.setOrigin(cwd, url),
+      reconnect: (cwd, url) => api.git.reconnect(cwd, url),
+      guessOrigin: (cwd) => api.git.guessOrigin(cwd),
       hostTools: (cwd) => api.git.hostTools(cwd),
       createOnline: (cwd, opts) => api.git.createOnline(cwd, opts),
     },
