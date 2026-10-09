@@ -40,7 +40,7 @@ import { confirmDialog } from './ui/confirm'
 import { beginEditing, endEditing } from './ui/editing'
 import { LiveText, type Highlighter } from './ui/liveText'
 import { dominantEol, normalizeNewlines, toCrlf } from '../shared/eol'
-import { code, json, markdown, plain, screenplay } from './ui/highlight'
+import { code, json, markdown, plain, rail, screenplay } from './ui/highlight'
 import { FOUNTAIN_ELEMENTS, outlineOf, type FountainElement } from '../shared/screenplay'
 import { CsvGrid } from './ui/csvGrid'
 import { HexView, decode, encode } from './ui/hexView'
@@ -733,7 +733,8 @@ export class EditorPane implements AuxPane {
     if (this.mode === 'text') return plain
     const grammar = grammarFor(this.path)
     if (!grammar) return plain
-    return this.mode === 'json' ? json(grammar) : code(grammar)
+    if (this.mode === 'json') return json(grammar)
+    return grammar.painter === 'rail' ? rail : code(grammar)
   }
 
   private focusEditor(): void {

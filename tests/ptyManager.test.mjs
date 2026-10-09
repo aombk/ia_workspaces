@@ -54,10 +54,12 @@ const settle = (ms = 20) => new Promise((r) => setTimeout(r, ms))
 /** A backend whose spawn can be held open, recording everything it is asked. */
 function fakeBackend() {
   const log = []
+  const envs = {}
   let gate = null
   const backend = {
     kind: 'broker',
     log,
+    envs,
     hold() {
       let release
       gate = new Promise((r) => (release = r))
@@ -68,6 +70,7 @@ function fakeBackend() {
     },
     async spawn(spec) {
       log.push(`spawn:${spec.id}`)
+      envs[spec.id] = spec.env
       if (gate) await gate
       log.push(`spawned:${spec.id}`)
       return { ok: true, existing: false, pid: process.pid }
@@ -248,6 +251,32 @@ await checkAsync('losing the host releases agent state for every detached pane',
   mgr.reportAgent('p7', { blocked: 'Approve?' })
   mgr.handleHostLost()
   assert.notEqual(mgr.agentState('p7')[0].state, 'blocked')
+})
+
+await checkAsync("a pane does not inherit the app's launcher's agent session", async () => {
+  // As it is when the app was relaunched from inside a Claude Code session.
+  const inherited = {
+    CLAUDECODE: '1',
+    CLAUDE_CODE_CHILD_SESSION: '1',
+    CLAUDE_CODE_SESSION_ID: 'd0cda58c-2163-496a-a208-07f06a4b328c',
+    CLAUDE_PID: '41315',
+  }
+  const own = { CLAUDE_CODE_USE_BEDROCK: '1' }
+  const saved = { ...process.env }
+  Object.assign(process.env, inherited, own)
+  try {
+    const { mgr, backend } = manager()
+    await mgr.spawn(request('p8'))
+    const env = backend.envs.p8
+    for (const name of Object.keys(inherited)) assert.equal(env[name], undefined, `${name} is dropped`)
+    assert.equal(env.CLAUDE_CODE_USE_BEDROCK, '1', "the user's own setting passes through")
+    assert.equal(env.IAW_PANE_ID, 'p8', 'and the pane still gets its own identity')
+  } finally {
+    for (const name of [...Object.keys(inherited), ...Object.keys(own)]) {
+      if (name in saved) process.env[name] = saved[name]
+      else delete process.env[name]
+    }
+  }
 })
 
 console.log(`\n${passed} checks passed`)

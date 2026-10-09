@@ -5172,6 +5172,45 @@ circle.lane-7 { fill: #ff9e64; }
   font-weight: 600;
 }
 
+/* Rail's extra colours. Its card lines — `returns:`, `access:` … under a
+   function's name — sit on a faint band, so the card reads as a label on the
+   code rather than as more of it, which is the language's own first rule for
+   highlighting. No italics: a slanted face can shift the caret in some fonts. */
+.rail-card {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.tok-type {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.tok-fn {
+  color: color-mix(in srgb, var(--accent) 55%, var(--text));
+}
+
+.tok-builtin {
+  color: var(--accent);
+}
+
+.tok-field {
+  color: var(--text-dim);
+}
+
+.tok-setting,
+.tok-escape {
+  color: var(--warn, #e0af68);
+}
+
+.tok-punct {
+  color: var(--text-dim);
+}
+
+.tok-invalid {
+  color: var(--danger);
+  text-decoration: underline wavy var(--danger);
+}
+
 /* The file's own name, and the button that changes it. */
 .editor-path {
   background: none;

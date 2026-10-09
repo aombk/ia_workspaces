@@ -14,6 +14,21 @@ All notable changes to this project.
   file, so whatever differs shows up in Changes to keep or throw away. The
   address is filled in from `gh` when the folder is named like one of your
   repositories. If anything fails, the folder is left exactly as it was.
+- **Rail.** `.rail` files open in the code view with colours made for the
+  language: a function's card — `returns:`, `access:`, `requires:` … — sits on
+  a faint band of its own so it reads as a label rather than code, `{…}` inside
+  text is coloured as the code it is, words like `to` and `result` are keywords
+  only where Rail says they are, and the symbols Rail refuses (`==`, `%`, `;` …)
+  are marked as errors while you type.
+
+### Fixed
+
+- **Claude Code saves its conversations again.** When the app was restarted
+  from inside a Claude Code session, every terminal it opened afterwards
+  inherited that session's markers. A `claude` started there took itself for a
+  helper of another session and saved nothing, so `/resume` showed only old
+  conversations, in every project. New terminals now start without those
+  markers. Your own Claude Code settings still pass through.
 
 ## [1.2.0] — 2026-10-07
 

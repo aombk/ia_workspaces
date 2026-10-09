@@ -30,7 +30,7 @@ await build({
   outdir: out,
 })
 
-const { markdown, code, json, plain, screenplay } = await import(`file://${out}/highlight.js`)
+const { markdown, code, json, plain, rail, screenplay } = await import(`file://${out}/highlight.js`)
 const { parse, serialise } = await import(`file://${out}/csvGrid.js`)
 const { modeForFile, grammarFor, extensionOf, delimiterFor } = await import(
   `file://${out}/editorModes.js`
@@ -468,4 +468,66 @@ check('screenplay leaves an escaped mark alone', () => {
   const { runs } = screenplay(line, 4)
   assert.equal(runs.map((r) => r.text).join(''), line)
   assert.ok(!runs.some((r) => r.cls === 'fx-em'), 'escaped star still opened an italic')
+})
+
+// ----------------------------------------------------------------------- rail
+
+const RAIL_LINES = [
+  'module bank',
+  '  purpose: "Keeps {owner}\'s money"',
+  '  access: screen, files // why',
+  'function withdraw(balance: Decimal, amount: Decimal)',
+  '  returns: Decimal or failure',
+  '  requires: amount > 0 and every x in xs has x > 0',
+  '  promises: result >= 0',
+  '{',
+  '  constant left = balance - amount',
+  '  print("left: {str(left)} of {join(names, ", ")}\\n\\{")',
+  '  for i from 10 count down to 1 { print(i) }',
+  '  constant to = 5',
+  '  if a == b { fail "nope" }',
+  '  return Customer(name: "Ada").name',
+  '}',
+  'test "withdrawing leaves the rest" {',
+  '  expect withdraw(10.0, 2.5) is 7.5',
+  '  "unclosed {brace',
+  '  "unclosed string',
+  '}',
+  '',
+]
+
+check('rail runs concatenate back to the source line', () => {
+  for (const line of RAIL_LINES) {
+    const { runs } = rail(line, 0)
+    assert.equal(runs.map((r) => r.text).join(''), line, line)
+  }
+})
+
+check('rail marks card lines, and only card lines', () => {
+  assert.match(rail('  access: screen', 0).cls, /rail-card/)
+  assert.match(rail('  promises: result >= 0', 0).cls, /rail-card/)
+  assert.doesNotMatch(rail('  constant access = 1', 0).cls, /rail-card/)
+  assert.doesNotMatch(rail('access: screen', 0).cls, /rail-card/)
+})
+
+check('rail colours the words that are special in one spot only there', () => {
+  const cls = (line, word) => rail(line, 0).runs.find((r) => r.text === word)?.cls
+  assert.equal(cls('  for i from 1 to 3 {', 'to'), 'tok-keyword')
+  assert.equal(cls('  constant to = 5', 'to'), undefined)
+  assert.equal(cls('  promises: result >= 0', 'result'), 'tok-keyword')
+  assert.equal(cls('  return result', 'result'), undefined)
+})
+
+check('rail paints a value inside text as code, and refused symbols as errors', () => {
+  const runs = rail('  print("hi {name}")', 0).runs
+  assert.ok(runs.some((r) => r.text === '{' && r.cls === 'tok-punct'))
+  assert.ok(runs.some((r) => r.text === 'name' && r.cls !== 'tok-string'))
+  assert.ok(rail('  if a == b {', 0).runs.some((r) => r.text === '==' && r.cls === 'tok-invalid'))
+  // A string inside a value inside a string is still one string.
+  assert.ok(!rail('  expect "{name + "!"}" is "Ada!"', 0).runs.some((r) => r.cls === 'tok-invalid'))
+})
+
+check('.rail files open in the code view with the rail painter', () => {
+  assert.equal(modeForFile('/x/bank.rail'), 'code')
+  assert.equal(grammarFor('/x/bank.rail').painter, 'rail')
 })

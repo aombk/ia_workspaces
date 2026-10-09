@@ -32,6 +32,13 @@ export interface Grammar {
   /** Quote characters that start a string. */
   quotes: readonly string[]
   keywords: ReadonlySet<string>
+  /**
+   * A highlighter of its own, for a language whose colours depend on where a
+   * word sits rather than what it is. Rail's card lines are the case: `access`
+   * is a label at the head of an indented line and an ordinary name anywhere
+   * else, and no keyword set can say that.
+   */
+  painter?: 'rail'
 }
 
 const C_LIKE = 'break case catch class const continue default do else enum export extends finally for function if import in instanceof interface let new return static super switch this throw try typeof var void while yield async await of as from type'
@@ -50,6 +57,8 @@ const PHP = `${C_LIKE} echo elseif endif endforeach endwhile foreach global name
 const SWIFT = 'associatedtype class deinit enum extension fileprivate func import init inout internal let open operator private protocol public static struct subscript typealias var break case continue default defer do else fallthrough for guard if in repeat return switch where while as any catch false is nil rethrows self super throw throws true try'
 const ZIG = 'const var fn pub return if else while for switch break continue defer errdefer try catch struct enum union comptime inline export extern test orelse unreachable null undefined true false'
 const NIX = 'let in rec with inherit if then else assert import builtins true false null or'
+/** Rail's always-keywords. Words special only in one spot are the painter's business. */
+const RAIL = 'module record choice function test if else when while for in return stop skip constant variable expect fail try otherwise and or not is true false'
 const MAKE = 'ifeq ifneq ifdef ifndef else endif include define endef export unexport override vpath'
 
 const words = (list: string) => new Set(list.split(' '))
@@ -108,6 +117,8 @@ const GRAMMARS: Record<string, Grammar> = {
   wgsl: C_GRAMMAR,
   proto: C_GRAMMAR,
   ino: C_GRAMMAR,
+  // Rail, painted by `rail` in highlight.ts after the language's own HIGHLIGHTING.md.
+  rail: { line: ['//'], quotes: ['"'], keywords: words(RAIL), painter: 'rail' },
 
   // Data
   json: { line: [], quotes: ['"'], keywords: words('true false null') },

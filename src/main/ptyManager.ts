@@ -50,6 +50,43 @@ const MAX_REPLAY_PADDING = 200
 /** Longest wait for a prompt marker before resuming anyway. See `spawn`. */
 const RESUME_FALLBACK_MS = 1500
 
+/**
+ * What Claude Code sets on the commands it runs, naming the session that ran
+ * them. None of it belongs to a pane.
+ *
+ * It reaches us when the app is relaunched from inside an agent — "rebuild and
+ * restart" during work on this very app — and from then on every pane
+ * inherited it. `CLAUDE_CODE_CHILD_SESSION` is the one that hurt: a `claude`
+ * started in such a pane takes itself for a subagent and saves no transcript,
+ * so for days nothing could be resumed, in any project, with only a one-line
+ * warning to say so. Its children relaunched the app the same way, which kept
+ * it going.
+ *
+ * Only these per-session markers go. Configuration a user sets themselves
+ * (`CLAUDE_CODE_USE_BEDROCK` and the like) passes through untouched.
+ */
+const AGENT_SESSION_MARKERS = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_SESSION_ATTENDED',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CLAUDE_PID',
+  'CLAUDE_EFFORT',
+  'AI_AGENT',
+]
+
+export function withoutAgentSessionMarkers(
+  env: Record<string, string | undefined>
+): Record<string, string | undefined> {
+  const out = { ...env }
+  for (const name of AGENT_SESSION_MARKERS) delete out[name]
+  return out
+}
+
 interface Session {
   id: string
   workspaceId: string
@@ -414,7 +451,7 @@ export class PtyManager {
       // to hand every pane two of them — see `withBinDir` for what that broke.
       env: withBinDir(
         {
-          ...process.env,
+          ...withoutAgentSessionMarkers(process.env),
           TERM_PROGRAM: 'ia_workspaces',
           // Claude Code and friends read this to decide colour depth.
           COLORTERM: 'truecolor',

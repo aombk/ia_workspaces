@@ -492,3 +492,200 @@ export function json(grammar: Grammar): Highlighter {
     return styled
   }
 }
+
+// ----------------------------------------------------------------------- rail
+
+/**
+ * Rail, after the language's own `editors/HIGHLIGHTING.md`.
+ *
+ * Its one demand is that a function's card — the indented `returns:`,
+ * `access:`, `requires:` … lines under its name — reads at a glance as a label
+ * on the code rather than as more code. A keyword set cannot say that: `access`
+ * is a label at the head of an indented line and an ordinary name anywhere
+ * else. So the card is found by the spec's own rule (an indented line starting
+ * `label:` — a statement never can) and given a line class of its own.
+ *
+ * Every rule here is per line, as the spec promises, so nothing is carried.
+ */
+const RAIL_CARD = /^([ \t]+)(purpose|edition|returns|types|access|memory|requires|promises)([ \t]*:)(.*)$/
+const RAIL_DECL = /^([ \t]*)(module|record|choice|function|test)\b([ \t]*)(.*)$/
+const RAIL_KEYWORDS = new Set([
+  'if', 'else', 'when', 'while', 'for', 'in', 'return', 'stop', 'skip',
+  'constant', 'variable', 'expect', 'fail', 'try', 'otherwise',
+  'and', 'or', 'not', 'is', 'every', 'some', 'has',
+])
+/** Special only in a `for` line, before its `{`. */
+const RAIL_COUNTING = new Set(['from', 'to', 'count', 'down'])
+const RAIL_TYPES = new Set(['Int', 'Decimal', 'Float', 'Bool', 'Str', 'Any', 'List', 'Map'])
+const RAIL_BUILTINS = new Set([
+  'print', 'str', 'int', 'decimal', 'float', 'len', 'append', 'remainder', 'round',
+  'upper', 'lower', 'trim', 'split', 'join', 'contains', 'starts_with', 'ends_with',
+  'replace', 'letters', 'repeat', 'first', 'last', 'part', 'find', 'keys', 'values', 'remove',
+])
+/** Symbols Rail refuses. Longest first, so `==` is not read as `=` twice. */
+const RAIL_ILLEGAL = ['==', '!=', '->', '..', '&&', '||', '!', '%', '@', ';']
+
+/**
+ * Where a quoted string that starts at `from` ends, honouring escapes — and
+ * stepping over each `{…}` in it, which may hold strings of its own:
+ * `"{name + "!"}"` is one string, not two with a `!` between them.
+ */
+function railStringEnd(src: string, from: number): number {
+  let j = from + 1
+  while (j < src.length) {
+    const c = src[j]
+    if (c === '\\') j += 2
+    else if (c === '{') j = railBraceEnd(src, j)
+    else if (c === '"') return j + 1
+    else j++
+  }
+  return src.length
+}
+
+/** Just past the `}` matching the `{` at `from`, or the end of the line. */
+function railBraceEnd(src: string, from: number): number {
+  let depth = 1
+  let j = from + 1
+  while (j < src.length && depth) {
+    if (src[j] === '"') j = railStringEnd(src, j)
+    else {
+      if (src[j] === '{') depth++
+      else if (src[j] === '}') depth--
+      j++
+    }
+  }
+  return j
+}
+
+/** A string, with each `{…}` inside it painted as the code it is. */
+function railString(text: string): Run[] {
+  const runs: Run[] = []
+  let plain = 0
+  let i = 1
+  const flush = (to: number) => {
+    if (to > plain) runs.push({ text: text.slice(plain, to), cls: 'tok-string' })
+  }
+  while (i < text.length) {
+    const c = text[i]
+    if (c === '\\') {
+      flush(i)
+      const stop = Math.min(i + 2, text.length)
+      runs.push({ text: text.slice(i, stop), cls: 'tok-escape' })
+      i = plain = stop
+      continue
+    }
+    if (c === '{') {
+      const j = railBraceEnd(text, i)
+      flush(i)
+      const closed = text[j - 1] === '}' && j - 1 > i
+      runs.push({ text: '{', cls: 'tok-punct' })
+      runs.push(...railCode(text.slice(i + 1, closed ? j - 1 : j), {}))
+      if (closed) runs.push({ text: '}', cls: 'tok-punct' })
+      i = plain = j
+      continue
+    }
+    i++
+  }
+  flush(text.length)
+  return runs
+}
+
+/** One stretch of Rail code. `forLine` and `promises` switch on the words special only there. */
+function railCode(src: string, ctx: { forLine?: boolean; promises?: boolean; returns?: boolean }): Run[] {
+  const runs: Run[] = []
+  let plain = 0
+  let i = 0
+  // The counting words stop being special at the `for` line's `{`.
+  let counting = !!ctx.forLine
+  const push = (to: number, run: Run) => {
+    if (i > plain) runs.push({ text: src.slice(plain, i) })
+    runs.push(run)
+    i = plain = to
+  }
+  while (i < src.length) {
+    const rest = src.slice(i)
+    const c = src[i]
+    if (rest.startsWith('//')) {
+      push(src.length, { text: rest, cls: 'tok-comment' })
+      break
+    }
+    if (c === '"') {
+      const end = railStringEnd(src, i)
+      if (i > plain) runs.push({ text: src.slice(plain, i) })
+      runs.push(...railString(src.slice(i, end)))
+      i = plain = end
+      continue
+    }
+    const previous = i > 0 ? src[i - 1] : ''
+    if (/[0-9]/.test(c) && !/[A-Za-z0-9_]/.test(previous)) {
+      const m = /^[0-9][0-9_]*(?:\.[0-9][0-9_]*)?(?:[eE][+-]?[0-9]+)?/.exec(rest)!
+      push(i + m[0].length, { text: m[0], cls: 'tok-number' })
+      continue
+    }
+    if (/[A-Za-z_]/.test(c) && !/[A-Za-z0-9_]/.test(previous)) {
+      const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(rest)![0]
+      const end = i + word.length
+      const call = /^[ \t]*\(/.test(src.slice(end))
+      const field = previous === '.'
+      let cls: string | undefined
+      if (field) cls = 'tok-field'
+      else if (RAIL_KEYWORDS.has(word) || (counting && RAIL_COUNTING.has(word))) cls = 'tok-keyword'
+      else if (word === 'true' || word === 'false') cls = 'tok-number'
+      else if (ctx.promises && word === 'result') cls = 'tok-keyword'
+      else if (ctx.returns && word === 'failure') cls = 'tok-keyword'
+      else if (RAIL_TYPES.has(word)) cls = 'tok-type'
+      else if (/^[A-Z]/.test(word)) cls = 'tok-type'
+      else if (call && RAIL_BUILTINS.has(word)) cls = 'tok-builtin'
+      else if (call) cls = 'tok-fn'
+      if (cls) push(end, { text: word, cls })
+      else i = end
+      continue
+    }
+    if (c === '{') counting = false
+    const bad = RAIL_ILLEGAL.find((op) => rest.startsWith(op))
+    if (bad) {
+      push(i + bad.length, { text: bad, cls: 'tok-invalid' })
+      continue
+    }
+    i++
+  }
+  if (src.length > plain) runs.push({ text: src.slice(plain) })
+  return runs
+}
+
+export const rail: Highlighter = (src): StyledLine => {
+  const card = RAIL_CARD.exec(src)
+  if (card) {
+    const [, indent, label, colon, value] = card
+    const runs: Run[] = [{ text: indent }, { text: label, cls: 'tok-key' }, { text: colon }]
+    if (label === 'requires' || label === 'promises') {
+      runs.push(...railCode(value, { promises: label === 'promises' }))
+    } else if (label === 'purpose' || label === 'returns') {
+      runs.push(...railCode(value, { returns: label === 'returns' }))
+    } else {
+      // Settings: `access: screen, files` — words that name a setting, not code.
+      const comment = value.indexOf('//')
+      const head = comment === -1 ? value : value.slice(0, comment)
+      if (head) runs.push({ text: head, cls: 'tok-setting' })
+      if (comment !== -1) runs.push({ text: value.slice(comment), cls: 'tok-comment' })
+    }
+    return { cls: 'md-src rail-card', runs, carry: PLAIN }
+  }
+
+  const decl = RAIL_DECL.exec(src)
+  if (decl) {
+    const [, indent, kind, gap, rest] = decl
+    const runs: Run[] = [{ text: indent }, { text: kind, cls: 'tok-keyword' }, { text: gap }]
+    const name = kind === 'test' ? null : /^[A-Za-z_][A-Za-z0-9_]*/.exec(rest)
+    if (name) {
+      const cls = kind === 'function' ? 'tok-fn' : kind === 'module' ? 'tok-key' : 'tok-type'
+      runs.push({ text: name[0], cls }, ...railCode(rest.slice(name[0].length), {}))
+    } else {
+      runs.push(...railCode(rest, {}))
+    }
+    return { cls: 'md-src', runs: runs.filter((r) => r.text), carry: PLAIN }
+  }
+
+  const forLine = /^[ \t]*for\b/.test(src)
+  return { cls: 'md-src', runs: railCode(src, { forLine }), carry: PLAIN }
+}
