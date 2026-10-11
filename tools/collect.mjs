@@ -110,7 +110,15 @@ for (const entry of await readdir(buildDir, { withFileTypes: true })) {
 
 const collected = []
 for (const [source, name] of wanted) {
-  if (!existsSync(source)) continue
+  // Not made this time, so a copy in build/ is from some earlier run and would
+  // pass for this one's — the portable exe, now that it is opt-in, most of all.
+  if (!existsSync(source)) {
+    if (existsSync(path.join(buildDir, name))) {
+      await rm(path.join(buildDir, name), { force: true })
+      console.log(`  ${name.padEnd(30)} cleared — not produced by this run`)
+    }
+    continue
+  }
   const to = path.join(buildDir, name)
   try {
     await copyFile(source, to)

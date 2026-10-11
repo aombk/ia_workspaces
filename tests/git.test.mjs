@@ -18,9 +18,20 @@ import os from 'node:os'
 import path from 'node:path'
 import { build } from 'esbuild'
 
-const out = path.join(os.tmpdir(), 'iaw-git-test')
-fs.rmSync(out, { recursive: true, force: true })
-fs.mkdirSync(out, { recursive: true })
+// A folder of its own per run, not a fixed one cleared at the start. Two runs
+// at once (`build_windows.bat` testing while another build does) used to share
+// it, and the second one's clearing pulled the repositories out from under the
+// first, or failed on Windows with EBUSY because git in the other run still had
+// one open. The retries are for the same lock on the way out: Windows can hold
+// a folder a moment after the git process in it has exited.
+const out = fs.mkdtempSync(path.join(os.tmpdir(), 'iaw-git-test-'))
+const removeOut = () => {
+  try {
+    fs.rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  } catch {
+    // Still locked after a second. A leftover temp folder is not a failed test.
+  }
+}
 
 await build({
   entryPoints: {
@@ -1377,4 +1388,5 @@ await checkAsync('after a stopped push the last save can be taken back, files ke
   assert.equal(status.files.find((f) => f.repoPath === 'wrong.txt').picked, '')
 })
 
+removeOut()
 console.log(`\n${passed} checks passed`)

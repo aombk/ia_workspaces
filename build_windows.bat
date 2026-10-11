@@ -5,35 +5,28 @@ rem ============================================================================
 rem  build_windows.bat — release build of ia_workspaces for Windows.
 rem
 rem  Output:
-rem    build\ia_workspaces.exe          portable — one file, runs from anywhere
 rem    build\ia_workspaces-setup.exe    installer — Inno Setup wizard
+rem    build\ia_workspaces.exe          portable — only with --portable
 rem
 rem  Debug builds are what `npm run dev` / `npm start` do. This is the other
 rem  thing: an optimised binary, gathered into build\ by tools\collect.mjs.
 rem
-rem  Two artifacts because they answer different questions. The portable exe is
-rem  for running the thing right now, off a stick, on a machine you do not own.
-rem  The installer is for a machine that is yours: a stable path under
-rem  iraisynn_attinom\, a Start Menu entry, an uninstall entry, and somewhere
-rem  Windows can find it. Neither replaces the other, and the installer is
-rem  skipped rather than fatal when Inno Setup is absent.
+rem  The installer is the deliverable: a stable path under iraisynn_attinom\, a
+rem  Start Menu entry, an uninstall entry. The portable exe is opt-in, because it
+rem  is eighty-five seconds of NSIS compressing a third of a gigabyte of Electron
+rem  on one thread, for a file nobody was using. The installer is skipped rather
+rem  than fatal when Inno Setup is absent.
 rem
 rem  Usage:
-rem    build_windows.bat                 typecheck, test, bundle, package, collect
+rem    build_windows.bat                 typecheck, test, bundle, installer, collect
 rem    build_windows.bat --fast          unpacked tree only — about ten seconds
-rem    build_windows.bat --no-portable   installer only — about thirty seconds
+rem    build_windows.bat --portable      the portable exe as well, alongside
 rem    build_windows.bat --clean         wipe out\ first
-rem    set SKIP_INSTALLER=1              portable exe only, no installer
 rem
-rem  --fast is the one to use while working. The full run spends eighty-five of
-rem  its hundred-odd seconds inside NSIS, compressing a third of a gigabyte of
-rem  Electron on one thread to make the portable exe; --fast stops after the
-rem  unpacked tree, which is a runnable app at
-rem  out\electron-pack\win-unpacked\ia_workspaces.exe. It still typechecks and
-rem  still runs the tests — those are seven seconds between them and they are
-rem  the two steps you would least want to skip. See tools\packWindows.mjs for
-rem  the measurements and for why the portable exe and the installer are now
-rem  built at the same time rather than one after the other.
+rem  --fast is the one to use while working: it stops after the unpacked tree,
+rem  which is a runnable app at out\electron-pack\win-unpacked\ia_workspaces.exe.
+rem  It still typechecks and still runs the tests. See tools\packWindows.mjs for
+rem  the measurements.
 rem
 rem  Electron only, unless --hosts is passed. The Tauri and Wails hosts are kept
 rem  in the tree and not developed — see src-tauri\README.md — so a release build
@@ -62,9 +55,8 @@ for %%a in (%*) do (
   if /i "%%~a"=="--yes" set "ASSUMEYES=1"
   if /i "%%~a"=="-y" set "ASSUMEYES=1"
   if /i "%%~a"=="--hosts" set "WANTHOSTS=1"
-  rem The middle gear: skip the portable exe, which is eighty-five of the
-  rem hundred seconds, and still get the installer most people actually use.
-  if /i "%%~a"=="--no-portable" set "PACKFLAGS=--no-portable"
+  rem Opt-in: the portable exe is eighty-five of the hundred seconds.
+  if /i "%%~a"=="--portable" set "PACKFLAGS=--portable"
   if /i "%%~a"=="--clean" (
     echo [*] cleaning out\
     call node tools\clean.mjs
@@ -99,26 +91,23 @@ if not exist "node_modules\" (
   call npm install || goto :fail_deps
 )
 
-echo [*] typecheck  (%TIME%)
-call npm run typecheck || goto :fail_typecheck
-
-echo [*] tests  (%TIME%)
-call npm test || goto :fail_tests
-
-echo [*] bundling  (%TIME%)
+rem One step, not three. build.mjs typechecks and runs the tests itself, side
+rem by side, and refuses to bundle if either fails — so running `npm run
+rem typecheck` and `npm test` here first did both of them twice, one after the
+rem other, on every build.
+echo [*] typecheck, tests, bundle  (%TIME%)
 call node build.mjs || goto :fail_build
 
-rem Packaging — the unpacked tree, then the portable exe and the Inno Setup
-rem installer alongside each other. All of it lives in one script now, because
+rem Packaging — the unpacked tree, then the Inno Setup installer (and, with
+rem --portable, the portable exe alongside it). All of it lives in one script now, because
 rem "run these two and wait for both" is not a thing batch can say without a
 rem sentinel file and a polling loop, and because that script is where the
 rem timings that justify the arrangement are written down.
 rem
 rem Inno Setup rather than electron-builder's NSIS for the installer: it is what
 rem the rest of the range ships with, so one wizard, one publisher folder, one
-rem uninstall entry style across ia glitch, ia pixelCam and this. ISCC is not a
-rem dependency of the portable build, so a machine without it still produces the
-rem exe and is told what it did not produce, rather than failing the run.
+rem uninstall entry style across ia glitch, ia pixelCam and this. A machine without
+rem ISCC is told what it did not produce, rather than failing the run.
 if defined DO_ELECTRON (
   echo [*] packaging Electron  ^(%TIME%^)
   call node tools\packWindows.mjs %FASTFLAG% %PACKFLAGS% || goto :fail_build
@@ -167,14 +156,8 @@ rem ------------------------------------------------------------------ failures
 :fail_deps
 echo [x] npm install failed
 exit /b 1
-:fail_typecheck
-echo [x] typecheck failed — fix the types before building a release
-exit /b 1
-:fail_tests
-echo [x] tests failed — fix them before building a release
-exit /b 1
 :fail_build
-echo [x] build failed
+echo [x] build failed — a typecheck or test failure is printed above
 exit /b 1
 :fail_collect
 echo [x] collecting artifacts failed

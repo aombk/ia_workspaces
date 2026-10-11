@@ -456,9 +456,10 @@ npm run typecheck
 One script per platform, same arguments:
 
 ```bat
-build_windows.bat            :: portable .exe + installer
+build_windows.bat            :: installer
+build_windows.bat --fast     :: unpacked, runnable app only (~10s), for iteration
+build_windows.bat --portable :: the portable .exe too (adds ~85s)
 build_windows.bat --clean    :: wipe out\ first
-set SKIP_INSTALLER=1         :: portable only, for fast iteration
 ```
 
 ```bash
@@ -467,7 +468,8 @@ set SKIP_INSTALLER=1         :: portable only, for fast iteration
 ./build_linux.sh             # AppImage, plus a tar.gz with an install script
 ```
 
-Each platform produces **two** artifacts, and they answer different questions.
+Each platform can produce **two** artifacts, and they answer different questions.
+On Windows only the installer is built unless `--portable` is passed.
 The **portable** build is one file that runs without installing — a stick, a
 machine you do not own, five minutes with the thing. The **installer** is for a
 machine you keep: a fixed path, a menu entry, an uninstaller.
@@ -499,7 +501,8 @@ them and uninstalling asks before removing them.
 The Windows installer needs [Inno Setup](https://jrsoftware.org/isdl.php) 6.6 or
 newer on the build machine — the same compiler the rest of the range is built
 with, so one wizard style and one publisher folder across all of it. Without it
-the build still produces the portable exe and says what it skipped.
+the build says what it skipped and produces no installer; `--fast` still gives
+you the runnable unpacked app.
 
 Windows and Linux builds need nothing but the toolchain. macOS signing needs an
 Apple Developer account, and `build_macos.sh` takes the identity from the
@@ -545,7 +548,7 @@ out/                  every intermediate — safe to delete at any time
   electron-pack/      electron-builder staging
   installer/          Inno Setup / productbuild / tar.gz output
 build/                the only folder with finished artifacts
-  ia_workspaces.exe            ~90 MB, portable     (Windows)
+  ia_workspaces.exe            ~90 MB, portable     (Windows, --portable only)
   ia_workspaces-setup.exe      ~100 MB, installer   (Windows)
   ia_workspaces.dmg            ~240 MB, universal, signed and notarized (macOS)
   ia_workspaces.pkg            ~240 MB, universal, installer            (macOS)

@@ -83,7 +83,6 @@
       "icon": "packaging/icons/icon.ico",
       "signAndEditExecutable": false,
       "target": [
-        "portable",
         "dir"
       ]
     },

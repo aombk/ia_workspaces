@@ -35,6 +35,7 @@ import {
 import { hostPaths, isOwnedByUs } from '../host/paths'
 import { isPipeAddress } from '../shared/platform'
 import { SessionTable, type PtyLike, type SpawnSpec } from '../host/sessions'
+import { useBundledConpty } from '../host/ptyOptions'
 
 export type { SpawnSpec } from '../host/sessions'
 
@@ -265,6 +266,9 @@ function localSpawner(spec: SpawnSpec): PtyLike {
     rows: spec.rows,
     cwd: spec.cwd,
     env: spec.env,
+    // The same pseudoconsole the broker uses — see `ptyOptions.ts`. Missing
+    // here, a machine that cannot reach the broker kept the old one.
+    useConptyDll: useBundledConpty(process.platform, process.env),
   })
   return {
     get pid() {

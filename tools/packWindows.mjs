@@ -36,14 +36,13 @@
  *    electron-builder validates its config against a strict schema and rejects
  *    a `//comment` key outright, which is a build failure for a sentence.)
  *
- * Both artifacts are still built by default, because both still ship. This
- * changes when they are waited for, not whether they are made.
+ * Only the installer is built by default; the portable exe is `--portable`.
  *
  * Three gears, and the middle one is the point:
  *
  *   --fast          ~7s    unpacked tree only, a runnable app
- *   --no-portable  ~25s    installer, which is what most people install
- *   (neither)     ~105s    both artifacts
+ *   (default)      ~25s    the installer
+ *   --portable    ~105s    the installer and the portable exe, side by side
  *
  * Nothing here makes NSIS faster, because nothing can: its LZMA is
  * single-threaded by design and no flag changes that. Of the 311 MB tree it is
@@ -54,7 +53,7 @@
  * it less often rather than to run it faster.
  */
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -63,14 +62,14 @@ const args = process.argv.slice(2)
 const fast = args.includes('--fast') || process.env.FAST === '1'
 const skipInstaller = fast || process.env.SKIP_INSTALLER === '1'
 /**
- * The middle gear, and the one that was missing.
+ * The portable exe, opt-in.
  *
- * The portable exe is the eighty-five seconds. The installer is twenty. There
- * was a way to skip the cheap one and a way to skip both, and no way to skip
- * the expensive one — so a release that only needed the installer still paid
- * for an NSIS run whose output went straight in the bin.
+ * It is the eighty-five seconds; the installer is twenty. The installer is what
+ * gets installed, so a build that made both by default paid for an NSIS run
+ * whose output nobody used. `--no-portable` is still accepted, as a no-op, so
+ * an old command line keeps working.
  */
-const skipPortable = args.includes('--no-portable') || process.env.SKIP_PORTABLE === '1'
+const skipPortable = !(args.includes('--portable') || process.env.PORTABLE === '1')
 
 const { version } = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
 
@@ -167,7 +166,9 @@ const iscc = findISCC()
 const jobs = []
 
 if (skipPortable) {
-  console.log('[*] skipping portable exe (SKIP_PORTABLE=1) — the 85s one')
+  console.log('[*] no portable exe (pass --portable for one) — the 85s step')
+  // One left from an earlier build would otherwise be collected into build  // as if this run had made it.
+  rmSync(path.join('out', 'electron-pack', `ia_workspaces ${version}.exe`), { force: true })
 } else {
   jobs.push(
     run('portable', 'npx', ['electron-builder', '--win', 'portable', '--prepackaged', unpacked], {
