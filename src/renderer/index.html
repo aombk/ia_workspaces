@@ -137,7 +137,17 @@
         <div id="tree-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" hidden></div>
 
         <main class="main">
-          <div id="tabstrip" class="tabstrip" role="tablist" aria-label="Terminals"></div>
+          <!--
+            The strip scrolls; the tools beside it do not. The tools are the
+            lone pane's history control, which used to float over the
+            terminal's top-right corner — exactly where a TUI draws its own
+            panels — so it sits here instead. A split pane carries its own in
+            its header.
+          -->
+          <div class="tabbar">
+            <div id="tabstrip" class="tabstrip" role="tablist" aria-label="Terminals"></div>
+            <div id="tab-tools" class="tab-tools"></div>
+          </div>
 
           <div class="terminal-area">
             <div id="terminal-host" class="terminal-host"></div>

@@ -632,13 +632,34 @@ html.mac-caption .titlebar-drag {
   min-height: 0;
 }
 
-.tabstrip {
+/* The strip and, at its right end, the lone pane's tools. The row owns the
+   height, background and rule, so the tools sit on the same surface as the
+   tabs rather than on a box of their own. */
+.tabbar {
   height: var(--tabstrip-h);
   min-height: var(--tabstrip-h);
   display: flex;
   align-items: stretch;
   background: var(--bg-raised);
   border-bottom: 1px solid var(--border);
+}
+
+.tab-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+}
+
+.tab-tools:empty {
+  display: none;
+}
+
+.tabstrip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -2239,14 +2260,11 @@ kbd {
   color: var(--text-faint);
 }
 
-/* The terminal's own top-right corner, and the two things that live in it: the
-   turn summary, then the history control. A lone pane has no header bar — that
-   is deliberate, see `buildPaneHeader` — so both sit over the content instead.
-
-   One row rather than two absolutely-positioned things that have to be told
-   about each other's widths. The strip is first and shrinks, the control is
-   last and does not, so a long summary is cut off at its own left edge and the
-   buttons stay where the hand expects them.
+/* The terminal's own top-right corner, and what still lives in it: the turn
+   summary. The history control used to sit here too and now lives in the bar
+   above the pane — the pane header in a split, the tab bar otherwise — because
+   the top-right of a terminal is where a full-screen TUI draws its own panels,
+   and a control over it hid them.
 
    Inside the pane rather than the shell, so a split's header row is above this
    corner instead of underneath it. */
@@ -2262,22 +2280,12 @@ kbd {
   pointer-events: none;
 }
 
-/* Faint until the pane is hovered. It must be legible when wanted and close to
-   invisible when not: a control at full strength in the corner of every
-   terminal is in the way of the thing the terminal is for. */
+/* In a bar now, not over content, so it no longer has to fade out of the way. */
 .pane-history {
   flex: none;
   display: flex;
   align-items: center;
   gap: 2px;
-  opacity: 0.18;
-  transition: opacity 120ms ease;
-  pointer-events: auto;
-}
-
-.pane-shell:hover .pane-history,
-.pane-history:focus-within {
-  opacity: 1;
 }
 
 .pane-history button {

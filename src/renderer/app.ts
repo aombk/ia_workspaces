@@ -407,6 +407,9 @@ function renderEmptyState(): void {
   const workspace = store.activeWorkspace
   const empty = !workspace || workspace.tabs.length === 0
   ;(document.getElementById('empty-state') as HTMLElement).hidden = !empty
+  // The lone pane's history control in the tab bar belongs to a tab that is no
+  // longer there — `showTab` refills it, and nothing calls that with no tab.
+  if (empty) document.getElementById('tab-tools')?.replaceChildren()
 }
 
 /** Mounts the active tab's pane tree if it isn't already on screen. */

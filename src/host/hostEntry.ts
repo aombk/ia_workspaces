@@ -13,6 +13,7 @@
 import { spawn } from '@lydell/node-pty'
 import { startHostServer } from './server'
 import { hostPaths } from './paths'
+import { useBundledConpty } from './ptyOptions'
 import type { PtyLike, SpawnSpec } from './sessions'
 
 function nodePtySpawner(spec: SpawnSpec): PtyLike {
@@ -22,6 +23,8 @@ function nodePtySpawner(spec: SpawnSpec): PtyLike {
     rows: spec.rows,
     cwd: spec.cwd,
     env: spec.env,
+    // Windows only; see `ptyOptions.ts`.
+    useConptyDll: useBundledConpty(process.platform, process.env),
   })
   return {
     get pid() {

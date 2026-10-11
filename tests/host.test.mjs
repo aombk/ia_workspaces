@@ -23,6 +23,7 @@ await build({
     ring: 'src/host/ring.ts',
     sessions: 'src/host/sessions.ts',
     server: 'src/host/server.ts',
+    ptyOptions: 'src/host/ptyOptions.ts',
   },
   bundle: true,
   platform: 'node',
@@ -35,6 +36,7 @@ const P = await import(`file://${out}/protocol.js`)
 const { RingBuffer } = await import(`file://${out}/ring.js`)
 const { SessionTable } = await import(`file://${out}/sessions.js`)
 const { startHostServer } = await import(`file://${out}/server.js`)
+const { useBundledConpty } = await import(`file://${out}/ptyOptions.js`)
 
 let passed = 0
 const check = (name, fn) => {
@@ -729,6 +731,20 @@ if (process.platform !== 'win32') {
     second.server.close()
     await new Promise((r) => setTimeout(r, 30))
     assert.equal(fs.existsSync(tokenPath), false, 'its own exit still tidies up after itself')
+  })
+}
+
+// ---------------------------------------------------------- pseudoconsole
+console.log('Pseudoconsole')
+{
+  check('Windows uses the conpty bundled with node-pty', () => {
+    assert.equal(useBundledConpty('win32', {}), true)
+  })
+  check('IAW_SYSTEM_CONPTY=1 goes back to the one built into Windows', () => {
+    assert.equal(useBundledConpty('win32', { IAW_SYSTEM_CONPTY: '1' }), false)
+  })
+  check('nowhere else has a conpty to choose', () => {
+    for (const platform of ['darwin', 'linux']) assert.equal(useBundledConpty(platform, {}), false)
   })
 }
 

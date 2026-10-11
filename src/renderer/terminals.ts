@@ -179,7 +179,17 @@ export class TerminalManager {
    * the tree was built from, so a layout change is noticed and a plain switch
    * is not.
    */
-  private readonly trees = new Map<string, { element: HTMLElement; signature: string }>()
+  private readonly trees = new Map<
+    string,
+    { element: HTMLElement; signature: string; tools: HTMLElement | null }
+  >()
+  /**
+   * Where `buildNode` leaves a lone terminal pane's history control. A lone
+   * pane has no header, so its control goes in the tab bar instead, and the
+   * tab bar is not part of the tree — it is kept beside the tree and put in
+   * the bar whenever that tab is shown.
+   */
+  private loneTools: HTMLElement | null = null
   private readonly resizeObserver: ResizeObserver
   private mountedTabId: string | null = null
   /** Bumped on every layout render so stale async fits can be discarded. */
@@ -849,12 +859,15 @@ export class TerminalManager {
       // element already in the document moves it. The panes this tab needs are
       // out of the old tree by the time it is dropped, wherever they were —
       // including in another tab's tree, which is how a dragged pane arrives.
+      this.loneTools = null
       const built = this.buildNode(tab, tab.layout, [], workspaceId)
       entry?.element.remove()
       this.host.appendChild(built)
-      entry = { element: built, signature }
+      entry = { element: built, signature, tools: this.loneTools }
+      this.loneTools = null
       this.trees.set(tab.id, entry)
     }
+    document.getElementById('tab-tools')?.replaceChildren(...(entry.tools ? [entry.tools] : []))
 
     // Trees for tabs that have since been closed. Pruned here rather than by
     // the close path, because a tab can go in several ways — closed, dragged
@@ -1073,20 +1086,20 @@ export class TerminalManager {
       const shell = document.createElement('div')
       shell.className = 'pane-shell'
       shell.dataset.paneId = node.paneId
-      if (tab.panes.length >= 2) shell.appendChild(this.buildPaneHeader(tab, state))
+      const header = tab.panes.length >= 2 ? this.buildPaneHeader(tab, state) : null
+      if (header) shell.appendChild(header)
       shell.appendChild(body)
-      // Over the terminal's own top-right corner rather than in a bar, because
-      // a lone pane has no bar — `buildPaneHeader` above is deliberately only
-      // built for a split, on the grounds that a row above one terminal is a
-      // wasted row. Floating it keeps one place for the control in both cases.
+      // The history control goes in the bar above the pane, never over it: the
+      // terminal's top-right corner is where a full-screen TUI draws its own
+      // panels, and a control floating there hid them. A split pane has its
+      // header for a bar; a lone pane has none — a row above one terminal is a
+      // wasted row — so it borrows the tab bar's right end.
       //
-      // Refilled rather than rebuilt: the corner and the turn summary in it
-      // belong to the instance and outlive this tree, and only the history
-      // control is remade — it reads the pane's folder as it is built, which is
-      // why it is not simply kept too.
+      // Rebuilt with the tree because it reads the pane's folder as it is built.
       if (!state.kind || state.kind === 'terminal') {
-        const inst = this.instances.get(state.id)
-        if (inst) inst.corner.replaceChildren(inst.turnBar, this.buildHistoryCorner(state.id))
+        const history = this.buildHistoryCorner(state.id)
+        if (header) header.insertBefore(history, header.querySelector('.pane-close'))
+        else this.loneTools = history
       }
       this.wirePaneDrop(shell, tab, state.id)
       return shell
@@ -1114,18 +1127,13 @@ export class TerminalManager {
   }
 
   /**
-   * The history control, floating over the terminal's top-right corner.
+   * The history control, in the bar above the pane — see `buildNode`.
    *
    * Two things, because they are two halves of one question. The switch says
    * which slice of the history the Up arrow walks — every pane, or only this
    * one — and the button opens the search box on the same slice. Neither is
    * discoverable from a keyboard shortcut, which is the entire reason this
    * exists rather than another binding nobody finds.
-   *
-   * Faint until the pane is hovered. It sits over the terminal's content, so it
-   * has to be legible when wanted and close to invisible when not; a control at
-   * full strength in the corner of every pane would be in the way of the thing
-   * the pane is for.
    */
   private buildHistoryCorner(paneId: string): HTMLElement {
     // The project this pane belongs to, so the widest ring knows which other
@@ -1187,6 +1195,16 @@ export class TerminalManager {
     // Neither control takes focus on mousedown, so the terminal never loses the
     // caret to a click that was only ever about the corner.
     for (const el of [scope, search]) el.addEventListener('mousedown', (e) => e.preventDefault())
+
+    // In a split this sits inside the pane header, which renames on a double
+    // click and drags the pane — neither of which a quick pair of clicks on
+    // the toggle should do.
+    corner.addEventListener('dblclick', (e) => e.stopPropagation())
+    corner.draggable = false
+    corner.addEventListener('dragstart', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+    })
 
     corner.append(scope, search)
     return corner
