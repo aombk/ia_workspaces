@@ -1398,8 +1398,14 @@ export class PtyManager {
     // that reattached instead never reaches here and leaves the file alone.
     this.deps.scrollback.consume(paneId)
 
+    // Then home, `ESC[H` — what the inbox ConPTY's own opening did anyway. The
+    // ConPTY bundled with node-pty (`ptyOptions.ts`) opens with no clear: it
+    // writes from wherever the cursor is while believing that is the top-left
+    // corner. Left at the bottom of the padding, every absolute move it made
+    // later — every prompt the shell redrew — landed a screen away from the
+    // text around it. Homed, the blank viewport and ConPTY's idea of it agree.
     const padding = hasQuirk(PLATFORM, 'ptyClearsOnStart')
-      ? '\r\n'.repeat(Math.min(Math.max(rows, 1), MAX_REPLAY_PADDING))
+      ? '\r\n'.repeat(Math.min(Math.max(rows, 1), MAX_REPLAY_PADDING)) + '\x1b[H'
       : ''
     this.hooks.onData({
       paneId,

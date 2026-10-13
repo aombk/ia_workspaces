@@ -253,7 +253,8 @@ export async function start(): Promise<void> {
   // Before the first paint: every opacity decision depends on it.
   setRealTransparency(!backend().window.usesNativeOverlay)
   applyTheme()
-  store.subscribe(render)
+  store.subscribe(requestRender)
+  wirePointerHold()
   render()
 
   initPalette(actions)
@@ -334,6 +335,71 @@ function applyTheme(): void {
 }
 
 // ------------------------------------------------------------------- rendering
+
+/**
+ * Store changes, coalesced to one render a frame and held while a button is
+ * down.
+ *
+ * `render` rebuilds the sidebar and the tab strip outright, and the store
+ * changes far more often than anyone clicks: every title a program sets is
+ * one, and Claude Code animates a spinner in its title the whole time it
+ * works. Rendered on every change, that was several full rebuilds a second
+ * per busy pane — the slowness — and a row under the pointer replaced between
+ * mousedown and mouseup, which the browser does not count as a click at all —
+ * the missed clicks. So a burst of changes is one render, and nothing is
+ * rebuilt between a press and its click.
+ *
+ * Code that needs the screen updated *now* — a rename field, say — still calls
+ * its own render directly; this is only the store's path.
+ */
+let renderQueued = false
+let pointerHeld = false
+let heldSince = 0
+
+/** Longer than any real click; a release we never heard about must not freeze the UI. */
+const MAX_HOLD_MS = 1500
+
+function requestRender(): void {
+  if (renderQueued) return
+  renderQueued = true
+  // A frame when the window is painting; the timeout when it is not, since a
+  // hidden window gets no frames and the badge and mounts still have to happen.
+  const run = (): void => {
+    if (!renderQueued) return
+    if (pointerHeld && Date.now() - heldSince < MAX_HOLD_MS) {
+      setTimeout(run, 50)
+      return
+    }
+    renderQueued = false
+    render()
+  }
+  requestAnimationFrame(run)
+  setTimeout(run, 100)
+}
+
+function wirePointerHold(): void {
+  window.addEventListener(
+    'pointerdown',
+    () => {
+      pointerHeld = true
+      heldSince = Date.now()
+    },
+    true
+  )
+  // A timeout rather than a direct render: `click` is dispatched after
+  // `pointerup`, and the render has to come after the click, not before it.
+  // What the click itself changed is drawn straight away rather than at the
+  // next check of the hold.
+  const release = (): void => {
+    pointerHeld = false
+    if (!renderQueued) return
+    renderQueued = false
+    render()
+  }
+  window.addEventListener('pointerup', () => setTimeout(release, 0), true)
+  window.addEventListener('pointercancel', release, true)
+  window.addEventListener('blur', release)
+}
 
 function render(): void {
   // Context menus are not inside anything that sets the workspace colour — the
