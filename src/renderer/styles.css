@@ -3444,6 +3444,113 @@ kbd {
   margin: 1.4em 0;
 }
 
+.reader-body.markdown h4 {
+  font-size: 1.05em;
+}
+.reader-body.markdown h5,
+.reader-body.markdown h6 {
+  font-size: 1em;
+  color: var(--text-dim);
+}
+
+/* A list inside a list item sits close to it, and a loose item's paragraphs
+   do not each add a full paragraph's gap. */
+.reader-body.markdown li > ul,
+.reader-body.markdown li > ol {
+  margin: 0.2em 0 0;
+}
+.reader-body.markdown li > p {
+  margin: 0 0 0.4em;
+}
+
+.reader-body.markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+/* Tables. Wider than the 78ch text column when they need to be — a guide whose
+   content is mostly five-column tables is unreadable squeezed into a measure
+   chosen for prose — and scrolling on their own when even the pane is too
+   narrow, rather than widening the page under every paragraph. */
+.markdown .md-table {
+  margin: 0 0 1em;
+  overflow-x: auto;
+  width: max-content;
+  max-width: 100%;
+}
+.reader-body.markdown .md-table {
+  max-width: min(100%, 140ch);
+  min-width: min(100%, 78ch);
+}
+.reader-body.markdown:has(.md-table) {
+  max-width: 140ch;
+}
+.reader-body.markdown:has(.md-table) > :not(.md-table) {
+  max-width: 78ch;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+  line-height: 1.5;
+}
+
+.markdown th,
+.markdown td {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown th {
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Every other row a shade apart, which is what keeps the eye on its line across
+   a wide table. */
+.markdown tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.markdown del {
+  color: var(--text-dim);
+}
+
+.markdown kbd {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.markdown mark {
+  padding: 0 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: inherit;
+}
+
+/* A link to a heading in the same document — a table of contents, a footnote. */
+.markdown a.md-anchor {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+.markdown .md-footnote-ref {
+  font-size: 0.75em;
+  line-height: 0;
+}
+
+.markdown .md-footnotes {
+  font-size: 0.9em;
+  color: var(--text-dim);
+}
+
 .reader-body.markdown a[data-href] {
   color: var(--accent);
   cursor: pointer;

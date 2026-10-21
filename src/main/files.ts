@@ -10,9 +10,12 @@ import type { FileEntry, GitStatusMap, SearchHit } from '../shared/types'
  * Largest file `readText` will return.
  *
  * The result crosses the IPC boundary and is then laid out as DOM. A 200MB log
- * opened by a mis-click should fail with a message, not wedge the window.
+ * opened by a mis-click should fail with a message, not wedge the window. It
+ * used to be two megabytes, which refused ordinary files — a plugin preset, a
+ * day's log — that the editor shows perfectly well once it stops colouring
+ * them; see `LARGE_TEXT_CHARS` in the editor for that half.
  */
-const MAX_TEXT_BYTES = 2 * 1024 * 1024
+const MAX_TEXT_BYTES = 64 * 1024 * 1024
 
 /**
  * Enough of a file's identity to notice somebody else wrote to it.
@@ -58,6 +61,58 @@ export async function readText(target: string): Promise<string> {
   } catch {
     throw new Error('not a UTF-8 text file')
   }
+}
+
+/**
+ * JUCE's binary XML: what `AudioProcessor::copyXmlToBinary` writes, and so what
+ * a JUCE plugin's presets and saved states usually are on disk.
+ *
+ * Four magic bytes, `VC2!`; the length of the XML as a little-endian uint32;
+ * the XML as UTF-8; one NUL. The NUL is not counted in the length. The XML is
+ * the whole of the content — the rest is framing — so it is shown and edited
+ * as text, and the framing is put back around it on the way out.
+ */
+const JUCE_XML_MAGIC = 'VC2!'
+
+/** The XML inside a JUCE binary XML file, or null when the file is not one. */
+export async function readJuceXml(target: string): Promise<string | null> {
+  const info = await stat(target)
+  if (info.isDirectory()) throw new Error('that is a folder')
+  if (info.size > MAX_TEXT_BYTES + 9) {
+    throw new Error(`file is ${(info.size / 1024 / 1024).toFixed(1)} MB — too large to display`)
+  }
+  const bytes = await readFile(target)
+  return juceXmlOf(bytes)
+}
+
+/** The decoding half of `readJuceXml`, on bytes already read. */
+export function juceXmlOf(bytes: Uint8Array): string | null {
+  if (bytes.length < 9) return null
+  const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (view.toString('latin1', 0, 4) !== JUCE_XML_MAGIC) return null
+  const length = view.readUInt32LE(4)
+  // A length that runs past the end is a file that only starts the same way.
+  if (8 + length > view.length) return null
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(view.subarray(8, 8 + length))
+  } catch {
+    return null
+  }
+}
+
+/** The framing `juceXmlOf` takes off, put back around `xml`. */
+export function juceXmlBytes(xml: string): Buffer {
+  const body = Buffer.from(xml, 'utf8')
+  const out = Buffer.alloc(body.length + 9)
+  out.write(JUCE_XML_MAGIC, 0, 'latin1')
+  out.writeUInt32LE(body.length, 4)
+  body.copy(out, 8)
+  // `alloc` zero-fills, so the terminating NUL is already the last byte.
+  return out
+}
+
+export async function writeJuceXml(target: string, xml: string): Promise<void> {
+  await writeFile(target, juceXmlBytes(xml))
 }
 
 /**

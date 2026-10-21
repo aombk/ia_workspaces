@@ -21,6 +21,7 @@
  * fallback exists because it answers with nothing for a path that has just been
  * deleted, and a missing icon must not cost the drag.
  */
+import { extname } from 'node:path'
 import { app, nativeImage, type NativeImage, type WebContents } from 'electron'
 
 /**
@@ -53,33 +54,64 @@ async function iconFor(file: string): Promise<NativeImage> {
 }
 
 /**
+ * Icons already fetched, by what decides a file's icon: its extension, or the
+ * file itself for the kinds that carry their own (a program, a shortcut).
+ */
+const icons = new Map<string, NativeImage>()
+
+function iconKey(file: string): string {
+  const ext = extname(file).toLowerCase()
+  return ext === '.exe' || ext === '.lnk' || ext === '.ico' || ext === '.url' ? file.toLowerCase() : ext || '<none>'
+}
+
+/**
+ * Fetches a file's icon ahead of a drag, so the drag does not have to wait.
+ *
+ * Called when the mouse goes down on a row: the drag, if one comes, starts a
+ * few pixels of movement later, and by then this has usually answered.
+ */
+export function prepareFileDrag(file: string): void {
+  if (typeof file !== 'string' || !file.trim()) return
+  const key = iconKey(file)
+  if (icons.has(key)) return
+  void iconFor(file).then((icon) => {
+    if (icon !== BLANK) icons.set(key, icon)
+  })
+}
+
+/**
  * Starts an operating-system file drag from a window.
  *
  * Returns whether it started, so the renderer knows whether the gesture was
  * taken over or whether it should carry on with its own drag. Nothing here
  * throws: a refused drag is an ordinary outcome — an empty list, a file deleted
- * between the mouse going down and this being reached — and every one of them
- * ends with the path drag happening instead, which is worse than a file and far
- * better than nothing at all.
+ * between the mouse going down and this being reached.
+ *
+ * **Synchronous on purpose.** This used to fetch the icon first and start the
+ * drag after, and on Windows that lost most drags outright: the OS drag has to
+ * begin while the button is still down in the gesture that started it, the
+ * icon lookup takes long enough for an ordinary quick drag to have ended, and
+ * by then the renderer had already cancelled its own drag — so nothing moved
+ * and nothing said why. Now the drag starts at once with whatever icon is in
+ * hand (fetched on mousedown by `prepareFileDrag`, or the blank one), and the
+ * real icon is fetched for next time.
  *
  * Multiple files go as one drag. Dropping five rows into an upload should be
  * five files arriving, not five drags, and `startDrag` takes the list directly.
  */
-export async function startFileDrag(sender: WebContents, paths: string[]): Promise<boolean> {
+export function startFileDrag(sender: WebContents, paths: string[]): boolean {
   const files = paths.filter((file) => typeof file === 'string' && file.trim())
-  if (!files.length) return false
+  if (!files.length || sender.isDestroyed()) return false
 
+  // The first file's icon stands for the drag. There is one cursor, and
+  // Explorer does the same with a badge for the count.
+  const icon = icons.get(iconKey(files[0])) ?? BLANK
   try {
-    // The first file's icon stands for the drag. There is one cursor, and
-    // Explorer does the same with a badge for the count.
-    const icon = await iconFor(files[0])
-    if (sender.isDestroyed()) return false
     sender.startDrag({ file: files[0], files, icon })
     return true
   } catch {
-    // Electron refuses a drag whose window has lost the gesture — the mouse
-    // button came up while the icon was being fetched, which is easy to do on a
-    // short drag. Not an error worth surfacing; the drag simply did not happen.
     return false
+  } finally {
+    prepareFileDrag(files[0])
   }
 }

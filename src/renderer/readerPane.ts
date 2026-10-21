@@ -105,19 +105,21 @@ export class ReaderPane implements AuxPane {
     // Links are opened through the shell rather than followed: this is a
     // webview showing the app, and navigating it away has no way back.
     this.body.addEventListener('click', (e) => {
+      // `closest` rather than the target itself: a link's text can be bold, or
+      // code, and the click lands on that.
       const target = e.target as HTMLElement
 
       // `[[note]]` — resolved against this document's own folder, which is what
       // makes a set of notes in one project link to each other without anybody
       // writing a path.
-      const wiki = target.dataset?.wiki
+      const wiki = target.closest?.<HTMLElement>('[data-wiki]')?.dataset.wiki
       if (wiki) {
         e.preventDefault()
         void this.followWiki(wiki)
         return
       }
 
-      const href = target.dataset?.href
+      const href = target.closest?.<HTMLElement>('[data-href]')?.dataset.href
       if (!href) return
       e.preventDefault()
       void backend().openExternal(href)

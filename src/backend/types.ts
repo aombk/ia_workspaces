@@ -540,6 +540,18 @@ export interface Backend {
    * happening and it should behave accordingly.
    */
   startFileDrag(paths: string[]): Promise<boolean>
+  /** Fetches a file's drag icon ahead of time, so a drag that follows can start at once. */
+  prepareFileDrag(file: string): Promise<void>
+  /**
+   * Puts files on the OS clipboard as Explorer does, marked as a cut or a copy,
+   * with `text` alongside for pasting into text. False where that is not possible.
+   */
+  writeClipboardFiles(paths: string[], mode: 'copy' | 'cut', text: string): Promise<boolean>
+  /**
+   * The files on the OS clipboard and whether they were cut; an empty list when
+   * it holds none, and null when this host cannot tell.
+   */
+  readClipboardFiles(): Promise<{ paths: string[]; mode: 'copy' | 'cut' } | null>
   /**
    * Writes what this pane's Up arrow should walk, for shells that bind it.
    *
@@ -634,6 +646,13 @@ export interface Backend {
      * saves through, where overwriting the file you are editing is the point.
      */
     writeText(path: string, content: string): Promise<void>
+    /**
+     * The XML inside a JUCE binary XML file (`copyXmlToBinary` — plugin presets
+     * and saved states), or null when the file is not one.
+     */
+    readJuceXml(path: string): Promise<string | null>
+    /** Writes `xml` back in that format, framing and all. */
+    writeJuceXml(path: string, xml: string): Promise<void>
     /** Launches a program with one file as its argument. */
     openWith(program: string, path: string): Promise<void>
     rename(target: string, name: string): Promise<string>

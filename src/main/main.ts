@@ -21,7 +21,8 @@ import { ExternalApps, type AppSyncRequest } from './externalApps'
 import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readTokenUsage } from './tokenUsage'
 import { readTurnIndex } from './turns'
-import { startFileDrag } from './fileDrag'
+import { prepareFileDrag, startFileDrag } from './fileDrag'
+import { readClipboardFiles, writeClipboardFiles } from './fileClipboard'
 import { historyDir, writePaneHistory } from './paneHistoryFile'
 import { dropScratch, readScratch, sweepScratch, writeScratch } from './scratchBuffer'
 import { TimeLog, timeLogPath } from './timeLog'
@@ -64,6 +65,8 @@ import {
   readBytes,
   patchBytes,
   writeText,
+  readJuceXml,
+  writeJuceXml,
   gitDiff,
   compareFiles,
   searchWorkspace,
@@ -989,6 +992,8 @@ function bootApp(): void {
     handle(IPC.writeText, (_e, target: string, content: string) =>
       writeText(target, content)
     )
+    handle(IPC.readJuceXml, (_e, target: string) => readJuceXml(target))
+    handle(IPC.writeJuceXml, (_e, target: string, xml: string) => writeJuceXml(target, xml))
     handle(IPC.gitDiff, (_e, cwd: string, target: string, untracked: boolean) =>
       gitDiff(cwd, target, untracked)
     )
@@ -1113,6 +1118,11 @@ function bootApp(): void {
       publishRelay(SHARED_DATA_DIR, dir, entries, sharePassphrase(SHARED_DATA_DIR))
     )
     handle(IPC.startFileDrag, (event, paths: string[]) => startFileDrag(event.sender, paths))
+    handle(IPC.prepareFileDrag, (_e, file: string) => prepareFileDrag(file))
+    handle(IPC.writeClipboardFiles, (_e, paths: string[], mode: 'copy' | 'cut', text: string) =>
+      writeClipboardFiles(paths, mode === 'cut' ? 'cut' : 'copy', String(text ?? ''))
+    )
+    handle(IPC.readClipboardFiles, () => readClipboardFiles())
     // What a pane's own Up arrow walks, for the shells that bind it themselves.
     // A file is the whole interface to them — see `paneHistoryFile.ts`.
     handle(IPC.writePaneHistory, (_e, paneId: string, commands: string[]) =>

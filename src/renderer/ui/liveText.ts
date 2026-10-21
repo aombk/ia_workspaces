@@ -59,6 +59,15 @@ const UNDO_GAP_MS = 500
 /** As many snapshots as anyone reaches for, and no more memory than that. */
 const UNDO_DEPTH = 200
 
+/**
+ * The most text the history may hold, in characters, across all its snapshots.
+ *
+ * Each snapshot is the whole document. Two hundred of a note is nothing; two
+ * hundred of a four-megabyte file is most of a gigabyte. So the oldest go first
+ * once this is reached, which still leaves a large file a few dozen steps.
+ */
+const UNDO_BUDGET_CHARS = 64 * 1024 * 1024
+
 export class LiveText {
   readonly element: HTMLDivElement
   private text = ''
@@ -205,7 +214,9 @@ export class LiveText {
 
   /** The link under an event, for the context menu and ctrl-click. */
   static linkAt(target: EventTarget | null): string {
-    return (target as HTMLElement | null)?.dataset?.href ?? ''
+    // The nearest link around the target: a rendered link's text can be bold or
+    // code, and the click lands on that rather than on the link itself.
+    return (target as HTMLElement | null)?.closest?.<HTMLElement>('[data-href]')?.dataset.href ?? ''
   }
 
   // ------------------------------------------------------------------- editing
@@ -324,6 +335,8 @@ export class LiveText {
     this.history = this.history.slice(0, this.at + 1)
     this.history.push({ text: before, caret: this.caretOffset() })
     if (this.history.length > UNDO_DEPTH) this.history.shift()
+    let held = this.history.reduce((sum, entry) => sum + entry.text.length, 0)
+    while (this.history.length > 1 && held > UNDO_BUDGET_CHARS) held -= this.history.shift()!.text.length
     this.at = this.history.length - 1
   }
 

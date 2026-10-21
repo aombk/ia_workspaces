@@ -247,6 +247,11 @@ const api = {
   relay: (dir: string, entries: RelayPublishEntry[]): Promise<Relay> =>
     ipcRenderer.invoke(IPC.relay, dir, entries),
   startFileDrag: (paths: string[]): Promise<boolean> => ipcRenderer.invoke(IPC.startFileDrag, paths),
+  prepareFileDrag: (file: string): Promise<void> => ipcRenderer.invoke(IPC.prepareFileDrag, file),
+  writeClipboardFiles: (paths: string[], mode: 'copy' | 'cut', text: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.writeClipboardFiles, paths, mode, text),
+  readClipboardFiles: (): Promise<{ paths: string[]; mode: 'copy' | 'cut' } | null> =>
+    ipcRenderer.invoke(IPC.readClipboardFiles),
   writePaneHistory: (paneId: string, commands: string[]): Promise<void> =>
     ipcRenderer.invoke(IPC.writePaneHistory, paneId, commands),
   setSharePassphrase: (passphrase: string): Promise<boolean> =>
@@ -279,6 +284,9 @@ const api = {
       ipcRenderer.invoke(IPC.createFile, parent, name),
     writeText: (path: string, content: string): Promise<void> =>
       ipcRenderer.invoke(IPC.writeText, path, content),
+    readJuceXml: (path: string): Promise<string | null> => ipcRenderer.invoke(IPC.readJuceXml, path),
+    writeJuceXml: (path: string, xml: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.writeJuceXml, path, xml),
     openWith: (program: string, path: string): Promise<void> =>
       ipcRenderer.invoke(IPC.openWith, program, path),
     rename: (target: string, name: string): Promise<string> =>

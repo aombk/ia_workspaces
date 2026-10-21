@@ -69,6 +69,7 @@ import {
 } from './ui/textOps'
 import { hasFilePath, pathFromDrop } from './ui/fileDrag'
 import { delimiterFor, grammarFor, modeForFile } from '../shared/editorModes'
+import { compactXml, indentXml } from '../shared/xmlLayout'
 import { READ_ONLY_MODES, type EditorMode } from '../shared/types'
 import type { AuxPane } from './auxPane'
 
@@ -105,6 +106,16 @@ const SCRATCH_EXT = 'md'
  * down the page is explained by the thing that turned it on.
  */
 const COLUMN_GUIDE = 80
+
+/**
+ * Past this many characters a file is shown without colouring.
+ *
+ * The editor recolours on every keystroke, and finding out what state each line
+ * starts in means running the highlighter over the whole document — fine for a
+ * source file, a stall per key for a multi-megabyte log or plugin preset. Plain
+ * text skips all of it, so a file this size still opens and still types.
+ */
+const LARGE_TEXT_CHARS = 1_000_000
 
 /**
  * How often an open editor stats its file to see whether anything else wrote
@@ -180,6 +191,14 @@ export class EditorPane implements AuxPane {
    * CRLF file changes the lines you changed and not the other nine hundred.
    */
   private eol: '\n' | '\r\n' = '\n'
+  /**
+   * How the text is kept on disk. `juce` is JUCE's binary XML — a plugin
+   * preset or saved state — shown indented and written back framed and
+   * compact; see `readJuceXml` and `shared/xmlLayout.ts`.
+   */
+  private format: 'text' | 'juce' = 'text'
+  /** Past `LARGE_TEXT_CHARS`: shown plain, because colouring it would stall typing. */
+  private large = false
   /** True while a write is in flight, so the next one queues instead of racing. */
   private saving = false
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -728,6 +747,11 @@ export class EditorPane implements AuxPane {
   }
 
   private highlighter(): Highlighter {
+    if (this.large) return plain
+    if (this.format === 'juce') {
+      const xml = grammarFor('state.xml')
+      return xml ? code(xml) : plain
+    }
     if (this.mode === 'markdown') return markdown
     if (this.mode === 'screenplay') return screenplay
     if (this.mode === 'text') return plain
@@ -1121,14 +1145,35 @@ export class EditorPane implements AuxPane {
         // Nothing there yet. The editor stays open and empty; the first thing
         // typed is what creates the file.
         this.clearBlock()
+        this.format = 'text'
         this.adopt('')
-      } else {
-        this.blocked = messageOf(err)
-        this.showBlocked()
+        return
       }
+      const reason = messageOf(err)
+      // Not text — or too much of it — is not the end of the file. A JUCE
+      // preset is XML in a binary frame and opens as that XML; anything else
+      // opens as bytes, which is what the hex view is for, rather than as an
+      // error with nothing to do about it.
+      if (/not a UTF-8 text file|too large to display/.test(reason)) {
+        const xml = await backend()
+          .files.readJuceXml(this.path)
+          .catch(() => null)
+        if (this.disposed) return
+        if (xml !== null) {
+          this.format = 'juce'
+          this.clearBlock()
+          this.adopt(indentXml(xml))
+          return
+        }
+        void this.setMode('hex')
+        return
+      }
+      this.blocked = reason
+      this.showBlocked()
       return
     }
     if (this.disposed) return
+    this.format = 'text'
     this.clearBlock()
     this.adopt(text)
   }
@@ -1171,8 +1216,30 @@ export class EditorPane implements AuxPane {
     this.eol = dominantEol(text)
     const normalized = normalizeNewlines(text)
     this.saved = normalized
-    this.showText(normalized)
+    const large = normalized.length > LARGE_TEXT_CHARS
+    if (large === this.large || !this.isText) {
+      this.large = large
+      if (this.isText && this.format === 'juce') this.live.setHighlighter(this.highlighter())
+      this.showText(normalized)
+    } else if (large) {
+      // Plain first, then the text: changing the grammar repaints whatever is
+      // on screen, and the big file must never be painted in colour even once.
+      this.large = true
+      this.live.setHighlighter(this.highlighter())
+      this.showText(normalized)
+    } else {
+      // The other way round for the same reason: the outgoing text is the big one.
+      this.large = false
+      this.showText(normalized)
+      this.live.setHighlighter(this.highlighter())
+    }
     this.syncChrome()
+  }
+
+  /** Writes `text` to the file in the form the file is kept in. */
+  private writeDisk(text: string): Promise<void> {
+    if (this.format === 'juce') return backend().files.writeJuceXml(this.path, compactXml(text))
+    return backend().files.writeText(this.path, this.eol === '\r\n' ? toCrlf(text) : text)
   }
 
   private onEdit(): void {
@@ -1275,7 +1342,7 @@ export class EditorPane implements AuxPane {
         // Back out to whatever the file already used. `saved` keeps the
         // normalised form, because that is what `dirty` compares against.
         const text = this.text
-        await backend().files.writeText(this.path, this.eol === '\r\n' ? toCrlf(text) : text)
+        await this.writeDisk(text)
         this.saved = text
       }
     } catch (err) {
@@ -1648,6 +1715,20 @@ export class EditorPane implements AuxPane {
       saving: 'Saving…',
       saved: 'Saved',
     }[state]
+    // What is unusual about how this file is shown, beside whether it is saved:
+    // otherwise a preset reading as plain XML, or a log with no colour, looks
+    // like something has gone wrong.
+    const notes = [
+      this.format === 'juce' && this.mode !== 'hex' ? 'JUCE binary XML' : '',
+      this.large && this.isText ? 'large file, no colouring' : '',
+    ].filter(Boolean)
+    if (notes.length && state !== 'blocked') this.status.textContent += ` · ${notes.join(' · ')}`
+    this.status.title =
+      this.format === 'juce'
+        ? 'Shown as indented XML; saved back in JUCE’s binary format (VC2!), compact, as the plugin wrote it.'
+        : this.large
+          ? `Over ${(LARGE_TEXT_CHARS / 1_000_000).toFixed(0)} million characters, so colouring is off to keep typing fast.`
+          : ''
 
     this.saveBtn.disabled = !this.dirty || this.saving || Boolean(this.blocked)
 
@@ -1709,10 +1790,7 @@ export class EditorPane implements AuxPane {
     // the way out would answer for it — silently, at the one moment nobody is
     // looking at the pane.
     if (this.dirty && this.path && !this.blocked && !this.conflict && this.autosaves) {
-      const text = this.text
-      void backend()
-        .files.writeText(this.path, this.eol === '\r\n' ? toCrlf(text) : text)
-        .catch(() => {})
+      void this.writeDisk(this.text).catch(() => {})
     }
     // An untitled tab's text has no file to be written to, so what happens to
     // its buffer turns on *why* this is being called — and this method is

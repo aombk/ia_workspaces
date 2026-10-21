@@ -25,6 +25,9 @@ export const IPC = {
   readBytes: 'files:readBytes',
   patchBytes: 'files:patchBytes',
   writeText: 'files:writeText',
+  // JUCE binary XML (`copyXmlToBinary`): plugin presets and saved states.
+  readJuceXml: 'files:readJuceXml',
+  writeJuceXml: 'files:writeJuceXml',
   // The untitled buffers. A group of their own rather than more `files:` verbs,
   // because these never touch a path the user chose — see `main/scratchBuffer.ts`.
   scratchRead: 'scratch:read',
@@ -88,6 +91,10 @@ export const IPC = {
   shareTokens: 'app:shareTokens',
   relay: 'app:relay',
   startFileDrag: 'drag:startFile',
+  prepareFileDrag: 'drag:prepareFile',
+  // Files on the OS clipboard, the way Explorer copies them. See `main/fileClipboard.ts`.
+  writeClipboardFiles: 'clipboard:writeFiles',
+  readClipboardFiles: 'clipboard:readFiles',
   writePaneHistory: 'history:writePane',
   setSharePassphrase: 'share:setPassphrase',
   hasSharePassphrase: 'share:hasPassphrase',

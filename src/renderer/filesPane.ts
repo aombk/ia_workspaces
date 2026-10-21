@@ -1,5 +1,5 @@
 import { backend } from '../backend'
-import { pathsFromDrop, quotePath, startDrag } from './ui/fileDrag'
+import { isLocalFile, pathsFromDrop, quotePath, startDrag } from './ui/fileDrag'
 import {
   isInsideDir,
   parentDir,
@@ -87,13 +87,42 @@ export interface FilesPaneHooks {
  * tree and paste in another — a clipboard that only worked within one pane
  * would be a worse version of drag and drop.
  *
- * Not the system clipboard. Reading a file list from it needs a raw `CF_HDROP`
- * on Windows and its own format on every other platform, none of which Electron
- * exposes; writing one is worse. So this moves files between trees, and
- * Explorer stays one "Reveal in Explorer" away for anything crossing the
- * boundary.
+ * Mirrored onto the system clipboard where the host can do that (Windows — see
+ * `main/fileClipboard.ts`), so a copy here pastes in Explorer and a copy in
+ * Explorer pastes here. This list is still kept: it is what a cut uses to fade
+ * its rows, and it is the whole clipboard for paths no other program can open
+ * (inside WSL) and on hosts with no system file clipboard. `onSystem` says
+ * whether the mirror took, which is what lets a paste tell that the system
+ * clipboard has moved on to something else since.
  */
-let clipboard: { paths: string[]; mode: 'copy' | 'cut' } | null = null
+let clipboard: { paths: string[]; mode: 'copy' | 'cut'; onSystem: boolean } | null = null
+
+/**
+ * A drag of files from outside the app — Explorer, a browser, a mail.
+ *
+ * Told apart by `dragging`: every drag that starts in a tree sets it, including
+ * one that became an operating-system drag, so a drag carrying files without
+ * it came from somewhere else.
+ */
+function isExternalFileDrag(e: DragEvent): boolean {
+  return !dragging && Boolean(e.dataTransfer?.types.includes('Files'))
+}
+
+/**
+ * Copy unless Shift asks for a move, the way Explorer treats a drag between
+ * drives. A copy is the safe reading of a drop from another program: the
+ * original is still where it was if the drop landed somewhere unintended.
+ */
+function externalEffect(e: DragEvent): 'copy' | 'move' {
+  return e.shiftKey ? 'move' : 'copy'
+}
+
+/** The same files, in any order, compared the way the host compares paths. */
+function sameFiles(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false
+  const platform = backend().capabilities.platform
+  return a.every((path) => b.some((other) => samePath(platform, path, other)))
+}
 
 /**
  * The rows currently being dragged out of some tree, or null.
@@ -107,9 +136,9 @@ let clipboard: { paths: string[]; mode: 'copy' | 'cut' } | null = null
  * being offered cannot decide whether to light up. Every drag that begins in a
  * tree records itself here, and a target reads *this* rather than the event.
  *
- * That also settles which drags the tree will take: a drag from Finder or
- * Explorer never sets it, so it is never treated as a move. Dropping a file in
- * from another program is a separate feature and not this one.
+ * That also settles what a drop means: a drag from Finder or Explorer never
+ * sets it, so it is never treated as a move of our own rows — it is files
+ * arriving from another program, copied in by `bringIn`.
  */
 let dragging: string[] | null = null
 
@@ -205,6 +234,13 @@ export class FilesPane {
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private readonly onWindowFocus = () => void this.refresh()
   private readonly onDragEnd = () => FilesPane.endDrag()
+  /**
+   * The same, a turn later. A capturing listener on the window runs *before*
+   * the drop handler on the row the drop landed on, so ending the drag there
+   * cleared `dragging` first and every row then saw a drop it did not
+   * recognise and ignored it — the cause of a good many drags that did nothing.
+   */
+  private readonly onDropAnywhere = () => setTimeout(() => FilesPane.endDrag(), 0)
 
   /** Every tree on screen, so a column switch reaches all of them at once. */
   private static readonly live = new Set<FilesPane>()
@@ -292,9 +328,10 @@ export class FilesPane {
     // of all — something several folders deep coming back to the top.
     this.listEl.addEventListener('dragover', (e) => {
       if ((e.target as HTMLElement).closest('.files-row')) return
-      if (!dragging || !canDropInto(this.cwd, dragging)) return
+      const external = isExternalFileDrag(e)
+      if (!external && (!dragging || !canDropInto(this.cwd, dragging))) return
       e.preventDefault()
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      if (e.dataTransfer) e.dataTransfer.dropEffect = external ? externalEffect(e) : 'move'
       this.hint(this.listEl)
       this.cancelExpand()
     })
@@ -304,6 +341,12 @@ export class FilesPane {
     })
     this.listEl.addEventListener('drop', (e) => {
       if ((e.target as HTMLElement).closest('.files-row')) return
+      if (isExternalFileDrag(e)) {
+        e.preventDefault()
+        this.hint(null)
+        void this.bringIn(this.cwd, pathsFromDrop(e), externalEffect(e))
+        return
+      }
       const paths = this.dropPaths(e)
       FilesPane.endDrag()
       if (!paths || !canDropInto(this.cwd, paths)) return
@@ -332,7 +375,7 @@ export class FilesPane {
     // A drop anywhere else in the app ends the drag as surely as `dragend`
     // does, and an operating-system drag does not always report the latter to
     // the window it started in.
-    window.addEventListener('drop', this.onDragEnd, true)
+    window.addEventListener('drop', this.onDropAnywhere, true)
     FilesPane.live.add(this)
 
     void this.refresh()
@@ -904,6 +947,13 @@ export class FilesPane {
       this.openRowMenu(e.clientX, e.clientY, entry)
     })
 
+    // The icon an operating-system drag will need, fetched now: the drag, if
+    // one comes, has to start the instant it is asked for — see `startFileDrag`
+    // in the main process for what waiting for it cost.
+    row.addEventListener('mousedown', (e) => {
+      if (e.button === 0) void backend().prepareFileDrag(entry.path)
+    })
+
     // Dragging a row onto a terminal drops its quoted path at the cursor.
     //
     // Dragging one of several selected rows takes the whole selection, which is
@@ -947,12 +997,13 @@ export class FilesPane {
    */
   private acceptDrops(row: HTMLElement, folder: string, expand?: FileEntry): void {
     row.addEventListener('dragover', (e) => {
-      if (!dragging || !canDropInto(folder, dragging)) return
+      const external = isExternalFileDrag(e)
+      if (!external && (!dragging || !canDropInto(folder, dragging))) return
       // Both are required: the first says a drop is allowed here at all, the
       // second says which of the effects the drag offered this one is.
       e.preventDefault()
       e.stopPropagation()
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      if (e.dataTransfer) e.dataTransfer.dropEffect = external ? externalEffect(e) : 'move'
       this.hint(row)
       if (expand) this.scheduleExpand(expand)
     })
@@ -966,6 +1017,14 @@ export class FilesPane {
     })
 
     row.addEventListener('drop', (e) => {
+      if (isExternalFileDrag(e)) {
+        e.preventDefault()
+        e.stopPropagation()
+        this.hint(null)
+        this.cancelExpand()
+        void this.bringIn(folder, pathsFromDrop(e), externalEffect(e))
+        return
+      }
       const paths = this.dropPaths(e)
       FilesPane.endDrag()
       if (!paths || !canDropInto(folder, paths)) return
@@ -1387,11 +1446,48 @@ export class FilesPane {
 
   private clip(paths: readonly string[], mode: 'copy' | 'cut'): void {
     if (!paths.length) return
-    clipboard = { paths: [...paths], mode }
+    const held = { paths: [...paths], mode, onSystem: false }
+    clipboard = held
     // Every tree redraws: a cut entry is shown faded wherever it appears, and
     // it may well appear in more than one of them.
     FilesPane.refreshAll()
     showToast(mode === 'cut' ? 'Cut' : 'Copied', describe(paths))
+    // On the system clipboard too, so Explorer, a mail or an upload box can
+    // paste it. Only real local files: a path inside WSL is a Windows-shaped
+    // string no other program here can open, and it stays a copy within the app.
+    if (!paths.every(isLocalFile)) return
+    void backend()
+      .writeClipboardFiles([...paths], mode, paths.map(quotePath).join(' '))
+      .then((ok) => {
+        if (clipboard === held) held.onSystem = ok
+      })
+  }
+
+  /**
+   * What a paste would paste: the system clipboard's files when it has some,
+   * otherwise this app's own list — unless that list was put on the system
+   * clipboard and has since been replaced there, in which case it is stale.
+   */
+  private async pasteSource(): Promise<{ paths: string[]; mode: 'copy' | 'cut'; external: boolean } | null> {
+    const held = clipboard
+    const system = await backend()
+      .readClipboardFiles()
+      .catch(() => null)
+    if (system && system.paths.length) {
+      const ours = held && sameFiles(held.paths, system.paths)
+      // Ours, read back: our own record knows which rows to un-fade after a cut.
+      if (ours) return { paths: held.paths, mode: held.mode, external: false }
+      return { paths: system.paths, mode: system.mode, external: true }
+    }
+    // The system clipboard was read and holds no files. If ours was on it,
+    // something else has been copied since, and pasting the old list would be
+    // pasting something you no longer have on the clipboard.
+    if (system && held?.onSystem) {
+      clipboard = null
+      FilesPane.refreshAll()
+      return null
+    }
+    return held ? { paths: held.paths, mode: held.mode, external: false } : null
   }
 
   /**
@@ -1406,8 +1502,11 @@ export class FilesPane {
    * would both look up a free slot, both find the same one, and one would lose.
    */
   private async paste(folder: string): Promise<void> {
-    const held = clipboard
-    if (!held) return
+    const held = await this.pasteSource()
+    if (!held) {
+      showToast('Nothing to paste', 'The clipboard has no files on it.')
+      return
+    }
 
     const landed: string[] = []
     const failures: string[] = []
@@ -1424,8 +1523,13 @@ export class FilesPane {
     }
 
     // Cleared even on a partial failure: what did move has moved, and pasting
-    // the same list again would duplicate those. What did not is reported.
-    if (held.mode === 'cut') clipboard = null
+    // the same list again would duplicate those. What did not is reported. The
+    // system clipboard too, as Explorer clears it after a cut is pasted — it
+    // names files that are no longer where it says.
+    if (held.mode === 'cut') {
+      clipboard = null
+      void navigator.clipboard.writeText('').catch(() => {})
+    }
     // Selected on arrival, so a paste into a long folder does not leave you
     // hunting for what you just pasted.
     this.pendingSelect = landed
@@ -1439,6 +1543,39 @@ export class FilesPane {
     }
     // Both ends may be on screen at once, and after a cut the source folder is
     // as changed as the destination.
+    FilesPane.refreshAll()
+  }
+
+  /**
+   * Files dropped in from another program, copied (or, with Shift, moved) into
+   * `folder`. One at a time, for the reason `paste` gives.
+   */
+  private async bringIn(folder: string, paths: readonly string[], effect: 'copy' | 'move'): Promise<void> {
+    if (!paths.length) {
+      showToast('Nothing to drop', 'That drag carried no files this app can read.')
+      return
+    }
+    const landed: string[] = []
+    const failures: string[] = []
+    for (const source of paths) {
+      try {
+        landed.push(
+          effect === 'move' ? await backend().files.move(source, folder) : await backend().files.copy(source, folder)
+        )
+      } catch (err) {
+        failures.push(`${folderLeaf(source)}: ${messageOf(err)}`)
+      }
+    }
+    this.pendingSelect = landed
+    if (failures.length) {
+      showToast(
+        landed.length ? 'Some items could not be added' : 'Could not add',
+        failures.join('\n'),
+        { kind: 'error' }
+      )
+    } else {
+      showToast(`${effect === 'move' ? 'Moved' : 'Copied'} into ${folderLeaf(folder)}`, describe(paths))
+    }
     FilesPane.refreshAll()
   }
 
@@ -1607,12 +1744,13 @@ export class FilesPane {
         { label: `Copy${count}`, shortcut: 'Ctrl+C', onClick: () => this.clip(paths, 'copy') }
       )
     }
+    // Always offered: the system clipboard may hold files copied in Explorer,
+    // and finding out takes longer than a menu may wait before it opens.
     items.push({
       label: clipboard
         ? `Paste ${describe(clipboard.paths)} into ${folderLeaf(target)}`
-        : 'Paste',
+        : `Paste into ${folderLeaf(target)}`,
       shortcut: 'Ctrl+V',
-      disabled: !clipboard,
       onClick: () => void this.paste(target),
     })
     return items
@@ -1850,7 +1988,7 @@ export class FilesPane {
     this.cancelExpand()
     window.removeEventListener('focus', this.onWindowFocus)
     window.removeEventListener('dragend', this.onDragEnd, true)
-    window.removeEventListener('drop', this.onDragEnd, true)
+    window.removeEventListener('drop', this.onDropAnywhere, true)
     this.element.remove()
   }
 }

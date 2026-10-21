@@ -41,7 +41,7 @@ export const FILE_DRAG = 'application/x-iaw-path'
  * the middle of a gesture. A path under a WSL distribution is the case worth
  * catching, and it is visible from the string alone.
  */
-function isLocalFile(path: string): boolean {
+export function isLocalFile(path: string): boolean {
   return Boolean(path.trim()) && !isWslPath(path)
 }
 
