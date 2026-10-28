@@ -30,6 +30,7 @@ import type {
   SpaceGitInfo,
   SpaceReport,
   SpaceResult,
+  BackgroundFetch,
   SessionHostInfo,
   SystemStats,
   UsageReport,
@@ -231,6 +232,8 @@ const api = {
       cwd: string,
       opts: { command: string; name: string; private: boolean; description?: string }
     ): Promise<GitResult> => ipcRenderer.invoke(IPC.gitCreateOnline, cwd, opts),
+    backgroundFetch: (cwd: string, minAgeMs: number): Promise<BackgroundFetch> =>
+      ipcRenderer.invoke(IPC.gitBackgroundFetch, cwd, minAgeMs),
   },
   space: {
     measure: (dir: string): Promise<SpaceReport> => ipcRenderer.invoke(IPC.spaceMeasure, dir),

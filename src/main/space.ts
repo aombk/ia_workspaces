@@ -23,6 +23,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { afterBackgroundFetch } from './git'
 import { gitArgs, gitEnv } from './gitEnv'
 import { toolPath } from './toolPath'
 import { isKept, matchRegenerable, MAX_KEPT_COMMITS, normRel, parseKeepList } from '../shared/space'
@@ -554,6 +555,8 @@ export function gitCompact(dir: string): Promise<SpaceResult> {
     async () => {
       const gitDir = await ownGitDir(dir)
       if (!gitDir) return { ok: false, error: 'This folder has no .git of its own.' }
+      // A repack rewrites the very packs a fetch is adding to.
+      await afterBackgroundFetch(dir, 'compact')
       const before = await sizeOf(gitDir)
       const res = await git(dir, ['gc', '--aggressive', '--prune=now'])
       if (!res.ok) return { ok: false, error: res.err }
@@ -610,6 +613,9 @@ export function gitTrim(dir: string, keep: number, backupFile: string): Promise<
 async function trimNow(dir: string, keep: number, backupFile: string): Promise<SpaceResult> {
   const n = Math.floor(keep)
   if (!(n >= 1 && n <= MAX_KEPT_COMMITS)) return { ok: false, error: `Keep between 1 and ${MAX_KEPT_COMMITS} commits.` }
+  // Before the backup, so the bundle holds what the fetch brought in, and the
+  // refs this deletes are not being written while it deletes them.
+  await afterBackgroundFetch(dir, 'trim')
   const info = await gitInfo(dir)
   const refused = await refuseRewrite(dir, info)
   if (refused) return { ok: false, error: refused }
@@ -708,6 +714,7 @@ export function gitRemove(dir: string, backupFile: string): Promise<SpaceResult>
   return exclusive(
     dir,
     async () => {
+      await afterBackgroundFetch(dir, 'remove-history')
       const info = await gitInfo(dir)
       const refused = await refuseRewrite(dir, info)
       if (refused) return { ok: false, error: refused }

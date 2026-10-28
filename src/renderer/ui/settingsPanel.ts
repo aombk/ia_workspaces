@@ -991,6 +991,33 @@ async function render(): Promise<void> {
     playSound(store.settings.notifications.soundName, Number(volume.value))
   })
 
+  // -------------------------------------------------------------------- git
+  // When projects are fetched without anyone pressing peek. See `git/autoFetch.ts`.
+  body.appendChild(
+    section(
+      'Git',
+      field(
+        'Fetch when the app starts',
+        'Each project, once, a few seconds after starting. A fetch downloads what the remote has ' +
+          'and changes nothing of yours — no file, branch or commit — so the git pane can say ' +
+          '“N commits to bring in” about work you pushed from another machine. A project ' +
+          'that would need a password or passphrase is skipped rather than asking.',
+        toggle(s.gitFetchOnStart, (v) => patch({ gitFetchOnStart: v }))
+      ),
+      field(
+        'Fetch when a git pane is shown',
+        'As its tab comes into view or you click into it, at most once every two minutes.',
+        toggle(s.gitFetchOnGitPane, (v) => patch({ gitFetchOnGitPane: v }))
+      ),
+      field(
+        'Fetch every project every',
+        'Minutes. 0 is never. Two projects at a time, and a project that failed to fetch is left ' +
+          'alone for half an hour.',
+        number(s.gitFetchEveryMinutes, 0, 1440, (n) => patch({ gitFetchEveryMinutes: n }))
+      )
+    )
+  )
+
   body.appendChild(
     section(
       'Notifications',

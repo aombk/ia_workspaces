@@ -1097,6 +1097,9 @@ function bootApp(): void {
     handle(IPC.gitReconnect, (_e, cwd: string, url: string) => git.reconnect(cwd, url))
     handle(IPC.gitGuessOrigin, (_e, cwd: string) => git.guessOrigin(cwd))
     handle(IPC.gitHostTools, (_e, cwd: string) => git.hostTools(cwd))
+    handle(IPC.gitBackgroundFetch, (_e, cwd: string, minAgeMs: number) =>
+      git.backgroundFetch(cwd, Math.max(30_000, Number(minAgeMs) || 0))
+    )
     handle(
       IPC.gitCreateOnline,
       (_e, cwd: string, opts: { command: string; name: string; private: boolean; description?: string }) =>

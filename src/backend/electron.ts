@@ -100,6 +100,7 @@ export function createElectronBackend(): Backend {
       guessOrigin: (cwd) => api.git.guessOrigin(cwd),
       hostTools: (cwd) => api.git.hostTools(cwd),
       createOnline: (cwd, opts) => api.git.createOnline(cwd, opts),
+      backgroundFetch: (cwd, minAgeMs) => api.git.backgroundFetch(cwd, minAgeMs),
     },
     space: {
       measure: (dir) => api.space.measure(dir),

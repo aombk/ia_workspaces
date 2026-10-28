@@ -158,13 +158,23 @@ function entries(): RelayPublishEntry[] {
 
   // The one on screen, always: it is the only project that can be changing
   // while nobody has told us so.
-  const wanted = store.workspaces.filter((workspace) => workspace.id === active)
+  //
+  // And any project an agent is working in. "Nothing changes in a project
+  // nobody is looking at" stops being true the moment an agent is busy in a
+  // workspace you are not on — which is the ordinary way to work with one —
+  // and that project's work used to wait up to ten minutes to be seen at all,
+  // then another round to be published. An agent at work is rare enough that
+  // this adds a handful of calls, not the every-workspace burst the cadence
+  // exists to prevent.
+  const wanted = store.workspaces.filter(
+    (workspace) => workspace.id === active || store.workspaceWorking(workspace.id, false) === 'agent'
+  )
 
   // Then a couple of the most neglected. Sorted by how long each has gone
   // unchecked, so every project comes round in turn rather than the same two
   // being picked forever.
   const idle = store.workspaces
-    .filter((workspace) => workspace.id !== active)
+    .filter((workspace) => !wanted.includes(workspace))
     .map((workspace) => ({ workspace, at: checkedAt.get(workspace.cwd) ?? 0 }))
     .filter(({ at }) => now - at > STALE_MS)
     .sort((a, b) => a.at - b.at)
@@ -223,14 +233,32 @@ export function live(record: RelayPresence, now = Date.now()): boolean {
  * it came from, because a command that only makes sense on a Mac is worth being
  * able to recognise before it lands on a Windows prompt.
  */
+/**
+ * Every folder's project key seen so far.
+ *
+ * A sweep only works out the keys of the projects it looked at — the one on
+ * screen and a couple of others — and `latest` is replaced by each sweep. Read
+ * from `latest` alone, a workspace you were not on had a key for the one
+ * minute in ten it was swept, so its warning appeared for a minute and then
+ * vanished: the records from the other machine were there all along, and this
+ * machine had simply forgotten which project they were about. A key only
+ * changes if the folder's remote does, so remembering it is safe.
+ */
+const knownKeys = new Map<string, string>()
+
+function keyOf(cwd: string): string | undefined {
+  for (const [folder, key] of Object.entries(latest.keys)) knownKeys.set(folder, key)
+  return knownKeys.get(cwd)
+}
+
 export function commandsElsewhere(cwd: string): { label: string; commands: string[] }[] {
-  const key = latest.keys[cwd]
+  const key = keyOf(cwd)
   if (!key) return []
   return latest.commandsByProject[key] ?? []
 }
 
 export function othersFor(cwd: string): RelayPresence[] {
-  const key = latest.keys[cwd]
+  const key = keyOf(cwd)
   if (!key) return []
   return (latest.byProject[key] ?? []).filter((record) => record.machine !== latest.machine)
 }
@@ -246,8 +274,13 @@ export function othersFor(cwd: string): RelayPresence[] {
  * Null means nothing to say, which is the ordinary answer and must stay cheap —
  * this runs for every workspace on every sidebar render.
  */
+/** Whether a record has work on it that is not anywhere else yet. */
+function hasWork(record: RelayPresence): boolean {
+  return !!(record.unsent || record.neverSent || record.changed.length)
+}
+
 export function relayWarning(cwd: string): { title: string } | null {
-  const others = othersFor(cwd).filter((record) => record.unsent || record.changed.length)
+  const others = othersFor(cwd).filter(hasWork)
   if (!others.length) return null
 
   const lines: string[] = []
@@ -260,6 +293,16 @@ export function relayWarning(cwd: string): { title: string } | null {
       const named = shown.map((subject) => `“${subject}”`).join(', ')
       lines.push(
         `  ${plural(record.unsent, 'unpushed commit')} (saves not sent)${named ? `: ${named}` : ''}${
+          rest > 0 ? `, and ${rest} more` : ''
+        }`
+      )
+    }
+    if (record.neverSent) {
+      const shown = record.unsentSubjects.slice(0, SUBJECTS_SHOWN)
+      const rest = record.neverSent - shown.length
+      const named = shown.map((subject) => `“${subject}”`).join(', ')
+      lines.push(
+        `  ${plural(record.neverSent, 'commit')} on a branch never pushed${named ? `: ${named}` : ''}${
           rest > 0 ? `, and ${rest} more` : ''
         }`
       )
@@ -298,12 +341,13 @@ const SUBJECTS_SHOWN = 3
  * Null when there is nothing worth a line, which is the ordinary case.
  */
 export function relayLineFor(cwd: string): string | null {
-  const others = othersFor(cwd).filter((record) => record.unsent || record.changed.length)
+  const others = othersFor(cwd).filter(hasWork)
   if (!others.length) return null
 
   const worst = others[0]
   const parts: string[] = []
   if (worst.unsent) parts.push(`${plural(worst.unsent, 'unpushed commit')} (saves not sent)`)
+  if (worst.neverSent) parts.push(`${plural(worst.neverSent, 'commit')} on a branch never pushed`)
   if (worst.changed.length)
     parts.push(`${plural(worst.changed.length, 'uncommitted file')} (changed, not saved)`)
   if (!parts.length) return null

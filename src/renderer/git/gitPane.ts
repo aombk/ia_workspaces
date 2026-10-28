@@ -49,6 +49,8 @@ import { HistoryView } from './historyView'
 import { GitProgressBar } from './progressBar'
 import { showPublish } from './publish'
 import { invalidateRepo, refreshRepo, watchRepo, type RepoSnapshot } from './repoWatch'
+import { fetchForGitPane } from './autoFetch'
+import { isShown } from '../redraw'
 import type { GitContext, GitView } from './view'
 
 export type GitViewName = 'changes' | 'history'
@@ -78,6 +80,8 @@ export class GitPane implements AuxPane {
    * reason in their tooltip. Nothing you are reaching for moves while you reach.
    */
   private readonly peekBtn: HTMLButtonElement
+  /** Whether the pane was on screen at the last `sync`, so arriving can be told apart from staying. */
+  private wasShown = false
   private readonly bringBtn: HTMLButtonElement
   private readonly sendBtn: HTMLButtonElement
   private readonly publishBtn: HTMLButtonElement
@@ -105,6 +109,9 @@ export class GitPane implements AuxPane {
 
     this.element = document.createElement('div')
     this.element.className = 'git-pane'
+    // Clicking into the pane is looking at it on purpose, even when it was
+    // already on screen. The host throttles, so this is free when repeated.
+    this.element.addEventListener('pointerdown', () => this.lookedAt())
 
     this.headEl = document.createElement('div')
     this.headEl.className = 'diff-head'
@@ -262,6 +269,12 @@ export class GitPane implements AuxPane {
    */
   sync(): void {
     if (this.disposed) return
+
+    // Coming into view — its tab picked, its workspace switched to — is the
+    // other way of looking at it. Edge-triggered: `sync` runs on every render.
+    const shown = isShown(this.element)
+    if (shown && !this.wasShown) this.lookedAt()
+    this.wasShown = shown
 
     // The kind is the view, so something else setting it — "History" from the
     // tab menu while this pane is showing Changes — has to land here. Without
@@ -721,6 +734,12 @@ export class GitPane implements AuxPane {
         this.activeView().update(this.snapshot)
       }
     }
+  }
+
+  /** Somebody is looking at this pane; let the remote's news arrive. */
+  private lookedAt(): void {
+    if (this.disposed || remoteHostOfPane(this.paneId)) return
+    fetchForGitPane(this.cwd)
   }
 
   private async peek(): Promise<void> {

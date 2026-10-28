@@ -38,7 +38,7 @@
  */
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { repoStatus, unsentSubjects } from './git'
+import { neverSentSaves, repoStatus, unsentSubjects } from './git'
 import { redact, seal, unsealAsync } from './shareCrypto'
 import { machine, projectKey } from './shareIdentity'
 import type { Relay, RelayPresence, RelayPublishEntry, RepoStatus } from '../shared/types'
@@ -196,6 +196,10 @@ export async function publishRelay(
       .map((file) => file.repoPath)
       .sort()
     const untracked = status.files.filter((file) => file.untracked).length
+    // A branch never sent has no upstream to be ahead of, so `ahead` is 0 for
+    // it however much is on it. Counted here instead, against every remote.
+    const fresh =
+      status.hasRemote && !status.upstream && !status.detached ? await neverSentSaves(entry.cwd, MAX_SUBJECTS) : null
 
     const shape = shapeOf({
       branch: status.branch,
@@ -205,6 +209,7 @@ export async function publishRelay(
       behind: status.behind,
       hasRemote: status.hasRemote,
       upstream: status.upstream,
+      neverSent: fresh?.count,
       inProgress: status.inProgress,
       changed: changed.slice(0, MAX_CHANGED),
       untracked,
@@ -274,10 +279,11 @@ export async function publishRelay(
       // those are different numbers and why only this one belongs in a sentence
       // that names a branch.
       unsent: status.ahead,
-      unsentSubjects: status.ahead ? await unsentSubjects(entry.cwd, MAX_SUBJECTS) : [],
+      unsentSubjects: status.ahead ? await unsentSubjects(entry.cwd, MAX_SUBJECTS) : (fresh?.subjects ?? []),
       behind: status.behind,
       hasRemote: status.hasRemote,
       upstream: status.upstream,
+      neverSent: fresh?.count || undefined,
       changed: changed.slice(0, MAX_CHANGED),
       untracked,
       inProgress: status.inProgress,
@@ -465,6 +471,7 @@ interface Shape {
   behind: number
   hasRemote: boolean
   upstream?: string
+  neverSent?: number
   inProgress?: RelayPresence['inProgress']
   changed: string[]
   untracked: number
@@ -494,6 +501,7 @@ function shapeOf(value: Shape): string {
     value.behind,
     value.hasRemote,
     value.upstream ?? null,
+    value.neverSent || null,
     value.inProgress ?? null,
     value.changed,
     value.untracked,
@@ -525,6 +533,7 @@ async function readOwn(root: string, key: string, id: string): Promise<Shape | n
       behind: record.behind,
       hasRemote: record.hasRemote,
       upstream: record.upstream,
+      neverSent: record.neverSent,
       inProgress: record.inProgress,
       changed: Array.isArray(record.changed) ? record.changed : [],
       untracked: record.untracked,

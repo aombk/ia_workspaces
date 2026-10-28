@@ -33,6 +33,7 @@ import type {
   SpaceGitInfo,
   SpaceReport,
   SpaceResult,
+  BackgroundFetch,
   HistoryEntry,
   VaultEntry,
   RepoStatus,
@@ -437,6 +438,12 @@ export interface Backend {
     guessOrigin(cwd: string): Promise<string>
     /** Which host CLIs are installed and signed in, for the one-button publish. */
     hostTools(cwd: string): Promise<HostTool[]>
+    /**
+     * A fetch nobody pressed: quiet, never asks for credentials, skipped when
+     * this checkout was fetched less than `minAgeMs` ago, and backed off for
+     * half an hour after a failure. See `backgroundFetch` in `main/git.ts`.
+     */
+    backgroundFetch(cwd: string, minAgeMs: number): Promise<BackgroundFetch>
     /** Makes the project online with the host's own tool, and sends everything. */
     createOnline(
       cwd: string,
