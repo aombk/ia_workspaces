@@ -73,6 +73,7 @@ import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
 import { initAwakeStrip } from './ui/awakeStrip'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
 import { initMonitorDock, toggleMonitorDock } from './ui/monitorDock'
+import { initAutoFetch } from './git/autoFetch'
 
 let terminals: TerminalManager
 /** Guards against re-entrant mounts while a spawn is in flight. */
@@ -263,6 +264,9 @@ export async function start(): Promise<void> {
   initTokenMonitor()
   initTurnMonitor()
   initRelayMonitor()
+  // Fetches nobody pressed: after starting, on a timer, and as a git pane is
+  // looked at. Each is a setting; see `git/autoFetch.ts`.
+  initAutoFetch()
   initTimeMonitor()
   // A sweep lands on its own timer, not through the store, so the sidebar would
   // otherwise keep yesterday's triangles until something unrelated redrew it.

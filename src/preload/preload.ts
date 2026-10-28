@@ -26,6 +26,7 @@ import type {
   HistoryEntry,
   VaultEntry,
   Worktree,
+  BackgroundFetch,
   SessionHostInfo,
   SystemStats,
   UsageReport,
@@ -227,6 +228,8 @@ const api = {
       cwd: string,
       opts: { command: string; name: string; private: boolean; description?: string }
     ): Promise<GitResult> => ipcRenderer.invoke(IPC.gitCreateOnline, cwd, opts),
+    backgroundFetch: (cwd: string, minAgeMs: number): Promise<BackgroundFetch> =>
+      ipcRenderer.invoke(IPC.gitBackgroundFetch, cwd, minAgeMs),
   },
   setAgentHooks: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string; path: string }> =>
     ipcRenderer.invoke(IPC.setAgentHooks, id, enabled),

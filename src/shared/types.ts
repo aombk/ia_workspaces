@@ -1953,6 +1953,30 @@ export interface Settings {
    */
   showRelayWarning: boolean
   /**
+   * Fetch every project once, shortly after the app starts.
+   *
+   * On by default: a fetch only downloads what the remote has and moves the
+   * `origin/…` markers — no file, branch or commit of yours is touched — and it
+   * is the only way this machine learns about work you pushed from another
+   * one. Relay sees work that has *not* been pushed; this sees work that has.
+   * Never asks for a password: a project that needs one is skipped.
+   */
+  gitFetchOnStart: boolean
+  /**
+   * Fetch a project when its git pane is shown or clicked into, at most once
+   * every two minutes. On by default — that is the moment you are about to act
+   * on what the remote has.
+   */
+  gitFetchOnGitPane: boolean
+  /**
+   * Fetch every project this often, in minutes. 0 is never.
+   *
+   * 15 by default: often enough that a push from another machine shows up
+   * within a coffee, rare enough to be nothing — one small request per project
+   * a quarter of an hour, two at a time.
+   */
+  gitFetchEveryMinutes: number
+  /**
    * A folder every machine you work from can see — a synced drive, a share.
    *
    * One folder for the two features that need one: token totals pooled across
@@ -2713,6 +2737,17 @@ export interface Branch {
  * user needs to read, and nothing we compose would beat it. `hint` is the
  * plain-English sentence the pane adds *beside* it, never instead of it.
  */
+/**
+ * What one background fetch did. `skipped` is the ordinary answer: no remote,
+ * fetched moments ago, or backing off after a failure.
+ */
+export interface BackgroundFetch {
+  status: 'fetched' | 'skipped' | 'failed'
+  /** The checkout fetched, so the caller can refresh what shows it. */
+  root?: string
+  error?: string
+}
+
 export interface GitResult {
   ok: boolean
   error?: string
@@ -2989,6 +3024,9 @@ export const DEFAULT_SETTINGS: Settings = {
   showGitBranch: true,
   showTabCount: false,
   showRelayWarning: true,
+  gitFetchOnStart: true,
+  gitFetchOnGitPane: true,
+  gitFetchEveryMinutes: 15,
   sharedDir: '',
   fileDrag: 'auto',
   shareCommands: false,

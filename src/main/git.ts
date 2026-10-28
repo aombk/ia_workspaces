@@ -45,6 +45,7 @@ import type {
   GitChange,
   GitProgress,
   GitResult,
+  BackgroundFetch,
   HistoryFilter,
   HostTool,
   RepoStatus,
@@ -1493,6 +1494,109 @@ export async function peek(cwd: string): Promise<GitResult> {
     }
   }
   return asResult(res)
+}
+
+/**
+ * A fetch nobody asked for, run on a timer, at startup, or as the git pane is
+ * looked at — so "N saves to bring in" is known before anyone presses peek.
+ *
+ * Everything about it is shaped by nobody watching:
+ *
+ * - **It must never ask.** No terminal prompt, no SSH passphrase prompt, no
+ *   Git Credential Manager window appearing out of nowhere. A fetch that needs
+ *   a person fails quietly instead, and the peek button is still there for the
+ *   one that does.
+ * - **It backs off.** A failure — offline, signed out, a remote that has gone
+ *   away — is not retried for half an hour, whatever asks. Retrying a failed
+ *   credential every minute is how accounts get locked.
+ * - **It is throttled per checkout**, so a timer, a startup sweep and a pane
+ *   being looked at in the same minute make one fetch, and several workspaces
+ *   on one repository make one fetch between them.
+ * - **Two at a time**, across the whole app: a sweep of twenty workspaces is a
+ *   queue, not twenty processes.
+ *
+ * No progress is reported, so nothing in a git pane lights up for it; the
+ * pane finds out the way it finds out anything, by its next look at the repo.
+ */
+const FETCH_BACKOFF_MS = 30 * 60 * 1000
+const FETCH_LANES = 2
+const lastFetch = new Map<string, { at: number; failed: boolean }>()
+const fetching = new Map<string, Promise<BackgroundFetch>>()
+let fetchLanes = 0
+const fetchQueue: (() => void)[] = []
+
+export function backgroundFetch(cwd: string, minAgeMs: number): Promise<BackgroundFetch> {
+  return (async () => {
+    const root = await checkoutRoot(cwd)
+    if (!root) return { status: 'skipped' as const }
+    const running = fetching.get(root)
+    if (running) return running
+    const last = lastFetch.get(root)
+    const wait = last?.failed ? Math.max(minAgeMs, FETCH_BACKOFF_MS) : minAgeMs
+    if (last && Date.now() - last.at < wait) return { status: 'skipped' as const, root }
+    if (!(await originUrl(root))) return { status: 'skipped' as const, root }
+
+    const job = (async (): Promise<BackgroundFetch> => {
+      await new Promise<void>((go) => {
+        if (fetchLanes < FETCH_LANES) {
+          fetchLanes++
+          go()
+        } else fetchQueue.push(go)
+      })
+      try {
+        const res = await runQuiet(root, ['fetch', '--quiet'])
+        lastFetch.set(root, { at: Date.now(), failed: !res.ok })
+        return res.ok ? { status: 'fetched', root } : { status: 'failed', root, error: res.err }
+      } finally {
+        const next = fetchQueue.shift()
+        if (next) next()
+        else fetchLanes--
+      }
+    })()
+    fetching.set(root, job)
+    try {
+      return await job
+    } finally {
+      fetching.delete(root)
+    }
+  })()
+}
+
+/**
+ * `run`, with every way git or its helpers could stop to ask turned off.
+ *
+ * `GIT_TERMINAL_PROMPT=0` is already in `run`, and covers git's own prompt.
+ * The rest are its helpers: OpenSSH asks through `SSH_ASKPASS` when there is
+ * no terminal, and Git Credential Manager opens a window. `GIT_SSH_COMMAND` is
+ * left alone — overriding it would throw away a `core.sshCommand` the user set
+ * on purpose.
+ */
+function runQuiet(root: string, args: string[]): Promise<GitRun> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      gitArgs(['-c', 'credential.interactive=never', ...args]),
+      {
+        cwd: root,
+        timeout: NETWORK_TIMEOUT_MS,
+        windowsHide: true,
+        maxBuffer: MAX_OUTPUT,
+        env: {
+          ...process.env,
+          PATH: toolPath(),
+          GIT_TERMINAL_PROMPT: '0',
+          GCM_INTERACTIVE: 'never',
+          SSH_ASKPASS_REQUIRE: 'never',
+          GIT_ASKPASS: '',
+          SSH_ASKPASS: '',
+          LC_ALL: 'C',
+        },
+      },
+      (error, stdout, stderr) => {
+        resolve({ ok: !error, out: stdout ?? '', err: (stderr ?? '').trim() || (error?.message ?? '') })
+      }
+    )
+  })
 }
 
 /**

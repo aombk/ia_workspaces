@@ -80,6 +80,7 @@ export const IPC = {
   gitGuessOrigin: 'git:guessOrigin',
   gitHostTools: 'git:hostTools',
   gitCreateOnline: 'git:createOnline',
+  gitBackgroundFetch: 'git:backgroundFetch',
   setAgentHooks: 'agent:setHooks',
   wslDistros: 'app:wslDistros',
   wslRunning: 'app:wslRunning',
