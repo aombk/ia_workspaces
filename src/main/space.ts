@@ -126,9 +126,15 @@ async function walk(
             if (seen.has(key)) return
             seen.add(key)
           }
-          // Windows reports no blocks at all, so there the on-disk figure is
-          // the length — and `measure` asks `compact` for the real one.
-          job.into.bytes += typeof st.blocks === 'number' ? st.blocks * 512 : st.size
+          // Not blocks on Windows: Node does report them there, but as the
+          // allocation — every small file rounded up to a whole cluster, one
+          // under a few hundred bytes as nothing at all. `compact`, which
+          // `measure` asks for the real total, counts data, so a folder
+          // measured in blocks came out larger than the project holding it.
+          // The length is the same unit `compact` uses for a file it has not
+          // compressed.
+          job.into.bytes +=
+            process.platform !== 'win32' && typeof st.blocks === 'number' ? st.blocks * 512 : st.size
           job.into.apparent += st.size
           job.into.files++
           // Only what you wrote counts as the project changing: a rebuild
