@@ -113,5 +113,21 @@ await checkAsync('a remote that wants credentials fails instead of asking', asyn
   assert.ok(Date.now() - started < 30_000, 'it gave up rather than waiting')
 })
 
+await checkAsync('a save, send or tag waits for a background fetch to finish first', async () => {
+  const slow = path.join(out, 'slow')
+  git(out, 'clone', '-q', bare, slow)
+  // A remote that takes a second and a half to answer, so the fetch is
+  // certainly still running when the tag is asked for. `ext::` runs a command
+  // as the transport; it is off unless a repository allows it.
+  git(slow, 'config', 'protocol.ext.allow', 'always')
+  git(slow, 'remote', 'set-url', 'origin', `ext::sh -c sleep% 1.5;% git-upload-pack% '${bare}'`)
+  const order = []
+  const fetched = G.backgroundFetch(slow, 0).then((res) => order.push(`fetch:${res.status}`))
+  await new Promise((r) => setTimeout(r, 200))
+  const tagged = G.addTag(slow, 'HEAD', 'waited').then((res) => order.push(`tag:${res.ok}`))
+  await Promise.all([fetched, tagged])
+  assert.deepEqual(order, ['fetch:fetched', 'tag:true'], 'the tag was made after the fetch, not during it')
+})
+
 fs.rmSync(out, { recursive: true, force: true })
 console.log(`\n${passed} checks passed`)

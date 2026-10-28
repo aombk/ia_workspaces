@@ -1425,7 +1425,7 @@ export async function unpick(cwd: string, paths: string[]): Promise<GitResult> {
 export async function save(cwd: string, message: string): Promise<GitResult> {
   const text = message.trim()
   if (!text) return { ok: false, error: 'a message is required', hint: 'A save needs a line saying what it is, so the list of saves is readable later.' }
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'save')
   return asResult(await run(root, ['commit', '-m', text]))
 }
 
@@ -1439,7 +1439,7 @@ export async function save(cwd: string, message: string): Promise<GitResult> {
  * flag would be theatre.
  */
 export async function send(cwd: string): Promise<GitResult> {
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'send')
   const status = await repoStatus(root)
   if (status.detached || !status.branch) {
     return {
@@ -1483,7 +1483,7 @@ export async function send(cwd: string): Promise<GitResult> {
  * from. Nothing is printed to a user either way — the output goes to the pane.
  */
 export async function peek(cwd: string): Promise<GitResult> {
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'peek')
   const res = await runProgress(root, ['fetch', '--progress'], { op: 'peek', network: true, stoppable: true })
   if (res.stopped) {
     return {
@@ -1519,6 +1519,7 @@ export async function peek(cwd: string): Promise<GitResult> {
  * pane finds out the way it finds out anything, by its next look at the repo.
  */
 const FETCH_BACKOFF_MS = 30 * 60 * 1000
+const BACKGROUND_FETCH_TIMEOUT_MS = 45_000
 const FETCH_LANES = 2
 const lastFetch = new Map<string, { at: number; failed: boolean }>()
 const fetching = new Map<string, Promise<BackgroundFetch>>()
@@ -1563,6 +1564,30 @@ export function backgroundFetch(cwd: string, minAgeMs: number): Promise<Backgrou
 }
 
 /**
+ * The checkout root, once any background fetch running in it has finished.
+ *
+ * Every operation that writes to a repository — a save, a send, a bring-in,
+ * moving between branches — waits here first. A fetch writes the remote's
+ * branches into the repository too, and two writers at once is how git ends
+ * up saying "cannot lock ref" about something nobody did wrong. It is also
+ * what makes a send or a bring-in act on the remote as it now is rather than
+ * as it was a moment before the fetch landed.
+ *
+ * The wait is bounded by the background fetch's own timeout, which is short
+ * for this reason, and the progress bar says what it is waiting for so a
+ * button that seems to do nothing is explained.
+ */
+async function afterBackgroundFetch(cwd: string, op: string): Promise<string> {
+  const root = (await checkoutRoot(cwd)) ?? cwd
+  const running = fetching.get(root)
+  if (running) {
+    report({ cwd, op, phase: 'waiting', plain: 'Waiting for a background fetch to finish' })
+    await running
+  }
+  return root
+}
+
+/**
  * `run`, with every way git or its helpers could stop to ask turned off.
  *
  * `GIT_TERMINAL_PROMPT=0` is already in `run`, and covers git's own prompt.
@@ -1578,7 +1603,10 @@ function runQuiet(root: string, args: string[]): Promise<GitRun> {
       gitArgs(['-c', 'credential.interactive=never', ...args]),
       {
         cwd: root,
-        timeout: NETWORK_TIMEOUT_MS,
+        // Short, because a save or a send may be waiting on this one. A fetch
+        // that has not finished in this long is not going to, and the button
+        // somebody pressed should not wait out two minutes to learn that.
+        timeout: BACKGROUND_FETCH_TIMEOUT_MS,
         windowsHide: true,
         maxBuffer: MAX_OUTPUT,
         env: {
@@ -1609,7 +1637,7 @@ function runQuiet(root: string, args: string[]): Promise<GitRun> {
  * git asking a question rather than anything going wrong.
  */
 export async function bringIn(cwd: string): Promise<GitResult> {
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'bring-in')
   return asResult(await runProgress(root, ['pull', '--rebase', '--progress'], { op: 'bring-in', network: true }))
 }
 
@@ -1623,7 +1651,7 @@ export async function bringIn(cwd: string): Promise<GitResult> {
  * them up, which is what someone clicking `origin/thing` in a list means.
  */
 export async function goTo(cwd: string, name: string): Promise<GitResult> {
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'go-to')
   const remotes = await remoteNames(root)
   const prefix = remotes.find((r) => name.startsWith(`${r}/`))
   const local = prefix ? name.slice(prefix.length + 1) : name
@@ -1634,7 +1662,7 @@ export async function goTo(cwd: string, name: string): Promise<GitResult> {
 export async function startBranch(cwd: string, name: string): Promise<GitResult> {
   const clean = name.trim()
   if (!clean) return { ok: false, error: 'a name is required' }
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'start-branch')
   return asResult(await run(root, ['switch', '--create', clean]))
 }
 
@@ -1677,7 +1705,7 @@ export async function applyLines(cwd: string, patch: string, direction: 'pick' |
  * exactly the class of operation this pane leaves to the terminal.
  */
 export async function undoLastSave(cwd: string): Promise<GitResult> {
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'undo')
   const status = await statusOf(root)
   if (!status.lastSave) {
     return { ok: false, error: 'no saves yet', hint: 'There is no save to undo — this project has not had one made yet.' }
@@ -1707,7 +1735,7 @@ export async function undoLastSave(cwd: string): Promise<GitResult> {
  * alone and a rewrite once it is not.
  */
 export async function amend(cwd: string, message: string): Promise<GitResult> {
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'amend')
   const status = await statusOf(root)
   if (!status.lastSave) {
     return { ok: false, error: 'no saves yet', hint: 'There is no save to add to yet. Make the first one.' }
@@ -1735,7 +1763,7 @@ export async function amend(cwd: string, message: string): Promise<GitResult> {
  */
 export async function revertSave(cwd: string, sha: string): Promise<GitResult> {
   if (!sha.trim()) return { ok: false, error: 'no save given' }
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'revert')
   // A merge has two sides, and reverting one needs to be told which to keep.
   // `-m 1` means "keep the line you were on", the only answer a button can
   // give honestly — and git refuses outright without it.
@@ -1751,7 +1779,7 @@ export async function revertSave(cwd: string, sha: string): Promise<GitResult> {
 export async function addTag(cwd: string, sha: string, name: string): Promise<GitResult> {
   const clean = name.trim()
   if (!clean) return { ok: false, error: 'a name is required' }
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'tag')
   // Not `--force`: a name that already points at another save is a question,
   // and moving it silently is how a release tag comes to mean something else.
   return asResult(await run(root, ['tag', clean, sha || 'HEAD']))
@@ -1793,7 +1821,7 @@ export async function initRepo(cwd: string): Promise<GitResult> {
 export async function setOrigin(cwd: string, url: string): Promise<GitResult> {
   const clean = url.trim()
   if (!clean) return { ok: false, error: 'an address is required' }
-  const root = (await checkoutRoot(cwd)) ?? cwd
+  const root = await afterBackgroundFetch(cwd, 'set-origin')
   const existing = await run(root, ['remote', 'get-url', 'origin'])
   if (existing.ok && existing.out.trim()) {
     return {
@@ -1833,6 +1861,7 @@ export async function setOrigin(cwd: string, url: string): Promise<GitResult> {
  * being left half-connected.
  */
 export async function reconnect(cwd: string, url: string): Promise<GitResult> {
+  await afterBackgroundFetch(cwd, 'reconnect')
   const clean = url.trim()
   if (!clean) return { ok: false, error: 'an address is required' }
   const already = await checkoutRoot(cwd)
@@ -2001,6 +2030,7 @@ export async function createOnline(
   cwd: string,
   opts: { command: string; name: string; private: boolean; description?: string }
 ): Promise<GitResult> {
+  await afterBackgroundFetch(cwd, 'publish')
   const root = (await checkoutRoot(cwd)) ?? cwd
   const name = opts.name.trim()
   if (!name) return { ok: false, error: 'a name is required' }
