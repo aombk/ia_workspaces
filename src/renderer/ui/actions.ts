@@ -41,6 +41,8 @@ export interface UiActions {
   openRunbook(workspaceId: string): void
   /** Every prompt you have sent an agent, across every project, as a tab. */
   openPrompts(workspaceId: string): void
+  /** How much room this project takes, and getting it back, as a tab. */
+  openSpace(workspaceId: string): void
   /**
    * Numbers a picture from the clipboard and types the result into a pane.
    *

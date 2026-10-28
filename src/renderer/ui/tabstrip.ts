@@ -418,6 +418,10 @@ function newTabEntries(workspaceId: string): MenuEntry[] {
       onClick: () => actions.openPrompts(workspaceId),
     },
     {
+      label: 'space',
+      onClick: () => actions.openSpace(workspaceId),
+    },
+    {
       label: 'focus',
       onClick: () => actions.openFocus(workspaceId),
     },

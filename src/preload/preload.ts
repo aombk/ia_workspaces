@@ -26,6 +26,10 @@ import type {
   HistoryEntry,
   VaultEntry,
   Worktree,
+  SpaceCompressor,
+  SpaceGitInfo,
+  SpaceReport,
+  SpaceResult,
   SessionHostInfo,
   SystemStats,
   UsageReport,
@@ -227,6 +231,20 @@ const api = {
       cwd: string,
       opts: { command: string; name: string; private: boolean; description?: string }
     ): Promise<GitResult> => ipcRenderer.invoke(IPC.gitCreateOnline, cwd, opts),
+  },
+  space: {
+    measure: (dir: string): Promise<SpaceReport> => ipcRenderer.invoke(IPC.spaceMeasure, dir),
+    cached: (): Promise<Record<string, SpaceReport>> => ipcRenderer.invoke(IPC.spaceCached),
+    compressor: (): Promise<SpaceCompressor> => ipcRenderer.invoke(IPC.spaceCompressor),
+    compress: (dir: string): Promise<SpaceResult> => ipcRenderer.invoke(IPC.spaceCompress, dir),
+    clean: (dir: string, paths: string[]): Promise<SpaceResult> => ipcRenderer.invoke(IPC.spaceClean, dir, paths),
+    park: (dir: string, paths: string[]): Promise<SpaceResult> => ipcRenderer.invoke(IPC.spacePark, dir, paths),
+    gitInfo: (dir: string): Promise<SpaceGitInfo> => ipcRenderer.invoke(IPC.spaceGitInfo, dir),
+    gitCompact: (dir: string): Promise<SpaceResult> => ipcRenderer.invoke(IPC.spaceGitCompact, dir),
+    gitTrim: (dir: string, keep: number, backupFile: string): Promise<SpaceResult> =>
+      ipcRenderer.invoke(IPC.spaceGitTrim, dir, keep, backupFile),
+    gitRemove: (dir: string, backupFile: string): Promise<SpaceResult> =>
+      ipcRenderer.invoke(IPC.spaceGitRemove, dir, backupFile),
   },
   setAgentHooks: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string; path: string }> =>
     ipcRenderer.invoke(IPC.setAgentHooks, id, enabled),

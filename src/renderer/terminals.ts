@@ -23,6 +23,7 @@ import { DayPane } from './dayPane'
 import { FocusPane } from './focusPane'
 import { RunbookPane } from './runbookPane'
 import { PromptsPane } from './promptsPane'
+import { SpacePane, type SpacePaneHooks } from './spacePane'
 import { lastTurn, watchTurns } from './ui/turnMonitor'
 import { describeTurn } from './ui/turnFacts'
 import { addImageNotes } from './ui/imageNotes'
@@ -164,6 +165,7 @@ export class TerminalManager {
   private editorHooks: EditorPaneHooks | null = null
   private portsHooks: PortsPaneHooks | null = null
   private imagesHooks: ImagesPaneHooks | null = null
+  private spaceHooks: SpacePaneHooks | null = null
   private searchHooks: SearchPaneHooks | null = null
   private paneHooks: PaneHooks | null = null
   /** Pane being dragged by its header, so drop targets know what to expect. */
@@ -937,6 +939,11 @@ export class TerminalManager {
     this.portsHooks = hooks
   }
 
+  /** Wired by the app shell once, so the all-projects list can open another workspace's pane. */
+  setSpaceHooks(hooks: SpacePaneHooks): void {
+    this.spaceHooks = hooks
+  }
+
   /** Wired by the app shell once, so the gallery can follow the file tree. */
   setImagesHooks(hooks: ImagesPaneHooks): void {
     this.imagesHooks = hooks
@@ -987,6 +994,11 @@ export class TerminalManager {
       // its "this project" filter knows which workspace it was opened from.
       case 'prompts':
         pane = new PromptsPane(state.id)
+        break
+      // How much room this project takes. Measures when it opens and when
+      // asked, never on a timer — a measurement is seconds of disk reads.
+      case 'space':
+        pane = new SpacePane(state.id, workspaceIdOf(state.id), this.spaceHooks!)
         break
       // Time, tasks and a timer for one project. Draws from the time monitor's
       // own read and the project's own NOTES.md; nothing else feeds it.

@@ -2293,6 +2293,148 @@ kbd {
   color: var(--text-faint);
 }
 
+/* -------------------------------------------------------------- space pane
+
+   How much room the project takes, and getting it back. Cards in the runbook's
+   shape, so the two read as one family of project panes. */
+
+.space-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.space-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.space-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  background: var(--bg-raised, var(--bg));
+}
+
+.space-card h3 {
+  margin: 0 0 2px;
+  font-size: calc(11px * var(--ui-text, 1));
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--text-faint);
+}
+
+.space-total {
+  font-size: calc(22px * var(--ui-text, 1));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  margin: 4px 0 2px;
+}
+
+.space-hint,
+.space-note {
+  margin: 0 0 8px;
+  font-size: calc(11px * var(--ui-text, 1));
+  line-height: 1.45;
+  color: var(--text-faint);
+  user-select: text;
+  cursor: text;
+}
+
+.space-warning {
+  margin: 0 0 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--warn);
+  font-size: calc(11px * var(--ui-text, 1));
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.space-row,
+.space-all {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+.space-all {
+  cursor: pointer;
+}
+
+.space-row:hover,
+.space-all:hover {
+  background: var(--bg-hover);
+}
+
+.space-all--here .space-path {
+  font-weight: 600;
+}
+
+.space-row--kept {
+  opacity: 0.55;
+}
+
+.space-row input {
+  flex: none;
+  margin: 0;
+  align-self: center;
+}
+
+.space-path {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: calc(12px * var(--ui-text, 1));
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.space-what {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(10px * var(--ui-text, 1));
+  color: var(--text-faint);
+}
+
+.space-size {
+  flex: none;
+  font-size: calc(11px * var(--ui-text, 1));
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.space-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.space-buttons .space-danger:not(:disabled) {
+  color: var(--danger);
+}
+
 /* The terminal's own top-right corner, and what still lives in it: the turn
    summary. The history control used to sit here too and now lives in the bar
    above the pane — the pane header in a split, the tab bar otherwise — because

@@ -2591,6 +2591,7 @@ export function paneLabel(pane: PaneState): string {
   if (pane.kind === 'tokens') return 'token stats'
   if (pane.kind === 'runbook') return 'runbook'
   if (pane.kind === 'prompts') return 'prompts'
+  if (pane.kind === 'space') return 'space'
   if (pane.kind === 'focus') return 'focus'
   if (pane.kind === 'day') return 'today'
   // The canvas's own name, since a workspace can hold several now. Stripped of

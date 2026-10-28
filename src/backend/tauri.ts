@@ -154,4 +154,4 @@ function notYet<T extends object>(partial: Partial<T>, path: string): T {
 }
 
 /** The `Backend` fields that hold other functions rather than being one. */
-const GROUPS = new Set(['files', 'git', 'pty', 'on', 'agent', 'window', 'history', 'time'])
+const GROUPS = new Set(['files', 'git', 'pty', 'on', 'agent', 'window', 'history', 'time', 'space'])

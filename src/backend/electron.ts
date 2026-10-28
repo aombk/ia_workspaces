@@ -101,6 +101,18 @@ export function createElectronBackend(): Backend {
       hostTools: (cwd) => api.git.hostTools(cwd),
       createOnline: (cwd, opts) => api.git.createOnline(cwd, opts),
     },
+    space: {
+      measure: (dir) => api.space.measure(dir),
+      cached: () => api.space.cached(),
+      compressor: () => api.space.compressor(),
+      compress: (dir) => api.space.compress(dir),
+      clean: (dir, paths) => api.space.clean(dir, paths),
+      park: (dir, paths) => api.space.park(dir, paths),
+      gitInfo: (dir) => api.space.gitInfo(dir),
+      gitCompact: (dir) => api.space.gitCompact(dir),
+      gitTrim: (dir, keep, backupFile) => api.space.gitTrim(dir, keep, backupFile),
+      gitRemove: (dir, backupFile) => api.space.gitRemove(dir, backupFile),
+    },
     agents: {
       list: () => api.agentHooks(),
       set: (id, enabled) => api.setAgentHooks(id, enabled),

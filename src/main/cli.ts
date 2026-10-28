@@ -55,7 +55,8 @@ showing something
   iaw open --url <address>              a browser pane on that page
   iaw open --pane KIND                  one of the app's own panes — git,
                                         search, images, running, tokens,
-                                        prompts, runbook, focus, today, canvas
+                                        prompts, runbook, focus, today, canvas,
+                                        space
 
   For an agent this is the difference between telling you where it put a chart
   and showing it to you. Nothing is closed and nothing is replaced: it opens

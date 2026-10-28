@@ -14,6 +14,8 @@ import { stepZoom, ZOOM_DEFAULT } from '../auxPane'
 import { beginDrag, draggingTab, draggingWorkspace, endDrag } from './dragState'
 import { relayWarning } from './relayMonitor'
 import { programsMenu, refreshRunningAppsLazily } from './appsMenu'
+import { spaceSizeOf } from '../spaceSizes'
+import { formatSize } from '../../shared/gitSize'
 import type { UiActions } from './actions'
 
 let actions: UiActions
@@ -318,11 +320,21 @@ ${workspace.cwd}`
     name.textContent = workspace.name
     label.appendChild(name)
 
-    if (store.settings.showGitBranch && workspace.branch) {
+    // The folder's size from its last measurement, on the branch's line. Only
+    // once something has measured it: a size the sidebar worked out itself
+    // would be a disk walk per workspace on every start.
+    const branchName = store.settings.showGitBranch ? workspace.branch : undefined
+    const size = spaceSizeOf(workspace.cwd)
+    if (branchName || size) {
       const branch = document.createElement('span')
       branch.className = 'workspace-branch'
-      branch.textContent = workspace.branch
-      branch.title = `On branch ${workspace.branch}`
+      branch.textContent = [branchName, size ? formatSize(size.bytes) : ''].filter(Boolean).join(' · ')
+      branch.title = [
+        branchName ? `On branch ${branchName}` : '',
+        size ? `${formatSize(size.bytes)} on disk when measured, ${new Date(size.measuredAt).toLocaleString()}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n')
       label.appendChild(branch)
     }
     el.appendChild(label)
@@ -663,6 +675,10 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
     {
       label: 'prompts',
       onClick: () => actions.openPrompts(workspaceId),
+    },
+    {
+      label: 'space',
+      onClick: () => actions.openSpace(workspaceId),
     },
     {
       label: 'focus',

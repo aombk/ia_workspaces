@@ -517,6 +517,15 @@ function collect(): Command[] {
     },
   })
   out.push({
+    kind: 'Action',
+    label: 'Disk space of this project',
+    detail: 'Size, regenerable folders, compress, park, and shrinking git history',
+    run: () => {
+      const active = store.activeWorkspace
+      if (active) actions.openSpace(active.id)
+    },
+  })
+  out.push({
     kind: 'Find',
     label: 'Transcripts of closed panes',
     detail: 'What a pane printed before you closed it — Ctrl+Alt+V',

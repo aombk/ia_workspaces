@@ -295,6 +295,7 @@ export const PANE_KINDS = [
   'day',
   'canvas',
   'prompts',
+  'space',
 ] as const
 
 export type PaneKind = (typeof PANE_KINDS)[number]
@@ -341,6 +342,7 @@ export const OPENABLE_PANES: Record<string, PaneKind> = {
   today: 'day',
   canvas: 'canvas',
   files: 'files',
+  space: 'space',
 }
 
 /**
@@ -3056,3 +3058,71 @@ export interface ClipboardImage {
   /** Whether there are pixels on the clipboard worth a paste keystroke. */
   pixels: boolean
 }
+
+/**
+ * A folder inside a project that its own tools will put back: dependencies,
+ * build output, caches. What the space pane offers to delete.
+ */
+export interface SpaceRegenerable {
+  /** Absolute. */
+  path: string
+  /** Relative to the measured folder, with forward slashes. */
+  rel: string
+  /** What puts it back, said plainly: "npm install", "a rebuild". */
+  label: string
+  /** On disk, after any compression. */
+  bytes: number
+  /**
+   * Ticked by default. Off for the ones that can hold something you made on
+   * purpose — a `dist/` is sometimes the release you shipped.
+   */
+  suggested: boolean
+  /** Listed in the project's `.devpark` file, so never offered. */
+  kept: boolean
+}
+
+/** One measurement of a project folder. See `main/space.ts`. */
+export interface SpaceReport {
+  dir: string
+  measuredAt: number
+  /** On disk, which is what compression changes. */
+  bytes: number
+  /** What the same files would take uncompressed. */
+  apparentBytes: number
+  files: number
+  /** The folder's own `.git`, when it has one. */
+  gitBytes: number
+  regenerables: SpaceRegenerable[]
+  /** Newest change outside `.git` and the regenerable folders, or null. */
+  newest: number | null
+  error?: string
+}
+
+/** A project's git history, as far as how much room it takes. */
+export interface SpaceGitInfo {
+  /** The folder has a `.git` directory of its own (not a worktree or a parent's). */
+  repo: boolean
+  gitBytes: number
+  branch: string | null
+  commits: number
+  branches: number
+  tags: number
+  stashes: number
+  /** Commits on local branches that no remote has. */
+  unpushed: number
+  remotes: { name: string; url: string; missing: boolean }[]
+  /** Linked worktrees share this history, so rewriting it is refused. */
+  worktrees: number
+  dirty: boolean
+  error?: string
+}
+
+/** What a space operation did. `freedBytes` is measured, not estimated. */
+export interface SpaceResult {
+  ok: boolean
+  error?: string
+  freedBytes?: number
+}
+
+/** Which compression tool this machine has. */
+export type SpaceCompressor = 'ready' | 'missing' | 'unsupported'

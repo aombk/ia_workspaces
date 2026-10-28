@@ -29,6 +29,10 @@ import type {
   SessionHostInfo,
   AgentConfigInfo,
   Worktree,
+  SpaceCompressor,
+  SpaceGitInfo,
+  SpaceReport,
+  SpaceResult,
   HistoryEntry,
   VaultEntry,
   RepoStatus,
@@ -438,6 +442,33 @@ export interface Backend {
       cwd: string,
       opts: { command: string; name: string; private: boolean; description?: string }
     ): Promise<GitResult>
+  }
+
+  /**
+   * How much room a project takes, and getting it back. See `main/space.ts`.
+   *
+   * The destructive calls re-check everything on the host side: `clean` only
+   * deletes folders its own rules recognise, and the git rewrites refuse to
+   * start until a backup bundle has been written and verified.
+   */
+  space: {
+    measure(dir: string): Promise<SpaceReport>
+    /** The last measurement of every folder measured so far, by folder. */
+    cached(): Promise<Record<string, SpaceReport>>
+    compressor(): Promise<SpaceCompressor>
+    /** In place, transparently: the files read back unchanged. */
+    compress(dir: string): Promise<SpaceResult>
+    /** Deletes regenerable folders. Refuses any path its rules do not match. */
+    clean(dir: string, paths: string[]): Promise<SpaceResult>
+    /** `clean`, then `compress`. */
+    park(dir: string, paths: string[]): Promise<SpaceResult>
+    gitInfo(dir: string): Promise<SpaceGitInfo>
+    /** Lossless repack. */
+    gitCompact(dir: string): Promise<SpaceResult>
+    /** Keeps the newest `keep` commits of the current branch; everything else goes. */
+    gitTrim(dir: string, keep: number, backupFile: string): Promise<SpaceResult>
+    /** Deletes `.git`, after backing it up. */
+    gitRemove(dir: string, backupFile: string): Promise<SpaceResult>
   }
 
   agents: {

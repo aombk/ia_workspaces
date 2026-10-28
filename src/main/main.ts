@@ -97,6 +97,7 @@ import {
   suggestWorktreeDir,
   worktreeAt,
 } from './worktrees'
+import * as space from './space'
 import { AGENTS, agentById } from './agents'
 import { isCliVerb, runCli } from './cli'
 import { ScrollbackStore } from './scrollback'
@@ -1106,6 +1107,22 @@ function bootApp(): void {
           ? git.createOnline(cwd, opts)
           : Promise.resolve({ ok: false, error: 'unknown tool' })
     )
+    // Project sizes and getting room back. Every path is re-checked in
+    // `space.ts`; nothing here takes the renderer's word that a folder is safe
+    // to delete.
+    const spaceSizes = space.spaceCache(path.join(SHARED_DATA_DIR, 'space-cache.json'))
+    handle(IPC.spaceMeasure, (_e, dir: string) => spaceSizes.measure(dir))
+    handle(IPC.spaceCached, () => spaceSizes.all())
+    handle(IPC.spaceCompressor, () => space.compressor())
+    handle(IPC.spaceCompress, (_e, dir: string) => space.compress(dir))
+    handle(IPC.spaceClean, (_e, dir: string, paths: string[]) => space.clean(dir, Array.isArray(paths) ? paths : []))
+    handle(IPC.spacePark, (_e, dir: string, paths: string[]) => space.park(dir, Array.isArray(paths) ? paths : []))
+    handle(IPC.spaceGitInfo, (_e, dir: string) => space.gitInfo(dir))
+    handle(IPC.spaceGitCompact, (_e, dir: string) => space.gitCompact(dir))
+    handle(IPC.spaceGitTrim, (_e, dir: string, keep: number, backupFile: string) =>
+      space.gitTrim(dir, Number(keep), String(backupFile ?? ''))
+    )
+    handle(IPC.spaceGitRemove, (_e, dir: string, backupFile: string) => space.gitRemove(dir, String(backupFile ?? '')))
     handle(IPC.setAgentHooks, (_e, id: string, enabled: boolean) => {
       const spec = agentById(id)
       if (!spec) return { ok: false, error: `unknown agent: ${id}`, path: '' }

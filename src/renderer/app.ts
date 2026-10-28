@@ -73,6 +73,7 @@ import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
 import { initAwakeStrip } from './ui/awakeStrip'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
 import { initMonitorDock, toggleMonitorDock } from './ui/monitorDock'
+import { loadSpaceSizes, watchSpaceSizes } from './spaceSizes'
 
 let terminals: TerminalManager
 /** Guards against re-entrant mounts while a spawn is in flight. */
@@ -146,6 +147,8 @@ export async function start(): Promise<void> {
     openHit: (target) => actions.openReader(target),
     openInEditor: (target) => openInEditor(target),
   })
+
+  terminals.setSpaceHooks({ openSpace: (workspaceId) => actions.openSpace(workspaceId) })
 
   terminals.setPortsHooks({
     jumpToPane: (workspaceId, paneId) => actions.jumpToPane(workspaceId, paneId),
@@ -254,6 +257,9 @@ export async function start(): Promise<void> {
   setRealTransparency(!backend().window.usesNativeOverlay)
   applyTheme()
   store.subscribe(requestRender)
+  // Sizes beside each workspace in the sidebar, from the last measurement.
+  watchSpaceSizes(requestRender)
+  void loadSpaceSizes()
   wirePointerHold()
   render()
 
@@ -987,6 +993,17 @@ const actions: UiActions = {
     void syncMountedTab()
   },
 
+  openSpace(workspaceId) {
+    // One per workspace: it is about this project's folder.
+    const existing = findPane((p) => p.kind === 'space', workspaceId)
+    if (existing) {
+      actions.jumpToPane(existing.workspaceId, existing.paneId)
+      return
+    }
+    store.addTab(workspaceId, undefined, 'space')
+    void syncMountedTab()
+  },
+
   openRunbook(workspaceId) {
     // One per workspace, because that is what it is about — the commands run in
     // *this* project's folder. Reopening jumps to the existing tab.
@@ -1561,6 +1578,7 @@ function openView(req: OpenViewRequest): void {
       case 'ports': return actions.openPorts(workspaceId)
       case 'tokens': return actions.openTokens(workspaceId)
       case 'prompts': return actions.openPrompts(workspaceId)
+      case 'space': return actions.openSpace(workspaceId)
       case 'runbook': return actions.openRunbook(workspaceId)
       case 'focus': return actions.openFocus(workspaceId)
       case 'day': return actions.openDay(workspaceId)

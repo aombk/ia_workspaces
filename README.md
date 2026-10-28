@@ -1154,7 +1154,7 @@ iaw open --url http://localhost:5173  # a browser pane on that page
 iaw open --pane git                   # or one of the app's own panes: git,
                                       # history, search, images, running,
                                       # tokens, prompts, runbook, focus,
-                                      # today, canvas, files
+                                      # today, canvas, files, space
 ```
 
 **It opens beside the work that asked.** The request carries the pane it came
@@ -1240,6 +1240,29 @@ token; the figure is what the same work would have cost on the API, which is the
 right way to compare two turns and the wrong way to predict a bill. Where Claude
 Code has recorded its own cost for a whole conversation, that figure is kept as
 it was given rather than recomputed.
+
+## Disk space
+
+A **space** tab, from the `+` menu, the workspace menu or the palette, shows
+how much room the workspace's folder takes and gets some of it back. The size
+also appears under each workspace's name once it has been measured.
+
+- **compress** stores every file compressed in place (APFS, through
+  `afsctool` — `brew install afsctool`). Nothing changes for you or your tools;
+  files you edit or rebuild are stored uncompressed again. For a project you are
+  resting.
+- **regenerable** lists the folders a tool puts back — `node_modules`, `.venv`,
+  `target`, `.build`, CMake and Gradle `build`, and so on — each recognised by
+  the file beside it, not by name alone. `dist`, `out` and a web project's
+  `build` are offered but never ticked, because they can hold a release. A
+  `.devpark` file in the project lists paths (one per line) never to offer.
+- **park** deletes the ticked folders, then compresses what is left.
+- **git history**: *compact* repacks `.git` and keeps every commit. *Keep last
+  N*, *squash to one* and *remove history* first write the whole history to a
+  `.bundle` file you choose (`git clone that.bundle` brings it all back), and
+  stop if it does not verify. They drop other branches, tags and stashes too.
+  None of them pushes: a remote keeps everything it has, and a normal push of a
+  shortened history is refused — only a force push would replace it.
 
 ## Shell integration
 
