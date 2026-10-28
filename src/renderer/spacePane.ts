@@ -175,11 +175,17 @@ export class SpacePane implements AuxPane {
     card.appendChild(big)
 
     if (r) {
+      const pair = document.createElement('div')
+      pair.className = 'space-total__pair'
       const saved = r.apparentBytes - r.bytes
+      pair.textContent = compressed(r.bytes, r.apparentBytes)
+        ? `on disk · ${formatSize(r.apparentBytes)} uncompressed — ${formatSize(saved)} (${Math.round((saved / r.apparentBytes) * 100)}%) saved by compression`
+        : `on disk · ${formatSize(r.apparentBytes)} uncompressed — not compressed`
+      card.appendChild(pair)
+
       const regen = r.regenerables.reduce((s, x) => s + x.bytes, 0)
       const facts = [
         `${r.files.toLocaleString()} files`,
-        saved > 64 * 1024 * 1024 ? `${formatSize(saved)} saved by compression` : 'not compressed',
         r.gitBytes ? `history ${formatSize(r.gitBytes)}` : 'no history',
         regen ? `regenerable ${formatSize(regen)}` : 'nothing regenerable',
         r.newest ? `last changed ${ago(r.newest)}` : '',
@@ -238,7 +244,7 @@ export class SpacePane implements AuxPane {
       what.textContent = r.kept ? 'kept by .devpark' : r.label
       const size = document.createElement('span')
       size.className = 'space-size'
-      size.textContent = formatSize(r.bytes)
+      setSizes(size, r.bytes, r.apparentBytes)
       line.append(box, path, what, size)
       card.appendChild(line)
     }
@@ -271,7 +277,11 @@ export class SpacePane implements AuxPane {
     card.appendChild(
       hint(
         [
-          `${formatSize(g.gitBytes)}`,
+          // The report's figures when there is one, since only the walk knows
+          // what the history would take uncompressed.
+          this.report?.gitApparentBytes !== undefined
+            ? sizesText(this.report.gitBytes, this.report.gitApparentBytes)
+            : formatSize(g.gitBytes),
           `${g.commits.toLocaleString()} commits`,
           g.branch ? `on ${g.branch}` : 'not on a branch',
           `${g.branches} branch${g.branches === 1 ? '' : 'es'}`,
@@ -328,7 +338,8 @@ export class SpacePane implements AuxPane {
         : 'not measured'
       const size = document.createElement('span')
       size.className = 'space-size'
-      size.textContent = r ? formatSize(r.bytes) : '—'
+      if (r) setSizes(size, r.bytes, r.apparentBytes)
+      else size.textContent = '—'
       line.append(name, what, size)
       line.addEventListener('click', () => this.hooks.openSpace(w.id))
       table.appendChild(line)
@@ -528,6 +539,37 @@ function section(title: string, about: string): HTMLElement {
   card.appendChild(head)
   if (about) card.appendChild(hint(about))
   return card
+}
+
+/**
+ * Whether compression is what separates the two sizes.
+ *
+ * Not any difference at all: a folder of small files takes more on disk than
+ * its files add up to (every file fills whole blocks), and a few percent either
+ * way is that rounding rather than compression.
+ */
+function compressed(onDisk: number, apparent: number | undefined): apparent is number {
+  return apparent !== undefined && apparent - onDisk > Math.max(1024 * 1024, apparent * 0.05)
+}
+
+/** "1.2 GB" or, when compressed, "1.2 GB / 3.4 GB uncompressed". */
+function sizesText(onDisk: number, apparent: number | undefined): string {
+  return compressed(onDisk, apparent)
+    ? `${formatSize(onDisk)} / ${formatSize(apparent)} uncompressed`
+    : formatSize(onDisk)
+}
+
+/** A size cell: on disk, and uncompressed beside it when compression made a difference. */
+function setSizes(el: HTMLElement, onDisk: number, apparent: number | undefined): void {
+  el.replaceChildren()
+  el.append(formatSize(onDisk))
+  el.title = `${formatSize(onDisk)} on disk`
+  if (!compressed(onDisk, apparent)) return
+  const full = document.createElement('span')
+  full.className = 'space-size__full'
+  full.textContent = ` / ${formatSize(apparent)}`
+  el.appendChild(full)
+  el.title = `${formatSize(onDisk)} on disk, ${formatSize(apparent)} uncompressed`
 }
 
 function hint(text: string): HTMLElement {

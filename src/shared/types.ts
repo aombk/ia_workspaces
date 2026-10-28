@@ -1944,6 +1944,14 @@ export interface Settings {
    */
   showTabCount: boolean
   /**
+   * Show each workspace folder's size, beside its name.
+   *
+   * Only ever the last measurement — the space pane's, or "measure all" — so
+   * a workspace nobody has measured shows nothing rather than costing a walk
+   * of its folder on every start.
+   */
+  showWorkspaceSize: boolean
+  /**
    * Mark a workspace when another machine has work in it you have not seen.
    *
    * On by default, unlike the other two, because it is not a preference about
@@ -3052,6 +3060,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarZoom: 1,
   showGitBranch: true,
   showTabCount: false,
+  showWorkspaceSize: true,
   showRelayWarning: true,
   gitFetchOnStart: true,
   gitFetchOnGitPane: true,
@@ -3148,6 +3157,11 @@ export interface SpaceRegenerable {
   /** On disk, after any compression. */
   bytes: number
   /**
+   * What its files add up to uncompressed. Optional only because reports
+   * cached before it was measured do not have it.
+   */
+  apparentBytes?: number
+  /**
    * Ticked by default. Off for the ones that can hold something you made on
    * purpose — a `dist/` is sometimes the release you shipped.
    */
@@ -3167,6 +3181,8 @@ export interface SpaceReport {
   files: number
   /** The folder's own `.git`, when it has one. */
   gitBytes: number
+  /** The same `.git` uncompressed. Absent from reports cached before it was measured. */
+  gitApparentBytes?: number
   regenerables: SpaceRegenerable[]
   /** Newest change outside `.git` and the regenerable folders, or null. */
   newest: number | null

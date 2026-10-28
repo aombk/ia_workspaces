@@ -419,6 +419,14 @@ html.mac-caption .titlebar-drag {
   font-size: calc(13px * var(--ui-text, 1));
 }
 
+.workspace-size {
+  flex: none;
+  font-size: calc(10px * var(--ui-text, 1));
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
 .workspace-count {
   font-size: calc(10px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
@@ -603,6 +611,7 @@ html.mac-caption .titlebar-drag {
 .app.sidebar-collapsed .sidebar-title,
 .app.sidebar-collapsed .workspace-name,
 .app.sidebar-collapsed .workspace-count,
+.app.sidebar-collapsed .workspace-size,
 .app.sidebar-collapsed .add-workspace .label,
 .app.sidebar-collapsed .sidebar-foot .label {
   display: none;
@@ -2422,6 +2431,17 @@ kbd {
   font-size: calc(11px * var(--ui-text, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text-dim);
+}
+
+.space-size__full {
+  opacity: 0.65;
+}
+
+.space-total__pair {
+  font-size: calc(11px * var(--ui-text, 1));
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  margin-bottom: 4px;
 }
 
 .space-buttons {

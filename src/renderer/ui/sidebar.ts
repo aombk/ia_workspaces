@@ -79,6 +79,11 @@ function showsMenu(): MenuEntry {
         onClick: () => store.updateSettings({ showTabCount: !s.showTabCount }),
       },
       {
+        label: 'folder sizes',
+        checked: s.showWorkspaceSize,
+        onClick: () => store.updateSettings({ showWorkspaceSize: !s.showWorkspaceSize }),
+      },
+      {
         label: 'Relay warnings (uncommitted work on other machines)',
         checked: s.showRelayWarning,
         onClick: () => store.updateSettings({ showRelayWarning: !s.showRelayWarning }),
@@ -320,24 +325,29 @@ ${workspace.cwd}`
     name.textContent = workspace.name
     label.appendChild(name)
 
-    // The folder's size from its last measurement, on the branch's line. Only
-    // once something has measured it: a size the sidebar worked out itself
-    // would be a disk walk per workspace on every start.
     const branchName = store.settings.showGitBranch ? workspace.branch : undefined
-    const size = spaceSizeOf(workspace.cwd)
-    if (branchName || size) {
+    if (branchName) {
       const branch = document.createElement('span')
       branch.className = 'workspace-branch'
-      branch.textContent = [branchName, size ? formatSize(size.bytes) : ''].filter(Boolean).join(' · ')
-      branch.title = [
-        branchName ? `On branch ${branchName}` : '',
-        size ? `${formatSize(size.bytes)} on disk when measured, ${new Date(size.measuredAt).toLocaleString()}` : '',
-      ]
-        .filter(Boolean)
-        .join('\n')
+      branch.textContent = branchName
+      branch.title = `On branch ${branchName}`
       label.appendChild(branch)
     }
     el.appendChild(label)
+
+    // The folder's size from its last measurement, on the row beside the name
+    // like the tab count — the label is a column, and in it the size sat under
+    // the name, sharing a line with the branch. Only once something has
+    // measured it: a size the sidebar worked out itself would be a disk walk
+    // per workspace on every start.
+    const size = store.settings.showWorkspaceSize ? spaceSizeOf(workspace.cwd) : undefined
+    if (size && !size.error) {
+      const badge = document.createElement('span')
+      badge.className = 'workspace-size'
+      badge.textContent = formatSize(size.bytes)
+      badge.title = `${formatSize(size.bytes)} on disk (${formatSize(size.apparentBytes)} uncompressed), measured ${new Date(size.measuredAt).toLocaleString()}`
+      el.appendChild(badge)
+    }
 
     // On the row rather than inside the label: `.workspace-label` is a column,
     // so anything added there lands *under* the name beside the branch. This

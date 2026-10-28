@@ -214,6 +214,7 @@ export async function measure(dir: string): Promise<SpaceReport> {
     rel: f.rel,
     label: f.label,
     bytes: f.t.bytes,
+    apparentBytes: f.t.apparent,
     suggested: f.suggested,
     kept: isKept(f.rel, keep),
   }))
@@ -224,6 +225,7 @@ export async function measure(dir: string): Promise<SpaceReport> {
   report.apparentBytes = all.reduce((sum, t) => sum + t.apparent, 0)
   report.files = all.reduce((sum, t) => sum + t.files, 0)
   report.gitBytes = git.bytes
+  report.gitApparentBytes = git.apparent
   report.regenerables = regenerables
   report.newest = newest.at
   // On Windows the walk could only add up lengths; `compact` knows what the
