@@ -1227,6 +1227,26 @@ export async function unsentSubjects(cwd: string, limit: number): Promise<string
   return res.out.split('\n').map((line) => line.trim()).filter(Boolean)
 }
 
+/**
+ * The saves on the current branch that no remote has, for a branch that has
+ * never been sent and so has no upstream to count against.
+ *
+ * Along `HEAD` only, never `--all`: the reason `unsentSubjects` exists rather
+ * than reusing `RepoStatus.unsent` applies here too — a tag keeping some
+ * abandoned line alive is not work waiting to be sent.
+ */
+export async function neverSentSaves(cwd: string, limit: number): Promise<{ count: number; subjects: string[] }> {
+  const root = (await checkoutRoot(cwd)) ?? cwd
+  const [count, log] = await Promise.all([
+    run(root, ['rev-list', '--count', 'HEAD', '--not', '--remotes']),
+    run(root, ['log', `--max-count=${Math.max(1, limit)}`, '--format=%s', 'HEAD', '--not', '--remotes']),
+  ])
+  return {
+    count: count.ok ? Number(count.out.trim()) || 0 : 0,
+    subjects: log.ok ? log.out.split('\n').map((line) => line.trim()).filter(Boolean) : [],
+  }
+}
+
 const BRANCH_FORMAT = [
   '%(refname)',
   '%(refname:short)',

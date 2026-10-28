@@ -224,6 +224,11 @@ await checkAsync('a branch that has never been sent is a state, not a zero', asy
   assert.equal(record.branch, 'brand-new')
   assert.equal(record.upstream, undefined, 'no upstream is how the pane knows to say so')
   assert.equal(record.unsent, 0, 'git has nothing to count it against, and does not pretend to')
+  // ...but the save on it is on no remote, and that is the news. A record that
+  // said only "0 unsent" here is how a whole branch of work on one machine
+  // went unseen on the other.
+  assert.equal(record.neverSent, 1, 'the save on a never-sent branch is counted against every remote')
+  assert.deepEqual(record.unsentSubjects, ['nowhere yet'], 'and named')
   git('checkout', 'main')
 })
 

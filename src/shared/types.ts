@@ -834,6 +834,16 @@ export interface RelayPresence {
    */
   upstream?: string
   /**
+   * For a branch that has never been sent: its saves that no remote has.
+   *
+   * The count `unsent` cannot give, because it is measured against an
+   * upstream and this branch has none. Counted along this branch only — not
+   * every ref — for the same reason `unsent` is: a tag holding an abandoned
+   * line alive is not work anybody is waiting on. Absent when there is an
+   * upstream, or no remote to be absent from.
+   */
+  neverSent?: number
+  /**
    * Files it had changed and not saved, as paths inside the project.
    *
    * Paths, because the whole point of the overlap warning is naming the file.
