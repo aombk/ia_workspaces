@@ -49,3 +49,52 @@ export function watchSpaceSizes(cb: () => void): () => void {
   listeners.add(cb)
   return () => listeners.delete(cb)
 }
+
+/**
+ * Folder totals for the file tree, asked of the host a few at a time.
+ *
+ * A tree with the size column on asks for every folder it draws, and each
+ * answer is a walk of that folder. In parallel they only take turns at the
+ * disk, so three run and the rest wait — nearest the top first, since rows are
+ * drawn in order.
+ */
+const DIR_LANES = 3
+/** Matches the host's own cache, so a redraw inside it asks nothing at all. */
+const DIR_FRESH_MS = 60_000
+const dirBytes = new Map<string, { bytes: number; at: number }>()
+const pending = new Map<string, Promise<number>>()
+const waiting: (() => void)[] = []
+let lanes = 0
+
+/** The last known total, for drawing a row before the fresh one arrives. */
+export function knownDirSize(dir: string): number | undefined {
+  return dirBytes.get(spaceKey(dir))?.bytes
+}
+
+/** The total, from the cache while it is fresh. */
+export function dirSize(dir: string): Promise<number> {
+  const key = spaceKey(dir)
+  const known = dirBytes.get(key)
+  if (known && Date.now() - known.at < DIR_FRESH_MS) return Promise.resolve(known.bytes)
+  const inFlight = pending.get(key)
+  if (inFlight) return inFlight
+  const job = new Promise<void>((go) => {
+    if (lanes < DIR_LANES) {
+      lanes++
+      go()
+    } else waiting.push(go)
+  })
+    .then(() => backend().space.dirSize(key))
+    .then((bytes) => {
+      dirBytes.set(key, { bytes, at: Date.now() })
+      return bytes
+    })
+    .finally(() => {
+      pending.delete(key)
+      const next = waiting.shift()
+      if (next) next()
+      else lanes--
+    })
+  pending.set(key, job)
+  return job
+}

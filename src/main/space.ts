@@ -125,7 +125,9 @@ async function walk(
             if (seen.has(key)) return
             seen.add(key)
           }
-          job.into.bytes += st.blocks * 512
+          // Windows reports no blocks at all, so there the on-disk figure is
+          // the length — and `measure` asks `compact` for the real one.
+          job.into.bytes += typeof st.blocks === 'number' ? st.blocks * 512 : st.size
           job.into.apparent += st.size
           job.into.files++
           // Only what you wrote counts as the project changing: a rebuild
@@ -217,7 +219,33 @@ export async function measure(dir: string): Promise<SpaceReport> {
   report.gitBytes = git.bytes
   report.regenerables = regenerables
   report.newest = newest.at
+  // On Windows the walk could only add up lengths; `compact` knows what the
+  // folder really occupies once anything in it is compressed.
+  if (process.platform === 'win32') {
+    const onDisk = await windowsOnDisk(root)
+    if (onDisk !== null) report.bytes = onDisk
+  }
   return report
+}
+
+/**
+ * One folder's total, for the file tree's size column.
+ *
+ * Kept briefly and shared, because a tree asks for every folder it shows and
+ * asks again on each re-read; a minute is long enough to make that free and
+ * short enough that a size you are watching shrink does not look stuck.
+ */
+const DIR_SIZE_TTL_MS = 60_000
+const dirSizes = new Map<string, { at: number; bytes: Promise<number> }>()
+
+export function dirSize(dir: string): Promise<number> {
+  const key = path.resolve(dir)
+  const hit = dirSizes.get(key)
+  if (hit && Date.now() - hit.at < DIR_SIZE_TTL_MS) return hit.bytes
+  const bytes = sizeOf(key)
+  dirSizes.set(key, { at: Date.now(), bytes })
+  if (dirSizes.size > 5000) dirSizes.delete(dirSizes.keys().next().value!)
+  return bytes
 }
 
 /** On-disk size of one tree, for "how much did that free". */
@@ -238,10 +266,53 @@ function findTool(name: string): string | null {
   return null
 }
 
+/**
+ * Windows' own compressor: `compact.exe`, in System32 on every install.
+ * Looked up by full path, because a PATH lookup is a way for some other
+ * `compact` to answer instead.
+ */
+function compactExe(): string | null {
+  const full = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'compact.exe')
+  return existsSync(full) ? full : null
+}
+
 /** Whether in-place compression can run here. */
 export function compressor(): SpaceCompressor {
+  if (process.platform === 'win32') return compactExe() ? 'ready' : 'missing'
   if (process.platform !== 'darwin') return 'unsupported'
   return findTool('afsctool') ? 'ready' : 'missing'
+}
+
+/**
+ * The totals `compact` prints last: how much data, stored in how many bytes.
+ *
+ * Read by shape rather than by wording, because the wording is in the
+ * system's language — "1,234 total bytes of data are stored in 567 bytes" in
+ * English, other words and other separators elsewhere. The totals are the line
+ * whose first number is largest: the file count line and the ratio line both
+ * have two numbers too, and both are small.
+ */
+export function parseCompactSummary(text: string): { data: number; stored: number } | null {
+  let best: { data: number; stored: number } | null = null
+  for (const line of text.split(/\r?\n/)) {
+    const numbers = (line.match(/\d[\d,.\u00a0\u202f' ]*\d|\d/g) ?? []).map((n) => Number(n.replace(/\D/g, '')))
+    if (numbers.length !== 2) continue
+    const [data, stored] = numbers
+    if (stored > data) continue
+    if (!best || data > best.data) best = { data, stored }
+  }
+  return best
+}
+
+/**
+ * How much a folder really takes on Windows, by asking `compact` to report on
+ * it. Null where it cannot say — the walker's figure stands then.
+ */
+async function windowsOnDisk(dir: string): Promise<number | null> {
+  const exe = compactExe()
+  if (!exe) return null
+  const res = await exec(exe, ['/s', '/a', '/q', '/i'], { cwd: dir })
+  return parseCompactSummary(res.out)?.stored ?? null
 }
 
 function exec(
@@ -282,6 +353,7 @@ export function compress(dir: string): Promise<SpaceResult> {
   return exclusive(
     dir,
     async () => {
+      if (process.platform === 'win32') return compressWindows(dir)
       const tool = process.platform === 'darwin' ? findTool('afsctool') : null
       if (!tool) {
         return {
@@ -289,7 +361,7 @@ export function compress(dir: string): Promise<SpaceResult> {
           error:
             process.platform === 'darwin'
               ? 'afsctool is not installed. Install it with: brew install afsctool'
-              : 'In-place compression is only available on macOS.',
+              : 'In-place compression is only available on macOS and Windows.',
         }
       }
       const before = await sizeOf(dir)
@@ -304,6 +376,29 @@ export function compress(dir: string): Promise<SpaceResult> {
     },
     BUSY
   )
+}
+
+/**
+ * The same on Windows, with `compact /exe:lzx`.
+ *
+ * `/exe` is the compression Windows uses for its own system files, not the
+ * older "compress this folder" attribute: a better ratio, no cost when a file
+ * is written, and — exactly like APFS compression — a file you change is
+ * simply stored uncompressed again. LZX is its strongest setting, which suits
+ * a project that is resting. Not available on a Dev Drive (ReFS), which
+ * `compact` says itself.
+ */
+async function compressWindows(dir: string): Promise<SpaceResult> {
+  const exe = compactExe()
+  if (!exe) return { ok: false, error: 'compact.exe was not found in System32.' }
+  const before = (await windowsOnDisk(dir)) ?? (await sizeOf(dir))
+  // `/i` carries on past files that are open elsewhere; `/a` includes hidden
+  // ones, which is where `.git` lives.
+  const res = await exec(exe, ['/c', '/s', '/a', '/i', '/q', '/exe:lzx'], { cwd: path.resolve(dir) })
+  const after = await windowsOnDisk(dir)
+  if (after === null) return res.ok ? { ok: true } : { ok: false, error: res.err || res.out.trim() || 'compact failed.' }
+  if (!res.ok && after >= before) return { ok: false, error: res.err || res.out.trim() || 'compact failed.' }
+  return { ok: true, freedBytes: Math.max(0, before - after) }
 }
 
 // ------------------------------------------------------------------- clean

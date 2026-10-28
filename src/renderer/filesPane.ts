@@ -21,6 +21,7 @@ import { isCanvasPath } from '../shared/canvas'
 import { isDocumentPath } from '../shared/docs'
 import { openWithSystemLabel, revealLabel } from '../shared/fileManager'
 import { formatSize } from '../shared/gitSize'
+import { dirSize, knownDirSize } from './spaceSizes'
 import { isMediaPath, mediaKind } from '../shared/media'
 import type { FileEntry, GitStatusMap, Settings } from '../shared/types'
 
@@ -763,6 +764,14 @@ export class FilesPane {
     name.textContent = folderLeaf(this.cwd) + pathSeparator(backend().capabilities.platform)
     row.appendChild(name)
 
+    // The whole folder's total, on the trunk, so the column adds up to something.
+    if (store.settings.treeShowSize) {
+      const size = document.createElement('span')
+      size.className = 'files-size'
+      this.fillDirSize(size, this.cwd)
+      row.appendChild(size)
+    }
+
     row.addEventListener('click', (e) => {
       if (e.detail >= 2) this.navigate(parentOf(this.cwd))
     })
@@ -774,6 +783,28 @@ export class FilesPane {
       this.openRootMenu(e.clientX, e.clientY)
     })
     return row
+  }
+
+  /**
+   * A folder's total, filled in when it arrives.
+   *
+   * What the OS reports for a directory is the entry itself, not what is in
+   * it, so the real figure is a walk of the subtree — done by the host, a few
+   * at a time, and kept for a minute. The row is drawn with the last known
+   * figure (or nothing) and only that one span is touched when the answer
+   * comes, so a large folder never holds up the tree around it.
+   */
+  private fillDirSize(span: HTMLElement, dir: string): void {
+    const show = (bytes: number) => {
+      span.textContent = formatSize(bytes)
+      span.title = `${bytes.toLocaleString()} bytes on disk, everything inside included`
+    }
+    const known = knownDirSize(dir)
+    if (known !== undefined) show(known)
+    else span.title = 'Adding up…'
+    // Into the span even if a redraw has since replaced it: harmless there,
+    // and the next draw starts from the cached figure either way.
+    void dirSize(dir).then(show).catch(() => {})
   }
 
   /**
@@ -910,15 +941,16 @@ export class FilesPane {
     row.appendChild(name)
 
     if (store.settings.treeShowSize) {
-      // Folders are left blank. What the OS reports for a directory is the size
-      // of the entry itself, not of what is inside it, and walking the subtree
-      // to find the real answer is not something a redraw can afford.
       const size = document.createElement('span')
       size.className = 'files-size'
-      size.textContent = entry.isDir ? '' : formatSize(entry.size)
-      // The rounded figure is the column's whole point; the exact byte count is
-      // what you actually need when comparing two builds, so it goes on hover.
-      if (!entry.isDir) size.title = `${entry.size.toLocaleString()} bytes`
+      if (entry.isDir) {
+        this.fillDirSize(size, entry.path)
+      } else {
+        size.textContent = formatSize(entry.size)
+        // The rounded figure is the column's whole point; the exact byte count
+        // is what you actually need when comparing two builds, so it goes on hover.
+        size.title = `${entry.size.toLocaleString()} bytes`
+      }
       row.appendChild(size)
     }
 

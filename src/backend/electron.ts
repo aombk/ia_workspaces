@@ -112,6 +112,7 @@ export function createElectronBackend(): Backend {
       gitCompact: (dir) => api.space.gitCompact(dir),
       gitTrim: (dir, keep, backupFile) => api.space.gitTrim(dir, keep, backupFile),
       gitRemove: (dir, backupFile) => api.space.gitRemove(dir, backupFile),
+      dirSize: (dir) => api.space.dirSize(dir),
     },
     agents: {
       list: () => api.agentHooks(),

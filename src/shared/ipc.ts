@@ -91,6 +91,7 @@ export const IPC = {
   spaceGitCompact: 'space:gitCompact',
   spaceGitTrim: 'space:gitTrim',
   spaceGitRemove: 'space:gitRemove',
+  spaceDirSize: 'space:dirSize',
   setAgentHooks: 'agent:setHooks',
   wslDistros: 'app:wslDistros',
   wslRunning: 'app:wslRunning',

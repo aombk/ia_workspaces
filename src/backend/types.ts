@@ -469,6 +469,8 @@ export interface Backend {
     gitTrim(dir: string, keep: number, backupFile: string): Promise<SpaceResult>
     /** Deletes `.git`, after backing it up. */
     gitRemove(dir: string, backupFile: string): Promise<SpaceResult>
+    /** One folder's total on disk, for the file tree. Cached for a minute. */
+    dirSize(dir: string): Promise<number>
   }
 
   agents: {

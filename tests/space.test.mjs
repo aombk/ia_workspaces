@@ -266,6 +266,32 @@ console.log('Git history')
   })
 }
 
+// ------------------------------------------------------------- folder size
+console.log('Folder sizes')
+{
+  await checkAsync('a folder total includes everything under it, and is cached', async () => {
+    const dir = path.join(out, 'sized')
+    write(path.join(dir, 'a/b/c.bin'), 'z'.repeat(64_000))
+    write(path.join(dir, 'top.bin'), 'z'.repeat(8_000))
+    const first = await S.dirSize(dir)
+    assert.ok(first >= 72_000, String(first))
+    write(path.join(dir, 'late.bin'), 'z'.repeat(64_000))
+    assert.equal(await S.dirSize(dir), first, 'answered from the cache inside a minute')
+  })
+  check("compact's totals are read by shape, in any language's separators", () => {
+    const english =
+      ' 120 files within 14 directories were compressed.\r\n' +
+      '1,234,567 total bytes of data are stored in 456,789 bytes.\r\n' +
+      'The compression ratio is 2.7 to 1.\r\n'
+    assert.deepEqual(S.parseCompactSummary(english), { data: 1234567, stored: 456789 })
+    const german = '1.234.567 Bytes an Daten wurden in 456.789 Bytes gespeichert.\r\nKomprimierungsrate 2,7 zu 1.'
+    assert.deepEqual(S.parseCompactSummary(german), { data: 1234567, stored: 456789 })
+    const french = '1\u202f234\u202f567 octets de données sont stockés dans 456\u202f789 octets.'
+    assert.deepEqual(S.parseCompactSummary(french), { data: 1234567, stored: 456789 })
+    assert.equal(S.parseCompactSummary('nothing useful'), null)
+  })
+}
+
 // ---------------------------------------------------------------- compress
 if (S.compressor() === 'ready') {
   console.log('Compressing (afsctool is installed)')

@@ -1122,6 +1122,7 @@ function bootApp(): void {
     handle(IPC.spaceGitTrim, (_e, dir: string, keep: number, backupFile: string) =>
       space.gitTrim(dir, Number(keep), String(backupFile ?? ''))
     )
+    handle(IPC.spaceDirSize, (_e, dir: string) => space.dirSize(dir))
     handle(IPC.spaceGitRemove, (_e, dir: string, backupFile: string) => space.gitRemove(dir, String(backupFile ?? '')))
     handle(IPC.setAgentHooks, (_e, id: string, enabled: boolean) => {
       const spec = agentById(id)

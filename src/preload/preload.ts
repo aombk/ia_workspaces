@@ -245,6 +245,7 @@ const api = {
       ipcRenderer.invoke(IPC.spaceGitTrim, dir, keep, backupFile),
     gitRemove: (dir: string, backupFile: string): Promise<SpaceResult> =>
       ipcRenderer.invoke(IPC.spaceGitRemove, dir, backupFile),
+    dirSize: (dir: string): Promise<number> => ipcRenderer.invoke(IPC.spaceDirSize, dir),
   },
   setAgentHooks: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string; path: string }> =>
     ipcRenderer.invoke(IPC.setAgentHooks, id, enabled),
