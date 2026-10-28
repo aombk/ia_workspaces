@@ -8,6 +8,7 @@
  */
 import { backend } from '../../backend'
 import { fallbackCwd } from '../../shared/platform'
+import type { FetchNews } from '../../shared/types'
 import { store } from '../state'
 
 /**
@@ -152,4 +153,23 @@ export function ago(at: number): string {
   if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`
   const years = (days / 365).toFixed(1).replace(/\.0$/, '')
   return `${years} year${years === '1' ? '' : 's'} ago`
+}
+
+/**
+ * A fetch's news as a toast: how many saves arrived and what they were called.
+ *
+ * One line, because a toast body is one line; the messages come first, since
+ * they are what tells somebody whether this is worth bringing in now, and the
+ * full list is in the tooltip and in History, marked as not here yet.
+ */
+export function fetchNewsToast(news: FetchNews, where: string): { title: string; body: string } {
+  const plural = news.count === 1 ? '' : 's'
+  const named = news.subjects.map((s) => `“${s}”`).join(', ')
+  const more = news.count - news.subjects.length
+  return {
+    title: `${where} has ${news.count} new save${plural}`,
+    body:
+      (named ? `${named}${more > 0 ? ` and ${more} more` : ''}. ` : '') +
+      'Nothing here has changed yet — they are marked in History until you bring them in.',
+  }
 }

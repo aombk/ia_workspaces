@@ -236,6 +236,9 @@ export class HistoryView implements GitView {
       this.filter.content,
       this.filter.path,
       this.branchStamp(status.unsent.length),
+      // A fetch moves only the copy online's line, which nothing above sees:
+      // without this the saves it brought are counted and never drawn.
+      `${status.incoming.length}:${status.incoming[0] ?? ''}`,
     ].join('|')
     if (!force && key === this.fetchedFor) {
       // Still redraw: `unsent` and the branch chips come from the status, and
@@ -448,6 +451,8 @@ export class HistoryView implements GitView {
     }
 
     const unsent = new Set(this.snapshot?.status.unsent ?? [])
+    const incoming = new Set(this.snapshot?.status.incoming ?? [])
+    const where = hostLabel(this.snapshot?.remote)
     const drawing = this.rows.length > 0
     const lanes = Math.min(MAX_LANES, graphWidth(this.rows))
     const graphW = lanes * LANE_W + 8
@@ -488,6 +493,15 @@ export class HistoryView implements GitView {
         mark.textContent = 'this machine only'
         mark.title =
           'This save is not on the copy online. It exists on this disk and nowhere else, until you send (push) it.'
+        el.appendChild(mark)
+      } else if (incoming.has(commit.sha)) {
+        el.classList.add('incoming')
+        const mark = document.createElement('span')
+        mark.className = 'history-incoming'
+        mark.textContent = 'not here yet'
+        mark.title =
+          `This save is on ${where} and not in your files yet. Bring it in (pull) to have it here; ` +
+          'until then nothing on this machine has changed.'
         el.appendChild(mark)
       }
 
@@ -613,6 +627,11 @@ export class HistoryView implements GitView {
       unsent.className = 'history-unsent'
       unsent.textContent = 'not sent (pushed) yet'
       facts.appendChild(unsent)
+    } else if ((this.snapshot?.status.incoming ?? []).includes(commit.sha)) {
+      const incoming = document.createElement('span')
+      incoming.className = 'history-incoming'
+      incoming.textContent = `on ${hostLabel(this.snapshot?.remote)}, not brought in (pulled) yet`
+      facts.appendChild(incoming)
     }
     head.appendChild(facts)
 
@@ -680,6 +699,12 @@ export class HistoryView implements GitView {
     revert.title =
       'Makes a new save that puts this one back the way it was. The save itself stays in the list — nothing is rewritten.'
     revert.disabled = this.ctx.busy() || !!this.snapshot?.status.inProgress
+    // Undoing a save you have not got would write a save undoing something
+    // that is not in your files — bring it in first, then undo it if need be.
+    if ((this.snapshot?.status.incoming ?? []).includes(commit.sha)) {
+      revert.disabled = true
+      revert.title = 'This save is not in your files yet. Bring it in (pull) first, then undo it if you still want to.'
+    }
     revert.addEventListener('click', () => void this.revert(commit))
     row.appendChild(revert)
 

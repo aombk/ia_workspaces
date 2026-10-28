@@ -2593,6 +2593,16 @@ export interface RepoStatus {
    */
   unsent: string[]
   /**
+   * The saves the copy online has on this branch and you have not got yet, by
+   * full number (hash), newest first.
+   *
+   * The other half of `unsent`, and what lets the history pane mark the rows a
+   * fetch brought in — they are already in `.git` and drawn, but nothing here
+   * has them yet, and without a mark they look exactly like saves you have.
+   * Empty unless the branch is paired with one online and behind it.
+   */
+  incoming: string[]
+  /**
    * A rebase, merge or cherry-pick that stopped part-way and is waiting.
    *
    * The panes refuse to save or send while this is set, because a save made in
@@ -2743,11 +2753,26 @@ export interface Branch {
  * What one background fetch did. `skipped` is the ordinary answer: no remote,
  * fetched moments ago, or backing off after a failure.
  */
+/**
+ * What a fetch brought for the branch you are on: saves that were not online
+ * before it, and that you have not got.
+ *
+ * Only the new ones. A branch already three behind that fetches one more says
+ * one, so a fetch that found nothing says nothing however far behind you are.
+ */
+export interface FetchNews {
+  count: number
+  /** The newest few messages, newest first. */
+  subjects: string[]
+}
+
 export interface BackgroundFetch {
   status: 'fetched' | 'skipped' | 'failed'
   /** The checkout fetched, so the caller can refresh what shows it. */
   root?: string
   error?: string
+  /** Set when the fetch brought saves for this branch. */
+  arrived?: FetchNews
 }
 
 export interface GitResult {
@@ -2761,6 +2786,8 @@ export interface GitResult {
    * somebody changed their mind, and `hint` says what state that left.
    */
   stopped?: boolean
+  /** A fetch only: the saves it brought for this branch, when it brought any. */
+  arrived?: FetchNews
 }
 
 /** One agent whose hooks Settings can install, and whether they are in place. */

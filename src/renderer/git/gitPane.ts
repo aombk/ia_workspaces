@@ -44,7 +44,7 @@ import {
 import { refreshRelayNow, relayLineFor } from '../ui/relayMonitor'
 import { showToast } from '../ui/toast'
 import { ChangesView } from './changesView'
-import { gitRoot, text } from './common'
+import { fetchNewsToast, gitRoot, text } from './common'
 import { HistoryView } from './historyView'
 import { GitProgressBar } from './progressBar'
 import { showPublish } from './publish'
@@ -689,7 +689,7 @@ export class GitPane implements AuxPane {
 
   private async run(
     work: () => Promise<GitResult>,
-    success: string,
+    success: string | ((res: GitResult) => { title: string; body: string }),
     label = 'Working',
     stoppable = false
   ): Promise<void> {
@@ -706,7 +706,10 @@ export class GitPane implements AuxPane {
     try {
       const res = await work()
       stopped = !!res.stopped
-      if (res.ok) showToast('Done', success)
+      if (res.ok) {
+        const said = typeof success === 'string' ? { title: 'Done', body: success } : success(res)
+        showToast(said.title, said.body)
+      }
       // Said as what it is. Somebody pressed Stop: nothing went wrong, and a
       // warning in git's voice would suggest something had.
       else if (res.stopped) showToast('Stopped', res.hint ?? 'Stopped. Nothing was changed.', { timeout: 15000 })
@@ -746,7 +749,10 @@ export class GitPane implements AuxPane {
     const where = hostLabel(this.snapshot?.remote)
     await this.run(
       () => backend().git.peek(this.cwd),
-      `Looked at ${where}. Nothing here was touched.`,
+      (res) =>
+        res.arrived
+          ? fetchNewsToast(res.arrived, where)
+          : { title: 'Nothing new', body: `Looked at ${where}: nothing new for this branch. Nothing here was touched.` },
       `Looking at ${where}`,
       true
     )

@@ -170,6 +170,7 @@ function signatureOf(status: RepoStatus): string {
     status.hasRemote,
     status.remoteUrl,
     status.unsent.length,
+    status.incoming.length,
     status.lastSave?.sha,
     ...status.files.map((f) => `${f.picked}${f.changed}${f.untracked ? '?' : ''}${f.repoPath}`),
   ].join('\n')

@@ -14,8 +14,12 @@
  * fetch per repository however they overlap.
  */
 import { backend } from '../../backend'
+import { hostLabel, readRemote } from '../../shared/gitHosts'
+import type { FetchNews } from '../../shared/types'
 import { store } from '../state'
 import { refreshRelayNow } from '../ui/relayMonitor'
+import { showToast } from '../ui/toast'
+import { fetchNewsToast } from './common'
 import { invalidateRepo, refreshRepo } from './repoWatch'
 
 /** Long enough that starting the app is not also a burst of network traffic. */
@@ -63,12 +67,33 @@ async function fetchOne(cwd: string, minAgeMs: number): Promise<boolean> {
     if (res.status !== 'fetched' || !res.root) return false
     invalidateRepo(res.root)
     await refreshRepo(res.root)
+    if (res.arrived) announce(res.root, res.arrived)
     return true
   } catch {
     // A host without this call, or a folder that vanished. Nothing to say:
     // nobody asked for this fetch.
     return false
   }
+}
+
+/**
+ * Says what a fetch nobody asked for brought.
+ *
+ * Only ever new saves — `arrived` is measured against where the branch online
+ * stood before this fetch — so a project left behind for a week is announced
+ * once, when its saves land, and not on every sweep after. A fetch that found
+ * nothing stays silent, as it always has.
+ */
+function announce(root: string, news: FetchNews): void {
+  void backend()
+    .git.repoStatus(root)
+    .then((status) => {
+      const where = hostLabel(status.remoteUrl ? readRemote(status.remoteUrl) : null)
+      const { title, body } = fetchNewsToast(news, where)
+      const project = root.split(/[\\/]/).filter(Boolean).pop() ?? root
+      showToast(`${project}: ${title}`, body, { timeout: 15000 })
+    })
+    .catch(() => {})
 }
 
 /**

@@ -70,6 +70,36 @@ await checkAsync('work pushed from another machine arrives, and nothing of ours 
   assert.equal(behind(), 1, 'known after it')
   assert.equal(git(here, 'rev-parse', 'HEAD'), head, 'the branch did not move')
   assert.ok(!fs.existsSync(path.join(here, 'b.txt')), 'no file arrived in the folder')
+  assert.deepEqual(res.arrived, { count: 1, subjects: ['pushed elsewhere'] }, 'and it says what came')
+})
+
+await checkAsync('only new saves are news, and status marks every one not here yet', async () => {
+  const quiet = await G.backgroundFetch(here, 0)
+  assert.equal(quiet.status, 'fetched')
+  assert.equal(quiet.arrived, undefined, 'still one behind, but nothing new: no news')
+
+  fs.writeFileSync(path.join(there, 'c.txt'), 'more\n')
+  git(there, 'add', '.')
+  git(there, 'commit', '-q', '-m', 'second from elsewhere')
+  git(there, 'push', '-q')
+  const res = await G.backgroundFetch(here, 0)
+  assert.deepEqual(res.arrived, { count: 1, subjects: ['second from elsewhere'] }, 'the one before is not news again')
+
+  const status = await G.repoStatus(here)
+  assert.equal(status.behind, 2)
+  assert.deepEqual(status.incoming, git(here, 'rev-list', 'HEAD..origin/main').split('\n'))
+})
+
+await checkAsync('peek says what it brought, too', async () => {
+  fs.writeFileSync(path.join(there, 'd.txt'), 'and more\n')
+  git(there, 'add', '.')
+  git(there, 'commit', '-q', '-m', 'third from elsewhere')
+  git(there, 'push', '-q')
+  const res = await G.peek(here)
+  assert.equal(res.ok, true, res.error)
+  assert.deepEqual(res.arrived, { count: 1, subjects: ['third from elsewhere'] })
+  const again = await G.peek(here)
+  assert.equal(again.arrived, undefined)
 })
 
 await checkAsync('fetched again inside the window is skipped', async () => {

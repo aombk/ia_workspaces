@@ -46,6 +46,7 @@ import type {
   GitProgress,
   GitResult,
   BackgroundFetch,
+  FetchNews,
   HistoryFilter,
   HostTool,
   RepoStatus,
@@ -645,7 +646,7 @@ export async function checkoutRoot(cwd: string): Promise<string | null> {
 export function parseStatus(
   raw: string,
   root: string
-): Omit<RepoStatus, 'root' | 'hasRemote' | 'remoteUrl' | 'inProgress' | 'unsent'> {
+): Omit<RepoStatus, 'root' | 'hasRemote' | 'remoteUrl' | 'inProgress' | 'unsent' | 'incoming'> {
   const out = {
     branch: undefined as string | undefined,
     detached: false,
@@ -800,7 +801,7 @@ export async function originUrl(root: string): Promise<string> {
 export async function repoStatus(cwd: string): Promise<RepoStatus> {
   const root = await checkoutRoot(cwd)
   if (!root) {
-    return { root: '', detached: false, ahead: 0, behind: 0, hasRemote: false, files: [], unsent: [] }
+    return { root: '', detached: false, ahead: 0, behind: 0, hasRemote: false, files: [], unsent: [], incoming: [] }
   }
   return statusOf(root)
 }
@@ -839,10 +840,20 @@ async function statusOf(root: string): Promise<RepoStatus> {
     if (res.ok) unsent = res.out.split('\n').map((l) => l.trim()).filter(Boolean)
   }
 
+  // The saves a fetch brought that are not here yet. Along this branch's pair
+  // only, and asked only when git already says it is behind, so the ordinary
+  // poll of a level branch costs nothing more.
+  let incoming: string[] = []
+  if (parsed.upstream && parsed.behind > 0) {
+    const res = await run(root, ['rev-list', '--max-count=500', 'HEAD..@{upstream}', '--'])
+    if (res.ok) incoming = res.out.split('\n').map((l) => l.trim()).filter(Boolean)
+  }
+
   return {
     root,
     ...parsed,
     unsent,
+    incoming,
     lastSave: await lastSave(root, parsed.headFull),
     hasRemote: remoteUrl.length > 0,
     remoteUrl: remoteUrl || undefined,
@@ -1484,6 +1495,7 @@ export async function send(cwd: string): Promise<GitResult> {
  */
 export async function peek(cwd: string): Promise<GitResult> {
   const root = await afterBackgroundFetch(cwd, 'peek')
+  const before = await upstreamTip(root)
   const res = await runProgress(root, ['fetch', '--progress'], { op: 'peek', network: true, stoppable: true })
   if (res.stopped) {
     return {
@@ -1493,7 +1505,40 @@ export async function peek(cwd: string): Promise<GitResult> {
       hint: 'Stopped. Nothing here was changed, and what is online was only being looked at.',
     }
   }
-  return asResult(res)
+  const result = asResult(res)
+  if (result.ok) result.arrived = await arrivedSince(root, before)
+  return result
+}
+
+/** Where this branch's pair online stood, or '' for a branch with no pair. */
+async function upstreamTip(root: string): Promise<string> {
+  const res = await run(root, ['rev-parse', '--verify', '--quiet', '@{upstream}'])
+  return res.ok ? res.out.trim() : ''
+}
+
+/** How many news saves to name; the count says the rest. */
+const NEWS_SUBJECTS = 5
+
+/**
+ * The saves a fetch just brought for this branch: on its pair online now, not
+ * there before the fetch, and not here.
+ *
+ * Measured against the pair's position before the fetch rather than against
+ * `behind`, because "behind" is a standing state and this is an event. A
+ * branch left three behind for a week must not announce three new saves every
+ * time anything fetches.
+ */
+async function arrivedSince(root: string, before: string): Promise<FetchNews | undefined> {
+  const after = await upstreamTip(root)
+  if (!after || after === before) return undefined
+  const range = [after, '^HEAD', ...(before ? [`^${before}`] : []), '--']
+  const [count, log] = await Promise.all([
+    run(root, ['rev-list', '--count', ...range]),
+    run(root, ['log', `--max-count=${NEWS_SUBJECTS}`, '--format=%s', ...range]),
+  ])
+  const n = count.ok ? Number(count.out.trim()) || 0 : 0
+  if (!n) return undefined
+  return { count: n, subjects: log.ok ? log.out.split('\n').map((l) => l.trim()).filter(Boolean) : [] }
 }
 
 /**
@@ -1545,9 +1590,12 @@ export function backgroundFetch(cwd: string, minAgeMs: number): Promise<Backgrou
         } else fetchQueue.push(go)
       })
       try {
+        const before = await upstreamTip(root)
         const res = await runQuiet(root, ['fetch', '--quiet'])
         lastFetch.set(root, { at: Date.now(), failed: !res.ok })
-        return res.ok ? { status: 'fetched', root } : { status: 'failed', root, error: res.err }
+        if (!res.ok) return { status: 'failed', root, error: res.err }
+        const arrived = await arrivedSince(root, before)
+        return arrived ? { status: 'fetched', root, arrived } : { status: 'fetched', root }
       } finally {
         const next = fetchQueue.shift()
         if (next) next()

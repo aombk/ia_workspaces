@@ -4526,6 +4526,23 @@ circle.lane-7 { fill: #ff9e64; }
   white-space: nowrap;
 }
 
+.history-incoming {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  font-size: calc(10px * var(--ui-text, 1));
+  line-height: 13px;
+  white-space: nowrap;
+}
+
+.history-row.incoming .history-row__subject {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 .history-row__meta,
 .history-row__sha {
   flex: none;
