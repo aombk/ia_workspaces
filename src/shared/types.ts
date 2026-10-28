@@ -1971,9 +1971,9 @@ export interface Settings {
   /**
    * Fetch every project this often, in minutes. 0 is never.
    *
-   * 15 by default: often enough that a push from another machine shows up
-   * within a coffee, rare enough to be nothing — one small request per project
-   * a quarter of an hour, two at a time.
+   * Never by default. Starting the app and looking at a git pane already cover
+   * the moments the answer is wanted; a timer adds `git.exe` launches all day
+   * for news nobody is looking at, and on Windows each launch is not free.
    */
   gitFetchEveryMinutes: number
   /**
@@ -3026,7 +3026,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showRelayWarning: true,
   gitFetchOnStart: true,
   gitFetchOnGitPane: true,
-  gitFetchEveryMinutes: 15,
+  gitFetchEveryMinutes: 0,
   sharedDir: '',
   fileDrag: 'auto',
   shareCommands: false,
