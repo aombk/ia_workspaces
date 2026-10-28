@@ -1,10 +1,14 @@
-import { cp, readdir, readFile, stat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises'
 import { execFile, spawn } from 'node:child_process'
 import path from 'node:path'
 import { gitArgs, gitEnv } from './gitEnv'
+import { plainFs } from './plainFs'
 import { isHiddenEntry } from '../shared/platform'
 import { isImagePath } from '../shared/images'
 import type { FileEntry, GitStatusMap, SearchHit } from '../shared/types'
+
+// Unpatched: everything here is the file tree acting on your folders, and an
+// `.asar` in one of them is a file like any other. See `plainFs.ts`.
+const { cp, readdir, readFile, stat, mkdir, open, rename, rm, writeFile } = plainFs.promises
 
 /**
  * Largest file `readText` will return.

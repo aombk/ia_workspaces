@@ -20,14 +20,18 @@
  * force-pushes it, and that is not a decision a button in this pane makes.
  */
 import { execFile } from 'node:child_process'
-import { existsSync, promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterBackgroundFetch } from './git'
 import { gitArgs, gitEnv } from './gitEnv'
+import { plainFs } from './plainFs'
 import { toolPath } from './toolPath'
 import { isKept, matchRegenerable, MAX_KEPT_COMMITS, normRel, parseKeepList } from '../shared/space'
 import type { SpaceCompressor, SpaceGitInfo, SpaceRegenerable, SpaceReport, SpaceResult } from '../shared/types'
+
+// Unpatched, because this walks and deletes whole projects. See `plainFs.ts`.
+const fs = plainFs.promises
+const existsSync = plainFs.existsSync
 
 /** Directory reads in flight at once. More only queues on the disk. */
 const WALK_CONCURRENCY = 48
