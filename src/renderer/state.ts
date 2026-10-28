@@ -25,6 +25,7 @@ import {
   type ShellKind,
   type ShellTarget,
   type TerminalTabState,
+  type OpenWithApp,
   type WeatherPlace,
   type Workspace,
 } from '../shared/types'
@@ -168,6 +169,8 @@ class WorkspaceState {
    */
   private readonly activity = new Map<string, PaneActivity>()
   private readonly agents = new Map<string, PaneAgentState>()
+  /** Panes running a command that is not an agent. See `PaneStatus.command`. */
+  private readonly commands = new Set<string>()
   private readonly runEndedListeners = new Set<(paneId: string) => void>()
 
   async load(): Promise<void> {
@@ -1408,6 +1411,13 @@ class WorkspaceState {
     this.emit()
   }
 
+  setPaneCommand(paneId: string, running: boolean): void {
+    if (this.commands.has(paneId) === running) return
+    if (running) this.commands.add(paneId)
+    else this.commands.delete(paneId)
+    this.emit()
+  }
+
   paneActivity(paneId: string): PaneActivity {
     return this.activity.get(paneId) ?? 'idle'
   }
@@ -1441,6 +1451,7 @@ class WorkspaceState {
   forgetPaneStatus(paneId: string): void {
     this.activity.delete(paneId)
     this.agents.delete(paneId)
+    this.commands.delete(paneId)
   }
 
   markAttention(paneId: string): void {
@@ -1570,6 +1581,27 @@ class WorkspaceState {
     return this.subtreeOf(workspaceId)
       .slice(1)
       .reduce<Demand>((acc, w) => louder(acc, this.ownWorkspaceDemand(w.id)), own)
+  }
+
+  /**
+   * What in this workspace is at work right now: an agent that says it is
+   * working, else a command that is running, else nothing.
+   *
+   * Both are declared, never the byte rate: a shell printing a log is not at
+   * work, and a spinner beside every workspace with output in it would stop
+   * meaning anything. A running command comes from the shell's own markers, and
+   * the main process never reports an agent as one. The agent wins because it
+   * is the one you are more likely waiting on. Counts what is nested under a
+   * folded parent, for the same reason `workspaceDemand` does.
+   */
+  workspaceWorking(workspaceId: string, includeSubtree = false): 'agent' | 'command' | null {
+    const ids = includeSubtree ? this.subtreeOf(workspaceId).map((w) => w.id) : [workspaceId]
+    const panes = ids.flatMap(
+      (id) => this.data.workspaces.find((w) => w.id === id)?.tabs.flatMap((t) => t.panes) ?? []
+    )
+    if (panes.some((p) => this.agents.get(p.id)?.state === 'working')) return 'agent'
+    if (panes.some((p) => this.commands.has(p.id))) return 'command'
+    return null
   }
 
   private ownWorkspaceDemand(workspaceId: string): Demand {
@@ -1953,6 +1985,20 @@ function readWeatherPlaces(raw: unknown): WeatherPlace[] {
   return places
 }
 
+/** The "Open with" list from disk, keeping only entries with both halves. */
+function readOpenWithApps(raw: unknown): OpenWithApp[] {
+  if (!Array.isArray(raw)) return []
+  const apps: OpenWithApp[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const { name, program } = entry as Record<string, unknown>
+    if (typeof name !== 'string' || typeof program !== 'string') continue
+    if (!program.trim()) continue
+    apps.push({ name: name.trim(), program: program.trim() })
+  }
+  return apps
+}
+
 function normalize(raw: unknown): PersistedState {
   const doc = (raw ?? {}) as Record<string, unknown>
   const docVersion = typeof doc.version === 'number' ? doc.version : 0
@@ -1967,6 +2013,7 @@ function normalize(raw: unknown): PersistedState {
     customThemes: (((doc.settings as Partial<Settings>) ?? {}).customThemes ?? []) as InterfaceTheme[],
     customTerminalThemes: adoptTerminalThemes((doc.settings as Partial<Settings>) ?? {}),
     weatherPlaces: readWeatherPlaces(((doc.settings as Partial<Settings>) ?? {}).weatherPlaces),
+    openWithApps: readOpenWithApps(((doc.settings as Partial<Settings>) ?? {}).openWithApps),
   }
 
   // 1.2 was the old default and it splits box-drawing borders into dashes.

@@ -18,8 +18,10 @@ import { store, type TreeSelection } from './state'
 import { showContextMenu, type MenuEntry } from './ui/contextMenu'
 import { confirmDialog, promptDialog } from './ui/confirm'
 import { copyText } from './ui/clipboard'
+import { startDrag } from './ui/fileDrag'
+import { openWithEntries } from './ui/openWith'
 import { showToast } from './ui/toast'
-import { refreshAllTrees } from './filesPane'
+import { beginTreeDrag, refreshAllTrees } from './filesPane'
 import { DomZoom, stepZoom, type AuxPane, type PaneZoom } from './auxPane'
 import {
   fitToHeight,
@@ -57,6 +59,15 @@ export interface ImagesPaneHooks {
 const TARGET_ROW_HEIGHT = 220
 const TARGET_COLUMN_WIDTH = 260
 const GAP = 8
+
+/**
+ * How often the folder is re-read for changes made elsewhere — an editor
+ * saving over a picture, a screenshot landing, a file deleted in Explorer.
+ * The same interval as the file tree. A recursive gallery walks a whole tree
+ * and stats every image in it, so it is asked less often.
+ */
+const POLL_MS = 2000
+const RECURSIVE_POLL_MS = 10000
 
 const LAYOUT_LABELS: Record<ImageLayout, string> = {
   rows: 'Rows',
@@ -142,6 +153,9 @@ export class ImagesPane implements AuxPane {
   private frame = 0
   private loadToken = 0
   private readonly observer: ResizeObserver
+  private readonly pollTimer: ReturnType<typeof setInterval>
+  private polling = false
+  private lastPoll = 0
 
   constructor(
     readonly paneId: string,
@@ -279,6 +293,7 @@ export class ImagesPane implements AuxPane {
     this.renderHead()
     this.applyFilter()
     this.sync()
+    this.pollTimer = setInterval(() => void this.poll(), POLL_MS)
   }
 
   // ------------------------------------------------------------ pane settings
@@ -381,7 +396,7 @@ export class ImagesPane implements AuxPane {
     )
 
     this.head.appendChild(
-      this.toggle('Fit', this.fit, 'Shrink everything until it fits without scrolling', () => {
+      this.toggle('Fit', this.fit, 'Scale everything to fit the pane without scrolling — a single image is enlarged to fill it', () => {
         store.setPaneImageOptions(this.paneId, { imageFit: !this.fit })
         this.renderHead()
         this.scheduleRender()
@@ -528,20 +543,7 @@ export class ImagesPane implements AuxPane {
       // A slower earlier load must not overwrite a newer one — navigating two
       // folders quickly is exactly how that happens.
       if (this.disposed || token !== this.loadToken) return
-      this.items = result.files.map((file) => ({
-        path: file.path,
-        name: file.name,
-        size: file.size,
-        modified: file.modified,
-        aspect: this.aspects.get(file.path) ?? 0,
-      }))
-      this.truncated = result.truncated
-      // Navigating the tree while maximised leaves the viewer holding a file
-      // that is no longer part of this gallery — and with it, arrow keys that
-      // step through a list it is not in. Back to the gallery instead.
-      if (this.maximized && !this.items.some((i) => i.path === this.maximized)) {
-        this.maximized = ''
-      }
+      this.adopt(result)
     } catch (err) {
       if (this.disposed || token !== this.loadToken) return
       this.items = []
@@ -551,6 +553,60 @@ export class ImagesPane implements AuxPane {
     }
     this.loading = false
     this.scheduleRender()
+  }
+
+  private adopt(result: { files: FileEntryLike[]; truncated: boolean }): void {
+    this.items = result.files.map((file) => ({
+      path: file.path,
+      name: file.name,
+      size: file.size,
+      modified: file.modified,
+      aspect: this.aspects.get(file.path) ?? 0,
+    }))
+    this.truncated = result.truncated
+    // Navigating the tree while maximised leaves the viewer holding a file
+    // that is no longer part of this gallery — and with it, arrow keys that
+    // step through a list it is not in. Back to the gallery instead.
+    if (this.maximized && !this.items.some((i) => i.path === this.maximized)) {
+      this.maximized = ''
+    }
+  }
+
+  /**
+   * Re-reads the folder and redraws only if something in it changed.
+   *
+   * Polled rather than watched, for the reason the file tree gives. A changed
+   * file keeps its cell and gets a new URL — see `imageUrl` — so a picture
+   * edited in GIMP updates in place, and nothing else on the canvas reloads.
+   */
+  private async poll(): Promise<void> {
+    if (this.disposed || this.polling || this.loading || document.hidden) return
+    if (!this.shownFolder || !this.element.checkVisibility()) return
+    const recursive = this.recursive
+    if (recursive && Date.now() - this.lastPoll < RECURSIVE_POLL_MS) return
+
+    this.polling = true
+    this.lastPoll = Date.now()
+    const token = this.loadToken
+    const folder = this.shownFolder
+    try {
+      const result = await backend().listImages(folder, recursive, false)
+      // A navigation that began while this was reading owns the list now.
+      if (this.disposed || token !== this.loadToken || folder !== this.shownFolder) return
+      if (signatureOf(result.files) === signatureOf(this.items)) return
+      this.adopt(result)
+      this.scheduleRender()
+    } catch {
+      // The folder going away is the next load's business, not a poll's.
+    } finally {
+      this.polling = false
+    }
+  }
+
+  /** The URL for an image as it is on disk now. */
+  private urlFor(path: string): string {
+    const item = this.items.find((i) => i.path === path)
+    return backend().imageUrl(path, item?.modified)
   }
 
   // ------------------------------------------------------------------ drawing
@@ -591,7 +647,7 @@ export class ImagesPane implements AuxPane {
       this.viewingPath = path
       this.resetView()
     }
-    const url = backend().imageUrl(path)
+    const url = this.urlFor(path)
     if (this.singleImg.src !== url) this.singleImg.src = url
     this.singleImg.alt = path
     this.singleImg.title = path
@@ -599,6 +655,9 @@ export class ImagesPane implements AuxPane {
     const maximized = Boolean(this.maximized)
     this.singleBar.hidden = !maximized
     this.single.classList.toggle('maximized', maximized)
+    // Fit means the same thing here as in the gallery — use the space there is —
+    // so a small image is scaled up to the pane, not just a large one down.
+    this.single.classList.toggle('fit', this.fit)
 
     if (maximized) {
       const ordered = this.ordered()
@@ -734,6 +793,7 @@ export class ImagesPane implements AuxPane {
       const path = entry.item.path
       live.add(path)
 
+      const url = backend().imageUrl(path, entry.item.modified)
       let cell = this.cells.get(path)
       if (!cell) {
         cell = document.createElement('div')
@@ -746,9 +806,13 @@ export class ImagesPane implements AuxPane {
         img.decoding = 'async'
         img.draggable = false
         img.alt = entry.item.name
-        img.addEventListener('load', () => this.measured(path, img))
-        img.addEventListener('error', () => cell!.classList.add('broken'), { once: true })
-        img.src = backend().imageUrl(path)
+        const owner = cell
+        img.addEventListener('load', () => {
+          owner.classList.remove('broken')
+          this.measured(path, img)
+        })
+        img.addEventListener('error', () => owner.classList.add('broken'))
+        img.src = url
 
         cell.appendChild(img)
         cell.title = entry.item.name
@@ -763,13 +827,33 @@ export class ImagesPane implements AuxPane {
         cell.addEventListener('click', (e) => {
           if (e.detail >= 2) this.setMaximized(path)
         })
+        // Dragged out like a file tree row: onto a terminal, an editor, a tree
+        // folder or another program. Not on the board, where dragging a cell
+        // moves it — the two gestures cannot share a button.
+        cell.addEventListener('mousedown', (e) => {
+          if (e.button === 0 && this.layout !== 'board') void backend().prepareFileDrag(path)
+        })
+        cell.addEventListener('dragstart', (e) => {
+          if (this.layout === 'board') {
+            e.preventDefault()
+            return
+          }
+          startDrag(e, [path])
+          // A tree folder treats it as one of its own rows: lights up, moves.
+          beginTreeDrag([path])
+        })
         this.cells.set(path, cell)
         this.canvas.appendChild(cell)
       }
 
+      // Changed on disk since it was drawn: same cell, new picture.
+      const img = cell.querySelector('img')
+      if (img && img.src !== url) img.src = url
+
       // Set every time: the same cell moves between arrangements, and only the
       // board carries a drag handle.
       cell.className = board ? 'images-cell images-cell-board' : 'images-cell'
+      cell.draggable = !board
       cell.style.left = `${entry.x}px`
       cell.style.top = `${entry.y}px`
       cell.style.width = `${entry.width}px`
@@ -925,6 +1009,7 @@ export class ImagesPane implements AuxPane {
         ? { label: 'Close', shortcut: 'Esc', onClick: () => this.setMaximized('') }
         : { label: 'Maximize', shortcut: 'double-click', onClick: () => this.setMaximized(path) },
       { label: 'Open with the system viewer', onClick: () => this.hooks.openExternally(path) },
+      { label: 'Open with', submenu: openWithEntries(path) },
       'separator',
       { label: 'Show in file tree', onClick: () => this.hooks.revealInTree(this.paneId, path) },
       { label: revealLabel(backend().capabilities.platform), onClick: () => void backend().revealItem(path) },
@@ -1216,6 +1301,7 @@ export class ImagesPane implements AuxPane {
   dispose(): void {
     this.disposed = true
     this.observer.disconnect()
+    clearInterval(this.pollTimer)
     if (this.frame) cancelAnimationFrame(this.frame)
     // Dropping the sources lets Chromium release the decoded bitmaps now rather
     // than whenever the elements are collected, which for a board of large
@@ -1225,6 +1311,13 @@ export class ImagesPane implements AuxPane {
     this.cells.clear()
     this.draggable.clear()
   }
+}
+
+type FileEntryLike = { path: string; name: string; size: number; modified: number }
+
+/** Enough to tell that a folder's images changed: which, and each one's stamp. */
+function signatureOf(files: readonly { path: string; size: number; modified: number }[]): string {
+  return files.map((f) => `${f.path}|${f.size}|${f.modified}`).join('\n')
 }
 
 function fileName(path: string): string {

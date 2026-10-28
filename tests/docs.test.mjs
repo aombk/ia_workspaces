@@ -364,6 +364,14 @@ console.log('Keeping the two schemes apart')
     assert.equal(decodeImagePath(encodeImagePath(imgPath)), imgPath)
   })
 
+  check('an image URL may carry a version, and only a version', () => {
+    const versioned = encodeImagePath(imgPath, 1730000000123)
+    assert.notEqual(versioned, encodeImagePath(imgPath))
+    assert.equal(decodeImagePath(versioned), imgPath)
+    assert.equal(decodeImagePath(`${encodeImagePath(imgPath)}?page=3`), null)
+    assert.equal(decodeImagePath(`${encodeImagePath(imgPath)}?v=1x`), null)
+  })
+
   check('a scheme that merely prefixes ours is not ours', () => {
     // `iaw` is a prefix of `iaw-doc` as a string. The `://f/` in the prefix is
     // what stops a `startsWith` from being fooled by that.

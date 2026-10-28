@@ -132,7 +132,7 @@ const api = {
     ipcRenderer.invoke(IPC.listByExtension, dir, suffixes),
   // Built here rather than fetched: it is a pure function of the path, and an
   // async call per image would make the gallery render twice.
-  imageUrl: (path: string): string => encodeImagePath(path),
+  imageUrl: (path: string, version?: number): string => encodeImagePath(path, version),
   readText: (path: string): Promise<string> => ipcRenderer.invoke(IPC.readText, path),
   fileStamp: (path: string): Promise<{ mtime: number; size: number } | null> =>
     ipcRenderer.invoke(IPC.fileStamp, path),

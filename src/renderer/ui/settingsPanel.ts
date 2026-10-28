@@ -12,7 +12,7 @@ import { refreshTokensNow } from './tokenMonitor'
 import { syncSystemStrip } from './systemStrip'
 import { appVersion, checkForUpdates, describeUpdate } from '../updates'
 import type { AgentConfigInfo } from '../../shared/types'
-import type { ShellProfile, Settings, SoundName } from '../../shared/types'
+import type { OpenWithApp, ShellProfile, Settings, SoundName } from '../../shared/types'
 
 let onChange: (() => void) | null = null
 let shells: ShellProfile[] = []
@@ -311,6 +311,110 @@ function folder(value: string, placeholder: string, onPick: (v: string) => void)
   row.appendChild(clear)
 
   return row
+}
+
+/**
+ * The "Open with" programs: a name and an executable per row.
+ *
+ * Redrawn by itself on add and remove rather than through the whole panel, so
+ * the row you are typing in keeps its caret. Saved on `change`, like `text`.
+ */
+function openWithList(): HTMLElement {
+  const box = document.createElement('div')
+  box.className = 'settings-openwith'
+  const windows = backend().capabilities.platform === 'windows'
+
+  const save = (apps: OpenWithApp[]): void => patch({ openWithApps: apps })
+
+  const draw = (): void => {
+    box.replaceChildren()
+    const apps = store.settings.openWithApps.map((a) => ({ ...a }))
+
+    apps.forEach((app, index) => {
+      const row = document.createElement('div')
+      row.className = 'settings-folder'
+
+      const name = text(app.name, 'Name', (v) => {
+        apps[index] = { ...apps[index]!, name: v.trim() }
+        save(apps)
+      })
+      name.classList.add('settings-openwith-name')
+
+      const program = text(app.program, windows ? 'C:\\Program Files\\…\\app.exe' : '/usr/bin/app', (v) => {
+        // A cleared program removes the row: an entry that opens nothing is
+        // not one the menu should offer.
+        if (!v.trim()) apps.splice(index, 1)
+        else apps[index] = { ...apps[index]!, program: v.trim() }
+        save(apps)
+        if (!v.trim()) draw()
+      })
+
+      const browse = document.createElement('button')
+      browse.type = 'button'
+      browse.className = 'btn'
+      browse.textContent = 'Choose…'
+      browse.addEventListener('click', () => {
+        void backend()
+          .pickOpenFile({
+            title: 'Choose a program',
+            anyFile: !windows,
+            ...(windows ? { filters: [{ name: 'Programs', extensions: ['exe', 'bat', 'cmd'] }] } : {}),
+          })
+          .then((chosen) => {
+            if (!chosen) return
+            apps[index] = {
+              name: apps[index]!.name || programName(chosen),
+              program: chosen,
+            }
+            save(apps)
+            draw()
+          })
+      })
+
+      const remove = document.createElement('button')
+      remove.type = 'button'
+      remove.className = 'btn'
+      remove.textContent = 'Remove'
+      remove.addEventListener('click', () => {
+        apps.splice(index, 1)
+        save(apps)
+        draw()
+      })
+
+      row.append(name, program, browse, remove)
+      box.appendChild(row)
+    })
+
+    // Adding starts from the picker, because a program path is the one half
+    // nobody types correctly, and the name is filled in from it.
+    const add = document.createElement('button')
+    add.type = 'button'
+    add.className = 'btn'
+    add.textContent = 'Add program…'
+    add.addEventListener('click', () => {
+      void backend()
+        .pickOpenFile({
+          title: 'Choose a program',
+          anyFile: !windows,
+          ...(windows ? { filters: [{ name: 'Programs', extensions: ['exe', 'bat', 'cmd'] }] } : {}),
+        })
+        .then((chosen) => {
+          if (!chosen) return
+          save([...store.settings.openWithApps, { name: programName(chosen), program: chosen }])
+          draw()
+        })
+    })
+    box.appendChild(add)
+  }
+
+  draw()
+  return box
+}
+
+/** `C:\Program Files\Krita (x64)\bin\krita.exe` → `krita`, as a starting name. */
+function programName(program: string): string {
+  const leaf = program.split(/[\\/]/).filter(Boolean).pop() ?? program
+  return leaf.replace(/\.(exe|bat|cmd|app)$/i, '')
 }
 
 function select<T extends string>(
@@ -830,6 +934,14 @@ async function render(): Promise<void> {
           'read-only on purpose — editing is your editor’s job, not a ' +
           'terminal’s.',
         text(s.externalEditor, 'code', (v) => patch({ externalEditor: v }))
+      ),
+      field(
+        'Open with',
+        'Programs listed under “Open with” when you right-click a file in the ' +
+          'tree or an image in the Images pane — GIMP, Krita, Inkscape, an IDE, ' +
+          'or anything else that takes a file on its command line. The file is ' +
+          'passed as the only argument. Clear a program to remove it.',
+        openWithList()
       ),
       field(
         'Browser pane home page',

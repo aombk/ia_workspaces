@@ -46,7 +46,7 @@ export function createElectronBackend(): Backend {
     readDir: (dir, showHidden) => api.readDir(dir, showHidden),
     listByExtension: (dir, suffixes) => api.listByExtension(dir, suffixes),
     listImages: (dir, recursive, showHidden) => api.listImages(dir, recursive, showHidden),
-    imageUrl: (path) => api.imageUrl(path),
+    imageUrl: (path, version) => api.imageUrl(path, version),
     readText: (path) => api.readText(path),
     fileStamp: (path) => api.fileStamp(path),
     readBytes: (path) => api.readBytes(path),

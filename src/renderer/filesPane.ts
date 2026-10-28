@@ -14,6 +14,7 @@ import { confirmDialog } from './ui/confirm'
 import { attachInlineEditor } from './ui/editing'
 import { copyText } from './ui/clipboard'
 import { showToast } from './ui/toast'
+import { openWithEntries } from './ui/openWith'
 import { remoteHostOfPane, store } from './state'
 import { sortEntries } from '../shared/images'
 import { isCanvasPath } from '../shared/canvas'
@@ -141,6 +142,31 @@ function sameFiles(a: readonly string[], b: readonly string[]): boolean {
  * arriving from another program, copied in by `bringIn`.
  */
 let dragging: string[] | null = null
+
+/**
+ * Lets a drag that starts outside a tree be dropped into one as if it were
+ * rows — the images gallery is the case: its pictures are this folder's files,
+ * so a tree folder should take them the way it takes its own rows.
+ *
+ * Without it the tree only recognised the gallery's drag when it happened to
+ * leave as an operating-system drag, and a drag that left as a path (the
+ * `path` setting, a WSL folder) lit nothing up at all.
+ *
+ * Ends itself, because no tree may be open to hear the drag end, and a stale
+ * value would make the next drag from Explorer look like one of ours.
+ */
+export function beginTreeDrag(paths: string[]): void {
+  dragging = paths
+  const end = () => {
+    window.removeEventListener('dragend', end, true)
+    window.removeEventListener('drop', late, true)
+    if (dragging === paths) dragging = null
+  }
+  // A turn later on a drop, for the reason `onDropAnywhere` gives.
+  const late = () => setTimeout(end, 0)
+  window.addEventListener('dragend', end, true)
+  window.addEventListener('drop', late, true)
+}
 
 /**
  * Re-reads every open tree.
@@ -1819,6 +1845,11 @@ export class FilesPane {
               : [{ label: 'Open in reader', onClick: () => this.hooks.openReader(entry.path) }]),
             { label: 'Open in external editor', onClick: () => this.hooks.openInEditor(entry.path) },
             { label: openWithSystemLabel(backend().capabilities.platform), onClick: () => void backend().openInExplorer(entry.path) },
+            // Not on a remote tree: the path is on another machine, and these
+            // programs run on this one.
+            ...(!remoteHostOfPane(this.paneId)
+              ? [{ label: 'Open with', submenu: openWithEntries(entry.path) }]
+              : []),
           ]),
       { label: 'New terminal here', onClick: () => this.hooks.openTerminalAt(folder) },
       {

@@ -388,6 +388,13 @@ export async function openWith(program: string, target: string): Promise<void> {
     stdio: 'ignore',
     windowsHide: true,
   })
+  // A program that is not there arrives as an `error` event, not a throw — and
+  // an `error` nobody listens for takes the main process down with it. Waited
+  // for so the caller hears "not found" instead.
+  await new Promise<void>((resolve, reject) => {
+    child.once('spawn', resolve)
+    child.once('error', reject)
+  })
   child.unref()
 }
 

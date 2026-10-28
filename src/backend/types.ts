@@ -230,8 +230,11 @@ export interface Backend {
    * whole pane: an async call per image would mean a gallery that renders in
    * two passes and re-flows as the URLs arrive. What scheme this produces is
    * the host's business — `imageProtocol.ts` explains why it is not `file:`.
+   *
+   * `version` — the file's modification time — makes a changed file a
+   * different URL, which is the only thing that makes an `<img>` load it again.
    */
-  imageUrl(path: string): string
+  imageUrl(path: string, version?: number): string
   /** A file as UTF-8 text. Rejects folders, oversized files and binaries. */
   readText(path: string): Promise<string>
   /**

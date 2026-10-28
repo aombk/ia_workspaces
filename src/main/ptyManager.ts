@@ -49,6 +49,8 @@ const PID_RETRY_MS = [10, 40, 100, 250, 600, 1500]
 const MAX_REPLAY_PADDING = 200
 /** Longest wait for a prompt marker before resuming anyway. See `spawn`. */
 const RESUME_FALLBACK_MS = 1500
+/** How long a command runs before the sidebar shows it. See `commandStarted`. */
+const COMMAND_SHOWN_MS = 2500
 
 /**
  * What Claude Code sets on the commands it runs, naming the session that ran
@@ -112,6 +114,14 @@ interface Session {
   /** Whether this shell emits 133;C, so the fallback can stand down. */
   integrated: boolean
   commandStartedAt: number
+  /**
+   * The running command has turned out to be an agent: its hooks have spoken
+   * from inside it. Cleared at the next command start.
+   */
+  commandIsAgent: boolean
+  /** The renderer has been told a command is running here. See `COMMAND_SHOWN_MS`. */
+  commandShown: boolean
+  commandShownTimer: NodeJS.Timeout | null
   lastAlertAt: number
   pending: string
   flushTimer: NodeJS.Timeout | null
@@ -507,6 +517,9 @@ export class PtyManager {
       running: false,
       integrated: resolved.integrated,
       commandStartedAt: 0,
+      commandIsAgent: false,
+      commandShown: false,
+      commandShownTimer: null,
       lastAlertAt: 0,
       pending: '',
       flushTimer: null,
@@ -542,6 +555,7 @@ export class PtyManager {
       onNotify: (title, body) => this.fireAlert(session, 'osc', title, body),
       onPromptStart: () => {
         session.running = false
+        this.commandStopped(session)
         // A prompt is the shell saying it is ready for input — the only honest
         // moment to type a resume line into it.
         this.sendPendingCommand(session)
@@ -550,6 +564,7 @@ export class PtyManager {
         session.integrated = true
         session.running = true
         session.commandStartedAt = Date.now()
+        this.commandStarted(session)
       },
       onCommandEnd: (code) => this.handleCommandEnd(session, code),
       onCommandLine: (command) => {
@@ -680,6 +695,7 @@ export class PtyManager {
     const phantom = isPhantomExit(code, signal, session.pid, isPidAlive)
 
     session.exited = true
+    this.commandStopped(session)
 
     if (session.pendingCommandTimer) clearTimeout(session.pendingCommandTimer)
     session.pendingCommandTimer = null
@@ -906,6 +922,7 @@ export class PtyManager {
     if (s.flushTimer) clearTimeout(s.flushTimer)
     s.flushTimer = null
     this.cancelPendingCommand(s)
+    this.commandStopped(s)
   }
 
   /**
@@ -1046,6 +1063,9 @@ export class PtyManager {
   ): boolean {
     const session = this.sessions.get(paneId)
     if (!session || session.exited) return false
+    // A hook calling in from this pane, whether or not the record is kept: the
+    // command that is running is an agent, and the agent says its own state.
+    this.claimCommandForAgent(session)
 
     const record = acceptSession(
       session.agentSession,
@@ -1426,10 +1446,50 @@ export class PtyManager {
     this.hooks.onData({ paneId: session.id, data })
   }
 
+  /**
+   * A command began; tell the renderer once it has run for a while.
+   *
+   * The delay is what keeps this about builds. Most commands are `ls` and `cd`,
+   * over before a spinner could finish one turn, and a sidebar flickering on
+   * every Enter is noise. It also covers an agent's start-up: Claude Code is a
+   * command too, and its SessionStart hook arrives within the delay and claims
+   * it — see `claimCommandForAgent`.
+   */
+  private commandStarted(session: Session): void {
+    session.commandIsAgent = false
+    if (session.commandShownTimer) clearTimeout(session.commandShownTimer)
+    session.commandShownTimer = setTimeout(() => {
+      session.commandShownTimer = null
+      if (!session.running || session.exited || session.commandIsAgent) return
+      session.commandShown = true
+      this.hooks.onStatus({ paneId: session.id, command: true })
+    }, COMMAND_SHOWN_MS)
+  }
+
+  private commandStopped(session: Session): void {
+    if (session.commandShownTimer) clearTimeout(session.commandShownTimer)
+    session.commandShownTimer = null
+    if (!session.commandShown) return
+    session.commandShown = false
+    this.hooks.onStatus({ paneId: session.id, command: false })
+  }
+
+  /**
+   * The running command is an agent. Its declared state is what the sidebar
+   * shows for it — idle while it waits for you, which the bare fact that a
+   * command is running would contradict.
+   */
+  private claimCommandForAgent(session: Session): void {
+    if (!session.running || session.commandIsAgent) return
+    session.commandIsAgent = true
+    this.commandStopped(session)
+  }
+
   private handleCommandEnd(session: Session, exitCode: number): void {
     const wasRunning = session.running
     const startedAt = session.commandStartedAt
     session.running = false
+    this.commandStopped(session)
 
     // Recorded first and unconditionally. Everything below this is about
     // whether to *interrupt* somebody, which is a different question with a
@@ -1480,6 +1540,8 @@ export class PtyManager {
    * itself.
    */
   private handleAgentState(agent: PaneAgentState): void {
+    const running = this.sessions.get(agent.paneId)
+    if (running) this.claimCommandForAgent(running)
     this.hooks.onStatus({ paneId: agent.paneId, agent })
 
     if (agent.state !== 'blocked' || agent.answeredAt) return

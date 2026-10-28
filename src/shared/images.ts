@@ -63,13 +63,25 @@ export const IMAGE_SCHEME = 'iaw-img'
  * The codec itself is in `pathUrl.ts` — documents are served the same way over
  * a scheme of their own, and the escaping rules are not worth having twice.
  */
-export function encodeImagePath(target: string): string {
-  return encodePathUrl(IMAGE_SCHEME, target)
+export function encodeImagePath(target: string, version?: number): string {
+  const url = encodePathUrl(IMAGE_SCHEME, target)
+  return version ? `${url}?v=${Math.round(Math.abs(version))}` : url
 }
+
+/**
+ * `?v=` and digits, and nothing else.
+ *
+ * The version exists to change the URL when the file changes: an `<img>` is
+ * answered from the document's list of available images by URL alone, cache
+ * headers notwithstanding, so a picture saved over by GIMP would otherwise keep
+ * showing its old self. A fragment does not help — Blink keys that list with
+ * the fragment stripped. The handler never reads the number.
+ */
+const IMAGE_VERSION = /\?v=\d+$/
 
 /** The inverse, for the handler. Null for anything that is not one of ours. */
 export function decodeImagePath(url: string): string | null {
-  return decodePathUrl(IMAGE_SCHEME, url)
+  return decodePathUrl(IMAGE_SCHEME, url.replace(IMAGE_VERSION, ''))
 }
 
 /**

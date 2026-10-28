@@ -22,6 +22,7 @@ import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readTokenUsage } from './tokenUsage'
 import { readTurnIndex } from './turns'
 import { prepareFileDrag, startFileDrag } from './fileDrag'
+import { snapToTop } from './snapToTop'
 import { readClipboardFiles, writeClipboardFiles } from './fileClipboard'
 import { historyDir, writePaneHistory } from './paneHistoryFile'
 import { dropScratch, readScratch, sweepScratch, writeScratch } from './scratchBuffer'
@@ -792,6 +793,25 @@ function bootApp(): void {
         ...(UI_TEST ? { offscreen: true } : {}),
       },
     })
+
+    // Without this, what shows through a clear window is a still image whenever
+    // the window covers what is behind it — maximised, typically.
+    //
+    // Not ours to draw: the compositor shows the window behind live. That window
+    // stops painting. Chromium-based apps — Chrome, Edge, VS Code, every
+    // Electron app — skip rendering while another window fully covers them, and
+    // the test they use for "covers" treats a DirectComposition window as solid
+    // however much alpha it has. So the browser behind freezes on its last
+    // frame, which is exactly what it looks like through the glass.
+    //
+    // What that test does honour is a layered window with an alpha below 255,
+    // and `setOpacity` is Electron's way to make one. 254 of 255 is invisible
+    // and enough. Measured, not inferred: a maximised clear window over an
+    // animating one froze it without this and did not with it. Set before
+    // `maximize`, so the very first occlusion check already sees it.
+    if (transparentWindow && process.platform === 'win32') win.setOpacity(254 / 255)
+    // The same window gets no Aero Snap from Windows. See `snapToTop`.
+    if (transparentWindow && process.platform === 'win32') snapToTop(win)
 
     if (bounds.maximized) win.maximize()
     win.once('ready-to-show', () => {

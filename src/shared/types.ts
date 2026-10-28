@@ -1491,6 +1491,18 @@ export const WEATHER_PROVIDERS: readonly { id: WeatherProvider; label: string; n
  * use. Coordinates stay strings — they are what was typed, and rounding
  * somebody's input on the way past is not this list's business.
  */
+/**
+ * A program a file can be handed to from the "Open with" menu, in the file
+ * tree and the image gallery.
+ *
+ * Just a name and an executable: the file is passed as the one argument,
+ * which is what GIMP, Krita, Inkscape and every other editor accept.
+ */
+export interface OpenWithApp {
+  name: string
+  program: string
+}
+
 export interface WeatherPlace {
   place: string
   lat: string
@@ -2088,6 +2100,11 @@ export interface Settings {
    * how a file gets edited: by the editor you already use.
    */
   externalEditor: string
+  /**
+   * The programs listed under "Open with" on a file, in the order shown.
+   * Configured by hand — nothing is detected.
+   */
+  openWithApps: OpenWithApp[]
   /**
    * Where the weather and air blocks look, and which service answers.
    *
@@ -2897,6 +2914,12 @@ export interface PaneStatus {
   paneId: string
   activity?: PaneActivity
   agent?: PaneAgentState
+  /**
+   * A command that is not an agent — a build, a test run, a dev server — has
+   * been running for a couple of seconds (true), or has ended (false). From
+   * shell integration's 133;C/D, so a shell without it never reports one.
+   */
+  command?: boolean
 }
 
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {
@@ -2976,6 +2999,7 @@ export const DEFAULT_SETTINGS: Settings = {
   refreshChangedFiles: 'auto',
   resumeAgentSessions: true,
   externalEditor: '',
+  openWithApps: [],
   weatherProvider: 'open-meteo',
   weatherPlace: '',
   weatherLat: '',

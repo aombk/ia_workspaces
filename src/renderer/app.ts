@@ -1482,9 +1482,10 @@ function wireAlerts(): void {
   backend().on.alert(handleAlert)
   backend().on.controlApproval((request) => void askCrossPane(request))
 
-  backend().on.paneStatus(({ paneId, activity, agent }) => {
+  backend().on.paneStatus(({ paneId, activity, agent, command }) => {
     if (activity) store.setPaneActivity(paneId, activity)
     if (agent) store.setPaneAgent(paneId, agent)
+    if (command !== undefined) store.setPaneCommand(paneId, command)
   })
 
   // Explorer's "Open in ia_workspaces" on a folder. An existing workspace for

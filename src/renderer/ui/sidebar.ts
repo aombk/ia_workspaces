@@ -210,6 +210,9 @@ export function renderSidebar(): void {
   restoreFocus(list, 'data-workspace-id', focus)
 }
 
+/** One turn of the working spinner. Must match `.workspace-working` in styles.css. */
+const WORKING_SPIN_MS = 900
+
 /** How far one level of nesting indents, in pixels. */
 const INDENT = 12
 
@@ -358,6 +361,23 @@ ${workspace.cwd}`
     // statistic competing with the thing you are actually reading. Hovering is
     // the deliberate act that means "tell me about this one", and it has room
     // for the whole picture rather than one rounded figure. See `tokenTooltip`.
+
+    // An agent at work in here. Beside the name rather than on the dot: the
+    // dot already speaks for questions and finished runs, and "busy" is a
+    // different kind of fact — ongoing, not something waiting on you.
+    const working = store.workspaceWorking(workspace.id, workspace.collapsed)
+    if (working) {
+      const spin = document.createElement('span')
+      spin.className = `workspace-working ${working}`
+      spin.title =
+        working === 'agent' ? 'An agent in here is working' : 'A command in here is running'
+      // The row is rebuilt on every store change, and a fresh element starts
+      // its animation from zero — so a busy sidebar would jerk the spinner back
+      // to twelve o'clock each time. Phased off the clock instead, every
+      // spinner is wherever it would have been had it never been rebuilt.
+      spin.style.animationDelay = `-${Date.now() % WORKING_SPIN_MS}ms`
+      el.appendChild(spin)
+    }
 
     const count = workspace.tabs.length
     if (count && store.settings.showTabCount) {
