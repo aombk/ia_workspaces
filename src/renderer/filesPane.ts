@@ -978,19 +978,28 @@ export class FilesPane {
     // never fires on either — which is what stopped double-clicking a file
     // from opening it.
     row.addEventListener('click', (e) => {
+      // The arrow opens and closes, and does nothing else — the selection
+      // stays where it was, the way Explorer's tree does it. Checked before the
+      // click count, so clicking it twice quickly is two toggles rather than a
+      // trip into the folder.
+      if (entry.isDir && (e.target as HTMLElement).closest('.files-twisty')) {
+        this.listEl.focus({ preventScroll: true })
+        void this.toggle(entry)
+        return
+      }
       if (e.detail >= 2) {
         if (entry.isDir) this.navigate(entry.path)
         else void backend().openInExplorer(entry.path)
         return
       }
+      // Selecting only. A folder used to fold open as well, so picking one to
+      // drag, copy or show in the images pane rearranged the list under the
+      // pointer — and picking one already open shut it. Opening is the arrow's
+      // job, or → on the keyboard.
       this.clickSelect(entry, e)
       // Taking focus is what makes Ctrl+C mean this file rather than whatever
       // the last focused terminal thinks it means.
       this.listEl.focus({ preventScroll: true })
-      // Not on a modified click: Ctrl and Shift are how a folder is added to a
-      // selection, and folding it open at the same time moves everything under
-      // the pointer.
-      if (entry.isDir && !e.shiftKey && !e.ctrlKey && !e.metaKey) void this.toggle(entry)
     })
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault()

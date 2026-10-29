@@ -7476,6 +7476,23 @@ thead .csv-cell {
   text-align: center;
 }
 
+/* On a folder the arrow is the only thing that opens it, so it gets a target
+   bigger than the glyph: the full row height and a few pixels either side,
+   taken back by the margins so nothing in the row moves. */
+.files-row.dir .files-twisty {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  margin: 0 -4px;
+  cursor: pointer;
+}
+
+.files-row.dir .files-twisty:hover {
+  color: var(--text);
+}
+
 .files-name {
   flex: 1;
   overflow: hidden;
