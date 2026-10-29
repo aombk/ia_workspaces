@@ -2,10 +2,56 @@
 
 All notable changes to this project.
 
-## [Unreleased]
+## [1.3.0] — 2026-10-29
 
 ### Added
 
+- **Space.** A pane per workspace that shows how much room the folder takes —
+  on disk and, where it is compressed, uncompressed beside it — which of its
+  folders the project's tools can rebuild (`node_modules`, a CMake `build`, a
+  virtualenv …), and how big its git history is. From there you can get the
+  room back: compress the project in place (APFS on macOS, `compact /exe:lzx`
+  on Windows — files open and build exactly as before), delete the rebuildable
+  folders, *park* a project (both), or shrink the history — compact it, keep
+  the last N saves, squash it, or remove it — each destructive step behind a
+  verified backup. A `.devpark` file lists folders that must never be
+  touched. Sizes can be shown beside each workspace in the sidebar.
+- **Folder sizes in the file tree.** The size column now fills in folders and
+  the tree's root with their real totals, worked out in the background so a
+  large folder never holds up the tree.
+- **Open with.** Right-click any file in the tree, or an image in the images
+  pane, and open it in a program you choose — GIMP, Inkscape, Krita, a hex
+  editor, anything. The list is yours to set in Settings; nothing is guessed.
+- **Drag in the file tree.** Drag files and folders onto a folder to move them
+  there — several at once if they are selected, between two trees, onto the
+  top row or the empty space to move them up. A closed folder opens if you
+  hover on it. Undo puts them back. Files dragged in from Explorer are copied
+  (Shift moves them).
+- **Cut, copy and paste with Explorer.** On Windows the tree's Cut, Copy and
+  Paste use the real clipboard, so a file copied in the tree pastes in
+  Explorer and one copied in Explorer pastes in the tree.
+- **Drag pictures out of the gallery** — onto a terminal, an editor, a folder
+  in the file tree or another program.
+- **A working indicator in the sidebar.** A small turning ring beside a
+  workspace while something in it is at work: in the workspace's colour when
+  an agent says it is working, grey when a command such as a build or a test
+  run has been going for a couple of seconds. A folded parent shows it for
+  what is inside it.
+- **Background fetch.** Each project is fetched shortly after the app starts
+  and when a git pane comes into view, quietly — never a password prompt — so
+  work pushed from another machine shows up without asking. When a fetch
+  brings new saves, a toast says how many and what they were called. A timed
+  fetch can be turned on in Settings. Saves, sends and the other writes wait
+  for a fetch already running in the same project rather than racing it.
+- **JUCE presets and states** open in the editor as indented XML and are
+  written back in their own compact binary form, so a one-line,
+  three-megabyte plugin state is readable and editable. Very large files open
+  without colouring so they still type quickly, and anything that is not text
+  opens in the hex view instead of as an error.
+- **Markdown** is drawn far more completely: tables with alignment, nested and
+  loose lists, task lists inside lists, footnotes, reference links, nested
+  emphasis, strikethrough, bare URLs, every kind of code block, unique heading
+  anchors and in-page `#links`.
 - **Reconnect a copied folder with git.** A project backed
   up or carried to another machine without its `.git` used to be a dead end —
   download it again, or `git init` a second history that the copy online
@@ -21,7 +67,41 @@ All notable changes to this project.
   only where Rail says they are, and the symbols Rail refuses (`==`, `%`, `;` …)
   are marked as errors while you type.
 
+### Changed
+
+- **Clicking a folder in the file tree only selects it.** The ▸ arrow opens
+  and closes it, as in Explorer, so picking a folder to drag or copy no longer
+  rearranges the list under the pointer. Double-click still goes into it, and
+  → and ← still open and close it.
+- **Terminals on Windows use the newer console** that Windows Terminal ships,
+  instead of the one built into Windows 10. Full-screen programs such as
+  Claude Code now get dim text, mouse scrolling and clean redraws.
+  `IAW_SYSTEM_CONPTY=1` goes back to the built-in one.
+- **Fit in the images pane** now also enlarges a single image to fill the
+  pane, not only shrinks it.
+
 ### Fixed
+
+- **Snap to the top of the screen.** Dragging the window to the top edge
+  maximises it, as it does for other windows; restoring returns it to where
+  the drag began.
+- **The transparent terminal background stays live.** Windows behind a
+  transparent, maximised window stopped repainting, so what showed through
+  was a frozen picture of them.
+- **The gallery updates when files change** — added, deleted or edited images
+  appear within a couple of seconds, and an image edited in another program
+  is redrawn rather than shown from the cache.
+- **The sidebar and tabs no longer miss clicks** while an agent is working.
+  Every title change rebuilt them, several times a second per busy pane,
+  which was slow and replaced the row under the pointer between press and
+  release.
+- **Another machine's work is noticed sooner.** Branches that were never
+  pushed now count as unsent, a background workspace's warning no longer
+  disappears between checks, and workspaces with an agent working are checked
+  every time.
+- **Packaging the app while it was running** could fail with `app.asar` in use:
+  the file tree treated `.asar` archives as folders and held them open. They
+  are now ordinary files, for sizes, copying and deleting alike.
 
 - **Claude Code saves its conversations again.** When the app was restarted
   from inside a Claude Code session, every terminal it opened afterwards
