@@ -15,7 +15,8 @@ import { renderReplay } from './replayRender'
 import { REPLAY_RESET, stripInteractive } from './replaySafe'
 import type { AskResult } from './controlServer'
 import { acceptSession, resumeCommand } from './agentSessions'
-import { hasQuirk, platformKind, withBinDir } from '../shared/platform'
+import { hasQuirk, isWindows, platformKind, withBinDir } from '../shared/platform'
+import { panePath } from './windowsPath'
 import type {
   AgentChoice,
   AgentSession,
@@ -445,6 +446,9 @@ export class PtyManager {
     // known until the spawn returns: a pane that reattached to a live session
     // gets its output from the broker and must leave the saved copy alone.
     const replay = await this.prepareReplay(req.paneId)
+    // Windows only: what Explorer handed the app can be missing the whole user
+    // PATH, and every pane would inherit that. See `windowsPath.ts`.
+    const freshPath = isWindows(PLATFORM) ? panePath() : undefined
 
     const host = await this.host()
     const started = await host.spawn({
@@ -462,6 +466,9 @@ export class PtyManager {
       env: withBinDir(
         {
           ...withoutAgentSessionMarkers(process.env),
+          // Added after the spread, so `withBinDir` takes it over the
+          // inherited one whichever spelling that had.
+          ...(freshPath !== undefined ? { Path: freshPath } : {}),
           TERM_PROGRAM: 'ia_workspaces',
           // Claude Code and friends read this to decide colour depth.
           COLORTERM: 'truecolor',

@@ -104,6 +104,7 @@ import { ScrollbackStore } from './scrollback'
 import { EventLog, parseCategories } from './events'
 import { CommandHistory } from './history'
 import { primeToolPath } from './toolPath'
+import { refreshPanePath } from './windowsPath'
 import { guardBrowserPane } from './browserGuard'
 import { mergeRendererState } from './rendererState'
 import { SessionVault } from './vault'
@@ -342,6 +343,10 @@ function bootApp(): void {
   // panel, and everything that asks before then gets the inherited PATH, which
   // is what this app used everywhere until now. See `toolPath.ts`.
   void primeToolPath()
+  // Same idea for terminals on Windows: Explorer can start us without the user
+  // PATH, and the first pane should not be the one that finds out. See
+  // `windowsPath.ts`.
+  if (process.platform === 'win32') refreshPanePath()
 
   // Before anything creates a window: Electron refuses to register a scheme's
   // privileges once one exists, and the images pane cannot load a thing without
