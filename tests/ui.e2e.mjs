@@ -598,7 +598,9 @@ try {
   })
 
   // A button replaced between the mouse going down and coming up never sees
-  // the click, and the timer's pane rebuilt itself on every store change.
+  // the click, and the focus pane rebuilt itself on every store change. The
+  // button is "Take a break now", so this also walks the one way out of a
+  // break that is always open: typing the sentence.
   await check('a click held across a store change still lands', async () => {
     const start = '.pane-shell[data-pane-id="fc"] .focus-buttons .btn'
     const { x, y } = await app.centre(start)
@@ -606,9 +608,12 @@ try {
     await app.mouse('mousePressed', x, y)
     await app.nudgeStore()
     await app.mouse('mouseReleased', x, y)
-    await app.waitFor(`!!document.querySelector('.pane-shell[data-pane-id="fc"] .focus-clock.running')`, 'the timer to start')
-    await app.click(start)
-    await app.waitFor(`!document.querySelector('.pane-shell[data-pane-id="fc"] .focus-clock.running')`, 'the timer to stop')
+    await app.waitFor(`!!document.querySelector('#break-screen:not([hidden])')`, 'the break screen')
+    await app.eval(`[...document.querySelectorAll('.break-link')].find((b) => b.textContent.startsWith('Skip')).click()`)
+    await app.waitFor(`document.activeElement?.id === 'break-skip-input'`, 'the skip box to have the focus')
+    await app.type('I do not want to get up and do this exercise and I take full responsibility for that')
+    await app.press('Enter')
+    await app.waitFor(`!document.querySelector('#break-screen:not([hidden])')`, 'the break to be skipped')
   })
 
   await check('the header of the pane you pick lights up, and only that one', async () => {

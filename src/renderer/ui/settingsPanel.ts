@@ -12,6 +12,7 @@ import { refreshTokensNow } from './tokenMonitor'
 import { syncSystemStrip } from './systemStrip'
 import { appVersion, checkForUpdates, describeUpdate } from '../updates'
 import type { AgentConfigInfo } from '../../shared/types'
+import { EQUIPMENT, STRAINS } from '../../shared/exercises'
 import type { OpenWithApp, ShellProfile, Settings, SoundName } from '../../shared/types'
 
 let onChange: (() => void) | null = null
@@ -1014,6 +1015,76 @@ async function render(): Promise<void> {
         'Minutes. 0 is never. Two projects at a time, and a project that failed to fetch is left ' +
           'alone for half an hour.',
         number(s.gitFetchEveryMinutes, 0, 1440, (n) => patch({ gitFetchEveryMinutes: n }))
+      )
+    )
+  )
+
+  body.appendChild(
+    section(
+      'Movement breaks',
+      field(
+        'Remind me to get up',
+        'After a stretch at the machine the app is covered by a short break with an exercise to ' +
+          'do, standing or seated. Counted only while you are actually at the computer — any ' +
+          'keyboard or mouse, in any program — and walking away for as long as a break counts ' +
+          'as one. Skipping means typing a sentence; there is no button for it.',
+        toggle(s.moveBreaks !== false, (v) => patch({ moveBreaks: v }))
+      ),
+      field(
+        'Every',
+        'Minutes at the machine between breaks. 25 by default; research on breaking up sitting ' +
+          'found 5 minutes of moving every half hour made the difference.',
+        number(s.moveEveryMin ?? 25, 5, 240, (v) => patch({ moveEveryMin: v }))
+      ),
+      field(
+        'Break length',
+        'Minutes. One exercise for each.',
+        number(s.moveBreakMin ?? 5, 1, 30, (v) => patch({ moveBreakMin: v }))
+      )
+    )
+  )
+
+  // Two lists of switches rather than a free-text box: each one decides
+  // exactly which exercises can come up, and a list says what the choices are.
+  const pick = (list: readonly string[], id: string, on: boolean) =>
+    on ? [...list.filter((x) => x !== id), id] : list.filter((x) => x !== id)
+  body.appendChild(
+    section(
+      'Movement breaks \u2014 what you have',
+      field(
+        'Equipment',
+        'Exercises that need something are only suggested if you have it, and then one minute of ' +
+          'every break uses it. Everything else needs only you.',
+        document.createTextNode('')
+      ),
+      ...EQUIPMENT.map((item) =>
+        field(
+          item.label,
+          '',
+          toggle((s.moveEquipment ?? []).includes(item.id), (v) =>
+            patch({ moveEquipment: pick(store.settings.moveEquipment ?? [], item.id, v) })
+          )
+        )
+      )
+    )
+  )
+  body.appendChild(
+    section(
+      'Movement breaks \u2014 go easy on',
+      field(
+        'Leave out exercises that load',
+        'For a bad knee, a sore back, a wrist that does not like weight. Anything that works the part ' +
+          'you switch on here is never suggested; the walk and resting your eyes are always left.',
+        document.createTextNode('')
+      ),
+      ...STRAINS.map((item) =>
+        field(
+          item.label,
+          '',
+          toggle((s.moveAvoid ?? []).includes(item.id), (v) =>
+            patch({ moveAvoid: pick(store.settings.moveAvoid ?? [], item.id, v) })
+          )
+        )
       )
     )
   )

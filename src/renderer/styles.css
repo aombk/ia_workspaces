@@ -2012,19 +2012,6 @@ kbd {
   white-space: nowrap;
 }
 
-.focus-clock {
-  font-size: calc(30px * var(--ui-text, 1));
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
-  line-height: 1.1;
-}
-
-.focus-clock.running {
-  color: var(--text);
-}
-
-/* Both buttons always drawn, one of them dead, so neither moves under the
-   cursor when the timer starts. */
 .focus-buttons {
   display: flex;
   gap: 6px;
@@ -10104,4 +10091,670 @@ body.monitor-dragging .monitor-dock__body {
 
 .monitor-drive__name {
   margin-bottom: 1px;
+}
+
+/* ------------------------------------------------------------- other windows */
+
+/* A workspace's tabs in other windows, by window number, beside its tab count. */
+.workspace-window {
+  font-size: calc(10px * var(--ui-text, 1));
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+  flex: none;
+}
+
+.workspace-window::before {
+  content: '⧉ ';
+}
+
+/* After the `+`: the rest of this workspace, on another screen. */
+.tab-elsewhere {
+  flex: none;
+  align-self: center;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+  white-space: nowrap;
+}
+
+.tab-elsewhere:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* The empty view, saying where this workspace's tabs went. Clickable, unlike
+   the rest of the empty view, which lets clicks through to nothing. */
+.empty-elsewhere {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  pointer-events: auto;
+}
+
+.empty-elsewhere-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: calc(13px * var(--ui-text, 1));
+}
+
+/* ------------------------------------------------------------------ overview */
+
+.overview-mode #shell,
+.overview-mode #notif-button {
+  display: none;
+}
+
+.overview {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 24px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  background: var(--bg);
+}
+
+.overview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.overview-totals {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.overview-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  font-size: calc(12px * var(--ui-text, 1));
+  color: var(--text-dim);
+}
+
+.overview-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: calc(12px * var(--ui-text, 1));
+  color: var(--text-dim);
+}
+
+/* As many columns as the window has room for: one in a narrow strip beside
+   the work, three or four on a monitor of its own. Cards keep their own
+   height, so a short one is not stretched to match a long neighbour. */
+.overview-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
+  align-items: start;
+  gap: 8px;
+}
+
+.overview-empty,
+.overview-none {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: calc(12px * var(--ui-text, 1));
+}
+
+.overview-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--workspace-color, var(--accent));
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  padding: 8px 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.overview-card.mood-blocked {
+  border-color: var(--warn);
+  border-left-color: var(--workspace-color, var(--accent));
+}
+
+.overview-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.overview-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-dot);
+  background: var(--workspace-color, var(--accent));
+  flex: none;
+  align-self: center;
+}
+
+.overview-name {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-branch,
+.overview-where {
+  font-size: calc(11px * var(--ui-text, 1));
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.overview-where {
+  margin-left: auto;
+}
+
+.overview-tab {
+  display: grid;
+  gap: 3px;
+  padding-left: 14px;
+}
+
+.overview-tab-label {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  text-align: left;
+  color: var(--text-dim);
+  font-size: calc(12px * var(--ui-text, 1));
+}
+
+.overview-tab-label:hover {
+  color: var(--text);
+}
+
+.overview-tab-window {
+  font-size: calc(10px * var(--ui-text, 1));
+  color: var(--text-faint);
+}
+
+.overview-pane {
+  display: grid;
+  gap: 4px;
+  padding-left: 10px;
+}
+
+.overview-pane-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  text-align: left;
+  font-size: calc(12px * var(--ui-text, 1));
+  color: var(--text-faint);
+  min-width: 0;
+}
+
+.overview-pane-top:hover .overview-pane-mood {
+  text-decoration: underline;
+}
+
+.overview-pane-name {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-pane-facts {
+  margin-left: auto;
+  font-size: calc(10px * var(--ui-text, 1));
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+/* What a pane is doing, as a mark: a ring turning while something works,
+   a dot otherwise. */
+.overview-mark {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.mood-working > .overview-mark,
+.mood-working > .overview-pane-top > .overview-mark,
+.mood-command > .overview-mark,
+.mood-command > .overview-pane-top > .overview-mark {
+  background: none;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: workspace-spin 900ms linear infinite;
+}
+
+.mood-command > .overview-mark,
+.mood-command > .overview-pane-top > .overview-mark {
+  border-color: color-mix(in srgb, var(--text-dim) 30%, transparent);
+  border-top-color: var(--text-dim);
+}
+
+.mood-blocked > .overview-mark,
+.mood-blocked > .overview-pane-top > .overview-mark {
+  background: var(--warn);
+  animation: pulse 2.2s ease-in-out infinite;
+}
+
+.mood-failed > .overview-mark,
+.mood-failed > .overview-pane-top > .overview-mark {
+  background: var(--danger);
+}
+
+.mood-active > .overview-pane-top > .overview-mark {
+  background: var(--text-dim);
+}
+
+.mood-blocked .overview-pane-mood {
+  color: var(--warn);
+}
+
+.mood-working .overview-pane-mood {
+  color: var(--text);
+}
+
+.mood-failed .overview-pane-mood {
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overview-mark {
+    animation: none !important;
+  }
+}
+
+.overview-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin-left: 15px;
+}
+
+.overview-progress-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.overview-question {
+  margin-left: 15px;
+  font-size: calc(12px * var(--ui-text, 1));
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.overview-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: 15px;
+}
+
+.overview-answered {
+  margin-left: 15px;
+  font-size: calc(11px * var(--ui-text, 1));
+  color: var(--text-faint);
+}
+
+.overview-feed {
+  display: grid;
+  gap: 2px;
+}
+
+.overview-feed-title {
+  margin: 6px 0 4px;
+  font-size: calc(11px * var(--ui-text, 1));
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.overview-feed-item {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  column-gap: 8px;
+  text-align: left;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  font-size: calc(12px * var(--ui-text, 1));
+}
+
+.overview-feed-item:hover {
+  background: var(--bg-hover);
+}
+
+.overview-feed-when {
+  grid-row: span 2;
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+}
+
+.overview-feed-what {
+  color: var(--text);
+}
+
+.overview-feed-where {
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+}
+
+.overview-feed-item.trigger-blocked .overview-feed-what {
+  color: var(--warn);
+}
+
+/* Which window this is, once there is more than one. The main window's is in
+   the accent colour: it is the one that quits the app, and the one closed
+   windows send their tabs back to. */
+.window-badge {
+  flex: none;
+  font-size: calc(10px * var(--ui-text, 1));
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+}
+
+.window-badge.main {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------ movement break */
+
+.status-break {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.status-break:hover {
+  color: var(--text);
+}
+
+.status-break.soon {
+  color: var(--warn);
+}
+
+.status-break[hidden] {
+  display: none;
+}
+
+/* Over everything, the menus and dialogs included: while it is up, the app is
+   not for using. */
+.break-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-app-region: no-drag;
+}
+
+.break-screen[hidden] {
+  display: none;
+}
+
+.break-card {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  color: var(--text);
+}
+
+.break-title {
+  margin: 0;
+  font-size: calc(26px * var(--ui-text, 1));
+  font-weight: 600;
+}
+
+.break-sub,
+.break-how {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: calc(14px * var(--ui-text, 1));
+  line-height: 1.5;
+  max-width: 46ch;
+}
+
+.break-step {
+  color: var(--text-faint);
+  font-size: calc(12px * var(--ui-text, 1));
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.break-art {
+  width: min(260px, 70vw);
+  aspect-ratio: 1;
+}
+
+.break-figure {
+  width: 100%;
+  height: 100%;
+}
+
+.break-bone {
+  stroke: var(--text);
+  stroke-linecap: round;
+}
+
+.break-figure.side-view .break-bone.side-l {
+  stroke: var(--text-dim);
+}
+
+.break-head {
+  fill: var(--text);
+}
+
+.break-floor,
+.break-props path {
+  stroke: var(--border-strong);
+  stroke-width: 4;
+  stroke-linecap: round;
+  fill: none;
+}
+
+.break-holds path {
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+  fill: none;
+}
+
+.break-holds.hold-dumbbells path {
+  stroke-width: 11;
+}
+
+.break-holds.hold-ankle path {
+  stroke-width: 9;
+}
+
+.break-holds.hold-kettlebell path {
+  fill: var(--accent);
+}
+
+.break-props .break-gaze {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 4 6;
+}
+
+.break-clock {
+  font-size: calc(44px * var(--ui-text, 1));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.break-next {
+  margin: 0;
+  min-height: 1.4em;
+  color: var(--text-faint);
+  font-size: calc(13px * var(--ui-text, 1));
+}
+
+.break-choices {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.break-big {
+  padding: 10px 18px;
+  font-size: calc(14px * var(--ui-text, 1));
+}
+
+.break-big[hidden] {
+  display: none;
+}
+
+.break-outs {
+  display: flex;
+  gap: 18px;
+  margin-top: 6px;
+}
+
+.break-link {
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: calc(12px * var(--ui-text, 1));
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.break-link:hover {
+  color: var(--text-dim);
+}
+
+.break-skip {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.break-skip-say,
+.break-skip-sentence {
+  margin: 0;
+  font-size: calc(12px * var(--ui-text, 1));
+  color: var(--text-dim);
+}
+
+.break-skip-sentence {
+  font-style: italic;
+  user-select: none;
+}
+
+.break-skip-input {
+  width: 100%;
+  resize: none;
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--text);
+  font: inherit;
+}
+
+/* A pane window's own switches, when windows are linked: its copy of the list,
+   and whether it follows the list. */
+.window-tools {
+  display: flex;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.window-tools[hidden] {
+  display: none;
+}
+
+.window-tool {
+  font-size: calc(11px * var(--ui-text, 1));
+  padding: 1px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.window-tool:hover {
+  color: var(--text);
+}
+
+.window-tool.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Linked, a pane window is panes: no list, and no grip for one. */
+.app.list-hidden #sidebar,
+.app.list-hidden #sidebar-resizer {
+  display: none;
+}
+
+/* The way to another window's workspaces, at the foot of this window's list:
+   each window lists its own, and names the others instead of repeating them. */
+.sidebar-window-link {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 8px 8px 0;
+  padding: 5px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-faint);
+  font-size: calc(11px * var(--ui-text, 1));
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-window-link:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* A workspace that lives in another window, listed here for the tabs of it
+   that are here. */
+.workspace.guest .workspace-name {
+  font-style: italic;
 }

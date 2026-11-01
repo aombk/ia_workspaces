@@ -10,6 +10,7 @@ import { attachInlineEditor } from './editing'
 import { heldFocus, moveFocus, replaceChildrenKeeping, restoreFocus } from './rowList'
 import { beginDrag, draggingPane, draggingTab, endDrag } from './dragState'
 import { hasFilePath, pathFromDrop } from './fileDrag'
+import { dropOutside, endedOutside, isForeignDrag, markCrossDrag, readForeignDrag, takeForeignDrag } from './windowDrag'
 import type { UiActions } from './actions'
 
 let actions: UiActions
@@ -80,7 +81,9 @@ export function renderTabstrip(): void {
   const roving = focus && workspace.tabs.some((t) => t.id === focus.key) ? focus.key : workspace.activeTabId
   const rows: HTMLElement[] = []
 
-  workspace.tabs.forEach((tab, index) => {
+  // The tabs this window shows. The workspace's others are on other screens,
+  // and are mentioned after the `+` rather than drawn as if they were here.
+  store.tabsHere(workspace).forEach((tab) => {
     const isActive = tab.id === workspace.activeTabId
     // Waiting on a human outranks unseen activity, and the ordering lives in
     // `paneDemand` rather than here — see `state.ts`.
@@ -201,7 +204,7 @@ export function renderTabstrip(): void {
       openTabMenu(e.clientX, e.clientY, workspace.id, tab.id)
     })
 
-    wireDragAndDrop(el, index, workspace.id)
+    wireDragAndDrop(el, workspace.id)
     rows.push(el)
   })
 
@@ -220,6 +223,16 @@ export function renderTabstrip(): void {
     openNewTabMenu(e.clientX, e.clientY, workspace.id)
   })
   rows.push(add)
+
+  // Where the rest of this workspace is: a way to that window, one per window.
+  for (const { window, tabs } of store.elsewhere(workspace)) {
+    const away = document.createElement('button')
+    away.className = 'tab-elsewhere'
+    away.textContent = `${tabs.length} in ${store.windowName(window)}`
+    away.title = `${tabs.map(tabLabel).join('\n')}\n\nClick to go there`
+    away.addEventListener('click', () => void backend().windows?.focus(window.id, { workspaceId: workspace.id }))
+    rows.push(away)
+  }
 
   replaceChildrenKeeping(strip, rows, editing)
   restoreFocus(strip, 'data-tab-id', focus)
@@ -249,6 +262,12 @@ function wireStripSurface(strip: HTMLElement): void {
   // without it a throw towards the strip lands on nothing.
   strip.addEventListener('dragover', (e) => {
     if ((e.target as HTMLElement).closest('.tab')) return
+    if (isForeignTab(e)) {
+      e.preventDefault()
+      e.dataTransfer!.dropEffect = 'move'
+      strip.classList.add('drop-end')
+      return
+    }
     const pane = draggingPane()
     if (!pane || (store.tab(pane.from)?.panes.length ?? 0) <= 1) return
     e.preventDefault()
@@ -260,6 +279,7 @@ function wireStripSurface(strip: HTMLElement): void {
   strip.addEventListener('drop', (e) => {
     strip.classList.remove('drop-end')
     if ((e.target as HTMLElement).closest('.tab')) return
+    if (takeForeignTab(e)) return
     const pane = draggingPane()
     if (!pane) return
     e.preventDefault()
@@ -268,12 +288,30 @@ function wireStripSurface(strip: HTMLElement): void {
   })
 }
 
-function wireDragAndDrop(el: HTMLElement, index: number, workspaceId: string): void {
+/** A tab, pane or workspace dragged in from another window. */
+function isForeignTab(e: DragEvent): boolean {
+  return isForeignDrag(e)
+}
+
+/**
+ * Takes whatever was dropped here from another window: into this window, as
+ * a tab of this strip. True when that is what the drop was.
+ */
+function takeForeignTab(e: DragEvent): boolean {
+  const subject = readForeignDrag(e)
+  if (!subject) return false
+  e.preventDefault()
+  takeForeignDrag(subject)
+  return true
+}
+
+function wireDragAndDrop(el: HTMLElement, workspaceId: string): void {
   el.addEventListener('dragstart', (e) => {
     const id = el.dataset.tabId
     if (!id) return
     beginDrag({ kind: 'tab', id, from: workspaceId })
     e.dataTransfer?.setData('text/plain', id)
+    markCrossDrag(e, 'tab', id)
     if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
   })
 
@@ -292,7 +330,7 @@ function wireDragAndDrop(el: HTMLElement, index: number, workspaceId: string): v
     // gesture would rebuild it to no effect.
     const paneDrag = draggingPane()
     const liftable = paneDrag && (store.tab(paneDrag.from)?.panes.length ?? 0) > 1
-    if (!liftable && (!tabDrag || tabDrag.id === el.dataset.tabId)) return
+    if (!liftable && !isForeignTab(e) && (!tabDrag || tabDrag.id === el.dataset.tabId)) return
     e.preventDefault()
     const rect = el.getBoundingClientRect()
     const after = e.clientX > rect.left + rect.width / 2
@@ -302,14 +340,19 @@ function wireDragAndDrop(el: HTMLElement, index: number, workspaceId: string): v
 
   const clear = () => el.classList.remove('drop-before', 'drop-after', 'drop-into')
   el.addEventListener('dragleave', clear)
-  el.addEventListener('dragend', () => {
+  el.addEventListener('dragend', (e) => {
     clear()
+    const id = el.dataset.tabId
+    // Off the window and onto nothing: to the window on that monitor, or a
+    // new window there.
+    if (id && endedOutside(e)) dropOutside({ kind: 'tab', id, windowId: store.windowId }, e)
     endDrag()
   })
 
   el.addEventListener('drop', (e) => {
     e.preventDefault()
     clear()
+    if (takeForeignTab(e)) return
 
     const file = pathFromDrop(e)
     if (file) {
@@ -326,6 +369,10 @@ function wireDragAndDrop(el: HTMLElement, index: number, workspaceId: string): v
 
     const rectOf = el.getBoundingClientRect()
     const dropAfter = e.clientX > rectOf.left + rectOf.width / 2
+    // Where this tab sits among all of the workspace's tabs, which is what the
+    // store counts in — the strip shows only the ones in this window.
+    const index = store.workspaces.find((w) => w.id === workspaceId)?.tabs.findIndex((t) => t.id === el.dataset.tabId) ?? -1
+    if (index < 0) return
 
     const pane = draggingPane()
     if (pane) {
@@ -555,6 +602,30 @@ function editorPaneOf(tabId: string | undefined): PaneState | null {
   return active?.kind === 'editor' ? active : null
 }
 
+/**
+ * Sending a tab to another window: a new one, or one already open. Nothing at
+ * all where the host has only the one window.
+ */
+function windowEntries(tabId: string): MenuEntry[] {
+  if (!backend().windows) return []
+  const others = store.otherTabWindows()
+  return [
+    'separator',
+    { label: 'Move to new window', shortcut: 'Ctrl+Alt+N', onClick: () => actions.moveTabToNewWindow(tabId) },
+    ...(others.length
+      ? [
+          {
+            label: 'Move to window',
+            submenu: others.map((w) => ({
+              label: store.windowName(w),
+              onClick: () => actions.moveTabToWindow(tabId, w.id),
+            })),
+          },
+        ]
+      : []),
+  ]
+}
+
 function openNewTabMenu(x: number, y: number, workspaceId: string): void {
   showContextMenu(x, y, newTabEntries(workspaceId))
 }
@@ -563,7 +634,7 @@ function openTabMenu(x: number, y: number, workspaceId: string, tabId: string): 
   const tab = store.tab(tabId)
   if (!tab) return
   const workspace = store.workspaces.find((w) => w.id === workspaceId)
-  const onlyTab = (workspace?.tabs.length ?? 0) <= 1
+  const onlyTab = (workspace ? store.tabsHere(workspace).length : 0) <= 1
   const activePane = tab.panes.find((p) => p.id === tab.activePaneId)
 
   showContextMenu(x, y, [
@@ -594,6 +665,7 @@ function openTabMenu(x: number, y: number, workspaceId: string, tabId: string): 
       shortcut: 'Ctrl+Shift+E',
       onClick: () => actions.toggleFileTree(),
     },
+    ...windowEntries(tabId),
     'separator',
     { label: revealLabel(backend().capabilities.platform), onClick: () => actions.openInExplorer(activePane?.cwd ?? '') },
     {

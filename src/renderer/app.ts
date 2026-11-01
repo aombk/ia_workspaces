@@ -66,6 +66,7 @@ import { DomZoom } from './auxPane'
 import { initUsageMonitor, renderUsage } from './ui/usageMonitor'
 import { initRelayMonitor, watchRelay } from './ui/relayMonitor'
 import { initTimeMonitor } from './ui/timeMonitor'
+import { initBreaks } from './ui/breakScreen'
 import { initTokenMonitor } from './ui/tokenMonitor'
 import { initTurnMonitor } from './ui/turnMonitor'
 import { typeIntoPane } from './ui/paneInput'
@@ -75,6 +76,9 @@ import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel
 import { initMonitorDock, toggleMonitorDock } from './ui/monitorDock'
 import { loadSpaceSizes, watchSpaceSizes } from './spaceSizes'
 import { initAutoFetch } from './git/autoFetch'
+import { startOverview } from './overview'
+import { isForeignDrag, readForeignDrag, takeForeignDrag } from './ui/windowDrag'
+import type { WindowTarget } from '../shared/types'
 
 let terminals: TerminalManager
 /** Guards against re-entrant mounts while a spawn is in flight. */
@@ -119,6 +123,20 @@ const appliedRoots = new Map<string, string>()
 
 export async function start(): Promise<void> {
   await store.load()
+  // The overview is the same page drawing something else entirely: no tabs,
+  // no terminals, every workspace at once. See `overview.ts`.
+  if (store.isOverview) {
+    setRealTransparency(!backend().window.usesNativeOverlay)
+    applyChrome(activeTheme(store.settings))
+    void backend().setTranslucent(isTranslucent(store.settings))
+    backend().window.setOverlayColors(activeTheme(store.settings).chrome.bg, activeTheme(store.settings).chrome.textDim)
+    wireWindowControls()
+    wireContextMenuFallback()
+    startOverview()
+    // A break covers every window, the overview's too.
+    initBreaks()
+    return
+  }
   homeDir = (await backend().homeDir()) || fallbackCwd(backend().capabilities.platform)
   // Read once: the menus are built synchronously on right-click and cannot
   // await, and neither list changes while the app is running.
@@ -220,6 +238,7 @@ export async function start(): Promise<void> {
     dropTabIntoPane: (tabId, targetPaneId, side) => {
       if (store.dropTabIntoPane(tabId, targetPaneId, side)) void remount()
     },
+    toNewWindow: (paneId) => actions.movePaneToNewWindow(paneId),
     remount: () => void remount(),
   })
 
@@ -274,6 +293,7 @@ export async function start(): Promise<void> {
   // looked at. Each is a setting; see `git/autoFetch.ts`.
   initAutoFetch()
   initTimeMonitor()
+  initBreaks()
   // A sweep lands on its own timer, not through the store, so the sidebar would
   // otherwise keep yesterday's triangles until something unrelated redrew it.
   watchRelay(render)
@@ -299,17 +319,63 @@ export async function start(): Promise<void> {
   wireAlerts()
 
   // First run, or a workspace whose tabs were all closed, should land on a
-  // live shell rather than an empty pane.
+  // live shell rather than an empty pane. In another window, a workspace with
+  // nothing here yet is one this window was opened onto, and the same applies.
+  // A workspace whose tabs are all in some other window is left as it is: the
+  // empty view says where they went.
   const active = store.activeWorkspace
-  if (active && active.tabs.length === 0) store.addTab(active.id)
+  if (active && (active.tabs.length === 0 || (store.windowId !== 'main' && !store.tabsHere(active).length))) {
+    store.addTab(active.id)
+  }
+
+  // Panes looked at here stop blinking in the other windows too, and a window
+  // asked to show something shows it.
+  store.onLocalSeen((seen) => backend().windows?.seen(seen))
+  backend().windows?.onTarget((target) => showTarget(target))
+
+  // A workspace, tab or pane from another window, dropped anywhere in this one
+  // that has no more particular idea what to do with it — the empty terminal
+  // area, the title bar: it moves into this window. Panes, the strip and the
+  // sidebar handle their own, and say so by preventing the default.
+  document.addEventListener('dragover', (e) => {
+    if (!isForeignDrag(e)) return
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  })
+  document.addEventListener('drop', (e) => {
+    if (e.defaultPrevented) return
+    const foreign = readForeignDrag(e)
+    if (!foreign) return
+    e.preventDefault()
+    takeForeignDrag(foreign)
+  })
 
   await syncMountedTab()
   document.getElementById('status-runtime')!.textContent = backend().name
   startBranchPolling()
 
   // Deliberately not awaited: a slow or unreachable release feed must not hold
-  // up a window the user is already looking at.
-  void checkForUpdatesAtStartup()
+  // up a window the user is already looking at. Once, from the main window.
+  if (store.windowId === 'main') void checkForUpdatesAtStartup()
+}
+
+/** Shows what another window asked this one to. */
+function showTarget(target: WindowTarget): void {
+  if (target.paneId) {
+    const workspace = store.workspaceOfPane(target.paneId)
+    if (workspace) actions.jumpToPane(workspace.id, target.paneId)
+    return
+  }
+  if (target.tabId) {
+    const tab = store.tab(target.tabId)
+    const workspace = tab && store.workspaces.find((w) => w.tabs.includes(tab))
+    if (workspace) {
+      store.setActiveWorkspace(workspace.id)
+      actions.selectTab(workspace.id, target.tabId)
+    }
+    return
+  }
+  if (target.workspaceId) void goToWorkspace(target.workspaceId)
 }
 
 /**
@@ -418,6 +484,7 @@ function render(): void {
   // than read from the store, so `contextMenu.ts` keeps importing nothing.
   setMenuAccent(store.activeWorkspace?.color ?? '')
 
+  document.getElementById('app')!.classList.toggle('list-hidden', !store.listShown)
   renderSidebar()
   renderTabstrip()
   renderNotifications()
@@ -430,11 +497,16 @@ function render(): void {
   terminals?.applyAttention()
   terminals?.applyPaneStatus()
   syncDockedTree()
+  // Before mounting: a tab that has just left for another window must be let
+  // go of here before anything decides what this window shows.
+  terminals?.releaseElsewhere()
   void syncMountedTab()
   // Last, and after `syncMountedTab`: a workspace switch has just changed which
   // panes exist, and a rectangle measured before that is a rectangle for a pane
-  // that is on its way off screen.
-  syncApps()
+  // that is on its way off screen. The main window's only: the programs it
+  // places are positioned against one window, and two windows each placing
+  // them would throw them back and forth.
+  if (store.windowId === 'main') syncApps()
 }
 
 function renderTitlebarContext(): void {
@@ -442,7 +514,74 @@ function renderTitlebarContext(): void {
   const tab = store.activeTab
   const el = document.getElementById('titlebar-context')!
   el.textContent = workspace ? (tab ? `${workspace.name} — ${tabLabel(tab)}` : workspace.name) : ''
-  document.title = workspace ? `${workspace.name} — ia_workspaces` : 'ia_workspaces'
+  const which = windowBadge()
+  renderWindowTools()
+  document.title = [workspace?.name, which, 'ia_workspaces'].filter(Boolean).join(' — ')
+}
+
+/**
+ * Which window this is, in its title bar, once there is more than one.
+ *
+ * The main window is the one that quits the app when closed and the one tabs
+ * go home to, so it is worth being able to tell at a glance: it says "Main
+ * window" in the accent colour, and every other says its number. With only the
+ * one window open there is nothing to tell apart, and nothing is shown.
+ */
+function windowBadge(): string {
+  let badge = document.getElementById('window-badge')
+  if (!badge) {
+    badge = document.createElement('span')
+    badge.id = 'window-badge'
+    badge.className = 'window-badge'
+    document.querySelector('.titlebar-drag .app-name')?.after(badge)
+  }
+  const several = store.openWindows.filter((w) => w.kind !== 'overview').length > 1
+  const me = store.openWindows.find((w) => w.id === store.windowId)
+  const text = !several || !me ? '' : store.windowName(me)
+  badge.textContent = text
+  badge.hidden = !text
+  badge.classList.toggle('main', me?.kind === 'main')
+  badge.title = me?.kind === 'main'
+    ? 'Closing this window quits the app. Tabs from closed windows come back here.'
+    : 'Closing this window sends its tabs back to the main window.'
+  return text
+}
+
+/**
+ * The two switches a pane window has when windows are linked: its own copy of
+ * the list, and whether it follows the list at all.
+ *
+ * In the title bar, because with the list hidden there is nowhere else in the
+ * window to put them — and they are about the window, which is what the title
+ * bar is.
+ */
+function renderWindowTools(): void {
+  let tools = document.getElementById('window-tools')
+  if (!tools) {
+    tools = document.createElement('span')
+    tools.id = 'window-tools'
+    tools.className = 'window-tools'
+    document.getElementById('window-badge')?.after(tools)
+  }
+  const shown = store.linked && store.windowKind === 'workspace'
+  tools.hidden = !shown
+  if (!shown) {
+    tools.replaceChildren()
+    return
+  }
+  const list = document.createElement('button')
+  list.className = 'window-tool' + (store.listShown ? ' on' : '')
+  list.textContent = '☰'
+  list.title = store.listShown ? 'Hide the workspace list here (Ctrl+B)' : 'Show the workspace list here (Ctrl+B)'
+  list.addEventListener('click', () => store.setListShown(!store.listShown))
+  const pin = document.createElement('button')
+  pin.className = 'window-tool' + (store.pinned ? ' on' : '')
+  pin.textContent = store.pinned ? `Pinned: ${store.activeWorkspace?.name ?? ''}` : 'Follows the list'
+  pin.title = store.pinned
+    ? 'This window keeps showing this workspace. Click to follow the list again.'
+    : 'This window switches with the list. Click to keep it on this workspace.'
+  pin.addEventListener('click', () => store.setPinned(!store.pinned))
+  tools.replaceChildren(list, pin)
 }
 
 function renderStatus(): void {
@@ -481,11 +620,60 @@ function renderStatus(): void {
 
 function renderEmptyState(): void {
   const workspace = store.activeWorkspace
-  const empty = !workspace || workspace.tabs.length === 0
+  const empty = !workspace || store.tabsHere(workspace).length === 0
   ;(document.getElementById('empty-state') as HTMLElement).hidden = !empty
+  const title = document.querySelector('#empty-state .empty-title')
+  if (title) {
+    // Linked, an empty window is the normal case: this workspace simply has
+    // nothing on this monitor, and saying "no terminals" would be wrong.
+    title.textContent = store.linked && workspace ? `${workspace.name} has nothing in this window` : 'No terminals open'
+  }
+  renderElsewhere(empty ? workspace : null)
   // The lone pane's history control in the tab bar belongs to a tab that is no
   // longer there — `showTab` refills it, and nothing calls that with no tab.
   if (empty) document.getElementById('tab-tools')?.replaceChildren()
+}
+
+/**
+ * Says where a workspace's tabs went, when none of them are in this window.
+ *
+ * Without it a workspace whose tabs were all sent to another screen looks like
+ * a workspace with none, and the obvious next move — opening a terminal — is
+ * the wrong one. One line per window holding them, each a way there and a way
+ * to bring them back.
+ */
+function renderElsewhere(workspace: Workspace | null): void {
+  let box = document.getElementById('empty-elsewhere')
+  if (!box) {
+    box = document.createElement('div')
+    box.id = 'empty-elsewhere'
+    box.className = 'empty-elsewhere'
+    document.getElementById('empty-state')?.prepend(box)
+  }
+  const places = workspace ? store.elsewhere(workspace) : []
+  box.hidden = !places.length
+  box.replaceChildren(
+    ...places.map(({ window, tabs }) => {
+      // Linked, they are already on screen in their windows; "Show" would only
+      // move the focus away from here.
+      const showable = !store.linked
+      const row = document.createElement('div')
+      row.className = 'empty-elsewhere-row'
+      const say = document.createElement('span')
+      say.textContent = `${tabs.length} tab${tabs.length === 1 ? ' is' : 's are'} in ${store.windowName(window)}`
+      const go = document.createElement('button')
+      go.className = 'btn'
+      go.textContent = 'Show'
+      go.addEventListener('click', () => void backend().windows?.focus(window.id, { workspaceId: workspace!.id }))
+      const back = document.createElement('button')
+      back.className = 'btn'
+      back.textContent = 'Bring here'
+      back.addEventListener('click', () => void backend().windows?.moveTabs(tabs.map((t) => t.id), store.windowId))
+      if (showable) row.append(say, go, back)
+      else row.append(say, back)
+      return row
+    })
+  )
 }
 
 /** Mounts the active tab's pane tree if it isn't already on screen. */
@@ -643,16 +831,63 @@ function openGit(workspaceId: string, kind: 'diff' | 'history'): void {
 async function goToWorkspace(workspaceId: string): Promise<void> {
   const workspace = store.workspaces.find((w) => w.id === workspaceId)
   if (!workspace) return
+  // Not in this window's list — it lives in another window, and nothing of it
+  // is here: that is where it is, so that is where going to it goes. Its
+  // window comes forward showing it, and this one is left as it was.
+  if (!store.listedHere(workspace)) {
+    const home = store.homeWindowOf(workspace)
+    if (home) void backend().windows?.focus(home.id, { workspaceId })
+    return
+  }
+  // Linked, a pane window's workspace is the list's: the main window is asked
+  // to switch, and it decides everything else — WSL, a first tab — once, for
+  // every window.
+  if (store.followsList) {
+    store.setActiveWorkspace(workspaceId)
+    store.markWorkspaceInputSeen(workspaceId)
+    return
+  }
   if (store.activeWorkspace?.id !== workspaceId && !(await confirmWslStart(workspace))) return
 
   store.setActiveWorkspace(workspaceId)
   // Being here answers "which project wants me", so its dot stops blinking.
   // The tab holding the question keeps its own mark until you reach the pane.
   store.markWorkspaceInputSeen(workspaceId)
-  // Clicking a workspace should never land on an empty pane.
-  if (!workspace.tabs.length) store.addTab(workspaceId)
-  else if (!workspace.activeTabId) store.setActiveTab(workspaceId, workspace.tabs[0].id)
+  // Clicking a workspace should never land on an empty pane — unless its panes
+  // are on other monitors, which is what a window kept for the list and the
+  // tree is for. Then those windows follow along and show it, without taking
+  // the focus from the list you are clicking in.
+  //
+  // Linked, they follow by themselves; only a pinned one stays as it is.
+  const here = store.tabsHere(workspace)
+  const away = store.elsewhere(workspace)
+  if (!here.length && away.length) {
+    if (!store.linked) {
+      for (const { window } of away) void backend().windows?.focus(window.id, { workspaceId, quiet: true })
+    }
+  } else if (!here.length) openForWorkspace(workspaceId, () => store.addTab(workspaceId))
+  else if (!workspace.activeTabId) store.setActiveTab(workspaceId, here[0].id)
   void syncMountedTab()
+}
+
+/**
+ * Opens a tab of a workspace where it belongs: in this window, or — windows
+ * linked, this one the list — in the window holding that workspace's panes.
+ * See `paneWindowFor`.
+ */
+function openForWorkspace(workspaceId: string, open: () => void): void {
+  const workspace = store.workspaces.find((w) => w.id === workspaceId)
+  const target = workspace ? store.paneWindowFor(workspace) : null
+  if (!target) {
+    open()
+    void syncMountedTab()
+    return
+  }
+  const made = store.openTabsIn(target, open)
+  if (!made.length) return
+  // The tab has to be in main's copy before main is asked to show it there.
+  store.flushNow()
+  void backend().windows?.moveTabs(made, target)
 }
 
 /** Guards against a second dialog behind the first when clicks come quickly. */
@@ -695,6 +930,10 @@ async function confirmWslStart(workspace: Workspace): Promise<boolean> {
 }
 
 function updateBadge(): void {
+  // One taskbar button flashing is a signal; every window's flashing at once
+  // is a light show. Each window flags the same panes, so the main one speaks
+  // for all of them.
+  if (store.windowId !== 'main') return
   const count = store.settings.notifications.flashTaskbar ? store.attention.size : 0
   void backend().setBadge(count)
 }
@@ -839,8 +1078,57 @@ const actions: UiActions = {
   },
 
   selectTab(workspaceId, tabId) {
+    // A tab in another window is selected there.
+    const tab = store.tab(tabId)
+    if (tab && !store.ownsTab(tab)) {
+      const window = store.windowOfTab(tab)
+      if (window) void backend().windows?.focus(window.id, { tabId })
+      return
+    }
     store.setActiveTab(workspaceId, tabId)
     void syncMountedTab()
+  },
+
+  moveTabToNewWindow(tabId, at) {
+    void backend().windows?.open({ kind: 'workspace', tabIds: [tabId], at })
+  },
+
+  moveTabToWindow(tabId, windowId) {
+    void backend().windows?.moveTabs([tabId], windowId)
+  },
+
+  moveWorkspaceToNewWindow(workspaceId) {
+    void backend().windows?.open({ kind: 'workspace', workspaceId, wholeWorkspace: true })
+  },
+
+  moveWorkspaceToWindow(workspaceId, windowId) {
+    void backend().windows?.moveWorkspace(workspaceId, windowId)
+  },
+
+  newTabInWindow(workspaceId, windowId) {
+    // Started here, then sent: main is what knows how to put a tab in another
+    // window and have that window show it.
+    const tab = store.addTab(workspaceId)
+    if (!tab) return
+    store.flushNow()
+    void backend().windows?.moveTabs([tab.id], windowId)
+  },
+
+  newWindow(workspaceId) {
+    void backend().windows?.open({ kind: 'workspace', workspaceId })
+  },
+
+  openOverview() {
+    void backend().windows?.open({ kind: 'overview' })
+  },
+
+  movePaneToNewWindow(paneId) {
+    const tab = store.tabOfPane(paneId)
+    if (!tab) return
+    // A pane alone in its tab goes with its tab; one of several is lifted
+    // into a tab of its own first, which is the tab that then moves.
+    const tabId = tab.panes.length > 1 ? store.liftPaneToTab(paneId) : tab.id
+    if (tabId) actions.moveTabToNewWindow(tabId)
   },
 
   newTab(workspaceId, cwd) {
@@ -1167,7 +1455,9 @@ const actions: UiActions = {
   closeOtherTabs(workspaceId, keepId) {
     const workspace = store.workspaces.find((w) => w.id === workspaceId)
     if (!workspace) return
-    for (const tab of [...workspace.tabs]) {
+    // The others in this window. Tabs on another screen are not "other tabs"
+    // of the one you right-clicked; they are somebody else's.
+    for (const tab of store.tabsHere(workspace)) {
       if (tab.id === keepId) continue
       terminals.closeMany(store.removeTab(workspaceId, tab.id))
     }
@@ -1233,6 +1523,12 @@ const actions: UiActions = {
 
   jumpToPane(workspaceId, paneId) {
     const tab = store.tabOfPane(paneId)
+    // In another window: that window comes forward and goes to it.
+    if (tab && !store.ownsTab(tab)) {
+      const window = store.windowOfTab(tab)
+      if (window) void backend().windows?.focus(window.id, { paneId })
+      return
+    }
     store.setActiveWorkspace(workspaceId)
     if (tab) {
       store.setActiveTab(workspaceId, tab.id)
@@ -1338,7 +1634,9 @@ function syncDockedTree(): void {
   const panel = document.getElementById('tree-panel') as HTMLElement
   const resizer = document.getElementById('tree-resizer') as HTMLElement
   const workspace = store.activeWorkspace
-  const visible = store.treeVisible && Boolean(workspace)
+  // Linked, the tree is docked beside the list: a pane window with its list
+  // hidden is panes and nothing else.
+  const visible = store.treeVisible && Boolean(workspace) && (!store.linked || store.listShown)
 
   panel.hidden = !visible
   resizer.hidden = !visible
@@ -1353,9 +1651,14 @@ function syncDockedTree(): void {
     tree = new FilesPane(`dock:${workspaceId}`, workspace.treeCwd || workspace.cwd, {
       // From a docked tree a new terminal belongs in its own tab, not squeezed
       // into whatever split happens to be open.
-      openTerminalAt: (cwd) => actions.newTab(workspaceId, cwd),
+      //
+      // Linked, the tree is in the list window and the panes are on the other
+      // monitors, so whatever it opens goes to them. See `openForWorkspace`.
+      openTerminalAt: (cwd) => openForWorkspace(workspaceId, () => actions.newTab(workspaceId, cwd)),
       sendToActiveTerminal: (text) => {
-        const tab = store.activeTab
+        const current = store.workspaces.find((w) => w.id === workspaceId)
+        const away = current ? store.paneWindowFor(current) : null
+        const tab = away && current ? store.tabShownIn(away, current) : store.activeTab
         const target =
           tab?.panes.find((p) => p.id === tab.activePaneId && isTerminalPane(p)) ??
           tab?.panes.find(isTerminalPane)
@@ -1399,9 +1702,9 @@ function syncDockedTree(): void {
         showToast('Workspace folder changed', folder)
       },
       workspaceRoot: () => store.workspaces.find((w) => w.id === workspaceId)?.cwd ?? '',
-      openReader: (path) => actions.openReader(path),
-      openEditorTab: (path) => actions.openEditor(workspaceId, path),
-      openCanvasTab: (path) => actions.openCanvas(workspaceId, path),
+      openReader: (path) => openForWorkspace(workspaceId, () => actions.openReader(path)),
+      openEditorTab: (path) => openForWorkspace(workspaceId, () => actions.openEditor(workspaceId, path)),
+      openCanvasTab: (path) => openForWorkspace(workspaceId, () => actions.openCanvas(workspaceId, path)),
       openInEditor: (path) => openInEditor(path),
     })
     // The docked tree is built here rather than by `ensureAux`, so it does not
@@ -1508,6 +1811,17 @@ function wireAlerts(): void {
     if (agent) store.setPaneAgent(paneId, agent)
     if (command !== undefined) store.setPaneCommand(paneId, command)
   })
+  // Statuses are sent as they change, so a window opened after an agent
+  // started — any window but the first — has to ask what it missed.
+  void backend()
+    .windows?.statuses()
+    .then((all) => {
+      for (const { paneId, activity, agent, command } of all) {
+        if (activity) store.setPaneActivity(paneId, activity)
+        if (agent) store.setPaneAgent(paneId, agent)
+        if (command !== undefined) store.setPaneCommand(paneId, command)
+      }
+    })
 
   // Explorer's "Open in ia_workspaces" on a folder. An existing workspace for
   // that folder is reused — opening the same project twice should not leave you
@@ -1627,7 +1941,12 @@ function handleAlert(alert: TerminalAlert): void {
 
   // Don't interrupt for the pane you are already watching — except when an
   // agent is blocked, which stays until answered whether you are looking or not.
-  if (n.onlyWhenUnattended && alert.trigger !== 'blocked' && store.isAttended(alert.paneId)) return
+  if (n.onlyWhenUnattended && alert.trigger !== 'blocked' && store.isAttended(alert.paneId)) {
+    // Only the window showing the pane can tell, and the others heard the same
+    // alert and will flag it. Said after they have, so it settles them.
+    backend().windows?.seen({ panes: [alert.paneId], workspaces: [] })
+    return
+  }
 
   const workspace = store.workspaces.find((w) => w.id === alert.workspaceId)
   const pane = store.pane(alert.paneId)
@@ -1642,6 +1961,12 @@ function handleAlert(alert: TerminalAlert): void {
   store.markAttention(alert.paneId)
   store.recordNotification(record)
   updateBadge()
+
+  // Every window records it — each sidebar shows every workspace — but only
+  // the window the pane is in says so out loud. Three windows chiming and
+  // three toasts for one bell is not three times as informative.
+  const tab = store.tabOfPane(alert.paneId)
+  if (tab ? !store.ownsTab(tab) : store.windowId !== 'main') return
 
   if (n.sound) playSound(n.soundName, n.volume)
 
@@ -1819,6 +2144,19 @@ function wireKeyboard(): void {
         actions.addWorkspace()
         return
       }
+      // Ctrl+Shift+O — every workspace at a glance, in a window of its own.
+      if (ctrl && e.shiftKey && key === 'o' && backend().windows) {
+        e.preventDefault()
+        actions.openOverview()
+        return
+      }
+      // Ctrl+Alt+N — this tab, in a window of its own. Alt beside the Shift of
+      // "new workspace", which it is not.
+      if (ctrlAlt && key === 'n' && backend().windows) {
+        e.preventDefault()
+        if (tab) actions.moveTabToNewWindow(tab.id)
+        return
+      }
       if (ctrl && !e.shiftKey && key === 't') {
         e.preventDefault()
         if (workspace) actions.newTab(workspace.id)
@@ -1843,7 +2181,7 @@ function wireKeyboard(): void {
       }
       if (ctrl && !e.shiftKey && /^[1-9]$/.test(e.key)) {
         e.preventDefault()
-        const target = workspace?.tabs[Number(e.key) - 1]
+        const target = workspace ? store.tabsHere(workspace)[Number(e.key) - 1] : undefined
         if (workspace && target) actions.selectTab(workspace.id, target.id)
         return
       }
@@ -1977,7 +2315,9 @@ function wireKeyboard(): void {
       }
       if (ctrl && !e.shiftKey && key === 'b') {
         e.preventDefault()
-        toggleCollapsed()
+        // A pane window's list is shown or not; only the main window's folds.
+        if (store.linked && store.windowKind === 'workspace') store.setListShown(!store.listShown)
+        else toggleCollapsed()
         return
       }
       if (ctrl && !e.shiftKey && key === 'i') {
@@ -2052,10 +2392,11 @@ function wireKeyboard(): void {
 
 function cycleTab(direction: 1 | -1): void {
   const workspace = store.activeWorkspace
-  if (!workspace || workspace.tabs.length < 2) return
-  const current = workspace.tabs.findIndex((t) => t.id === workspace.activeTabId)
-  const next = (current + direction + workspace.tabs.length) % workspace.tabs.length
-  actions.selectTab(workspace.id, workspace.tabs[next].id)
+  const tabs = workspace ? store.tabsHere(workspace) : []
+  if (!workspace || tabs.length < 2) return
+  const current = tabs.findIndex((t) => t.id === workspace.activeTabId)
+  const next = (current + direction + tabs.length) % tabs.length
+  actions.selectTab(workspace.id, tabs[next].id)
 }
 
 // ----------------------------------------------------------------------- findbar

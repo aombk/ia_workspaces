@@ -165,6 +165,29 @@ export const IPC = {
   windowMaximizeToggle: 'window:maximizeToggle',
   windowClose: 'window:close',
 
+  /** The document with its revision, for a window that keeps up with the others. */
+  stateLoad: 'state:loadRev',
+  stateSave: 'state:saveRev',
+  stateSaveSync: 'state:saveRevSync',
+  windowsList: 'windows:list',
+  windowsOpen: 'windows:open',
+  windowsMoveTabs: 'windows:moveTabs',
+  windowsFocus: 'windows:focus',
+  /** Something dragged out of a window and dropped at a point on the desktop. */
+  windowsDropAt: 'windows:dropAt',
+  windowsMoveWorkspace: 'windows:moveWorkspace',
+  /** Panes looked at in one window, so the others stop blinking about them. */
+  windowsSeen: 'windows:seen',
+  /** Every pane's live status at once, for a window that has just opened. */
+  paneStatuses: 'pane:statuses',
+  /** Movement breaks: the state, and what the break screen can do about it. */
+  breaksState: 'breaks:state',
+  breaksChoose: 'breaks:choose',
+  breaksFinish: 'breaks:finish',
+  breaksSnooze: 'breaks:snooze',
+  breaksNow: 'breaks:now',
+  breaksToday: 'breaks:today',
+
   // main -> renderer (send)
   onPtyData: 'pty:data',
   onPtyExit: 'pty:exit',
@@ -180,6 +203,12 @@ export const IPC = {
   onGitProgress: 'git:progress',
   /** A pane asking to act on another; the window asks you. */
   onControlApproval: 'control:approval',
+  onState: 'state:rev',
+  onWindowsChanged: 'windows:changed',
+  /** Another window asked this one to show a workspace, tab or pane. */
+  onWindowTarget: 'windows:target',
+  onWindowsSeen: 'windows:onSeen',
+  onBreaks: 'breaks:changed',
 } as const
 
 export type MenuAction =

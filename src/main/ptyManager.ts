@@ -1273,6 +1273,47 @@ export class PtyManager {
   }
 
   /**
+   * What a running pane has on screen, rebuilt from what it printed, for a
+   * window that has just taken the pane over.
+   *
+   * A terminal's screen lives in the window drawing it, so a pane moved to
+   * another window arrives there blank — the shell is the same, nothing it
+   * printed came with it. The ring here has the stream, and the same
+   * reconstruction a restore uses turns it back into the screen.
+   *
+   * The ring is read before the first `await`, so the caller can start holding
+   * the pane's new output at the same moment and nothing is shown twice or lost
+   * between the two. Null when there is nothing to show.
+   */
+  async liveScreen(paneId: string): Promise<string | null> {
+    const live = this.deps.scrollback.live(paneId)
+    if (!live || !live.data) return null
+    const rendered = await renderReplay(live.data, live.cols, live.rows)
+    return `\x1b[0m${rendered ?? stripInteractive(live.data)}${REPLAY_RESET}`
+  }
+
+  /**
+   * Every live pane's status at once: agent, output and command.
+   *
+   * The statuses are pushed as they change, so a window that opens later has
+   * missed every one sent before it — and an overview that does not know which
+   * agents are working is not an overview. This is what it asks first.
+   */
+  statuses(): PaneStatus[] {
+    const out: PaneStatus[] = []
+    const agents = new Map(this.agentState().map((a) => [a.paneId, a]))
+    for (const session of this.sessions.values()) {
+      out.push({
+        paneId: session.id,
+        activity: this.activity.isActive(session.id) ? 'active' : 'idle',
+        agent: agents.get(session.id),
+        command: session.commandShown,
+      })
+    }
+    return out
+  }
+
+  /**
    * A pane's PTY reported an exit its process did not agree with.
    *
    * The shell is still running with nothing pointing at it, so it is ours to

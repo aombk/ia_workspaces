@@ -239,6 +239,21 @@ export class ScrollbackStore {
   }
 
   /**
+   * What a running pane has printed this run, and its current size — the ring
+   * in memory rather than the file on disk, which is behind it by up to the
+   * dump interval and is not written at all with restoring turned off.
+   */
+  live(paneId: string): { data: string; cols: number | null; rows: number | null } | null {
+    const ring = this.rings.get(paneId)
+    if (!ring) return null
+    const raw = ring.readAll()
+    let start = 0
+    while (start < raw.length && (raw[start] & 0xc0) === 0x80) start++
+    const size = this.sizes.get(paneId)
+    return { data: raw.subarray(start).toString('utf8'), cols: size?.cols ?? null, rows: size?.rows ?? null }
+  }
+
+  /**
    * The saved screen has been handed to a pane, so it is that pane's now.
    *
    * The other half of `read`. Deleting it is what stops a pane that respawns —

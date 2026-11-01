@@ -12,6 +12,7 @@ import { heldFocus, moveFocus, replaceChildrenKeeping, restoreFocus } from './ro
 import { isPrimary } from './keys'
 import { stepZoom, ZOOM_DEFAULT } from '../auxPane'
 import { beginDrag, draggingTab, draggingWorkspace, endDrag } from './dragState'
+import { dropOutside, endedOutside, isForeignDrag, markCrossDrag, readForeignDrag, takeForeignDrag } from './windowDrag'
 import { relayWarning } from './relayMonitor'
 import { programsMenu, refreshRunningAppsLazily } from './appsMenu'
 import { spaceSizeOf } from '../spaceSizes'
@@ -213,6 +214,17 @@ export function renderSidebar(): void {
     el.tabIndex = row.workspace.id === roving ? 0 : -1
     return el
   })
+  // The other windows' lists, one line each, in place of their workspaces:
+  // each window keeps its own list, and this is the way to the others.
+  for (const { window, workspaces } of store.otherWindowLists()) {
+    const away = document.createElement('button')
+    away.className = 'sidebar-window-link'
+    away.textContent = `${store.windowName(window)} · ${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'}`
+    away.title = `${workspaces.map((w) => w.name).join('\n')}\n\nClick to go there`
+    away.addEventListener('click', () => void backend().windows?.focus(window.id))
+    rows.push(away)
+  }
+
   replaceChildrenKeeping(list, rows, editing)
   restoreFocus(list, 'data-workspace-id', focus)
 }
@@ -401,6 +413,26 @@ ${workspace.cwd}`
       el.appendChild(spin)
     }
 
+    // Listed here as a guest: it lives in another window and has tabs here.
+    if (!store.ownsWorkspace(workspace)) {
+      el.classList.add('guest')
+      const home = store.homeWindowOf(workspace)
+      if (home) el.title = `Lives in ${store.windowName(home)}; some of its tabs are in this window`
+    }
+
+    // Which other windows this workspace is open in, by number — what makes a
+    // workspace spread over several monitors visible as one.
+    const away = store.elsewhere(workspace)
+    if (away.length) {
+      const where = document.createElement('span')
+      where.className = 'workspace-window'
+      where.textContent = away.map(({ window }) => (window.kind === 'main' ? '1' : String(window.number))).join(',')
+      where.title = away
+        .map(({ window, tabs }) => `${tabs.length} tab${tabs.length === 1 ? '' : 's'} in ${store.windowName(window)}`)
+        .join('\n')
+      el.appendChild(where)
+    }
+
     const count = workspace.tabs.length
     if (count && store.settings.showTabCount) {
       const badge = document.createElement('span')
@@ -449,10 +481,18 @@ function wireDragAndDrop(row: HTMLElement): void {
     if (!id) return
     beginDrag({ kind: 'workspace', id })
     e.dataTransfer?.setData('text/plain', id)
+    markCrossDrag(e, 'workspace', id)
     if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
   })
 
   row.addEventListener('dragover', (e) => {
+    // A workspace, tab or pane from another window: it comes into this one.
+    if (isForeignDrag(e)) {
+      e.preventDefault()
+      e.dataTransfer!.dropEffect = 'move'
+      row.classList.add('drop-into')
+      return
+    }
     // A tab dropped anywhere on the row moves into that workspace — there is no
     // "before" or "after" for a tab in a list it is not in yet.
     const tab = draggingTab()
@@ -475,8 +515,14 @@ function wireDragAndDrop(row: HTMLElement): void {
 
   const clear = () => row.classList.remove('drop-before', 'drop-after', 'drop-into')
   row.addEventListener('dragleave', clear)
-  row.addEventListener('dragend', () => {
+  row.addEventListener('dragend', (e) => {
     clear()
+    // Dragged off the window: the whole workspace goes to the monitor it was
+    // dropped on — its window there, or a new one.
+    const id = row.dataset.workspaceId
+    if (id && draggingWorkspace() === id && endedOutside(e)) {
+      dropOutside({ kind: 'workspace', id, windowId: store.windowId }, e)
+    }
     endDrag()
   })
 
@@ -484,6 +530,12 @@ function wireDragAndDrop(row: HTMLElement): void {
     e.preventDefault()
     clear()
     const ontoId = row.dataset.workspaceId
+
+    const foreign = readForeignDrag(e)
+    if (foreign) {
+      takeForeignDrag(foreign)
+      return
+    }
 
     // A tab from the strip: file it under this workspace and go there.
     const tab = draggingTab()
@@ -635,6 +687,64 @@ async function chooseSshHost(workspaceId: string): Promise<void> {
   if (host) store.setWorkspaceShell(workspaceId, 'ssh', { sshHost: host })
 }
 
+/**
+ * A workspace to another screen: all of it into a new window, all of it into
+ * one already open, or a new window on it with nothing moved. Nothing at all
+ * where the host has only the one window.
+ */
+function windowEntries(workspaceId: string): MenuEntry[] {
+  if (!backend().windows) return []
+  const others = store.otherTabWindows()
+  return [
+    'separator',
+    {
+      label: 'Move to new window',
+      onClick: () => actions.moveWorkspaceToNewWindow(workspaceId),
+    },
+    ...(others.length
+      ? [
+          {
+            label: 'Move to window',
+            submenu: others.map((w) => ({
+              label: store.windowName(w),
+              onClick: () => actions.moveWorkspaceToWindow(workspaceId, w.id),
+            })),
+          },
+        ]
+      : []),
+    { label: 'Open in another window', onClick: () => actions.newWindow(workspaceId) },
+    // How one workspace comes to span several monitors: a terminal of it in
+    // each, without taking anything away from where it is.
+    ...(others.length
+      ? [
+          {
+            label: 'New tab in window',
+            submenu: others.map((w) => ({
+              label: store.windowName(w),
+              onClick: () => actions.newTabInWindow(workspaceId, w.id),
+            })),
+          },
+        ]
+      : []),
+    { label: 'Overview of every workspace', shortcut: 'Ctrl+Shift+O', onClick: () => actions.openOverview() },
+    {
+      label: 'Windows',
+      submenu: [
+        {
+          label: 'Separate — each window its own list',
+          checked: !store.linked,
+          onClick: () => store.setWindowMode('separate'),
+        },
+        {
+          label: 'Linked — one list switches every monitor',
+          checked: store.linked,
+          onClick: () => store.setWindowMode('linked'),
+        },
+      ],
+    },
+  ]
+}
+
 function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
   const workspace = store.workspaces.find((w) => w.id === workspaceId)
   if (!workspace) return
@@ -735,6 +845,7 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
       label: 'Load workspaces…',
       onClick: () => actions.loadWorkspaces(),
     },
+    ...windowEntries(workspaceId),
     'separator',
     // Nesting is mostly done by dragging; this is the keyboard-reachable way
     // to the same thing, and the only way to un-nest without a drag.

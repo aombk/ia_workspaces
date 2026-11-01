@@ -124,6 +124,12 @@ export interface Workspace {
    * take them off the screen with it. See `ExternalApp`.
    */
   apps?: ExternalApp[]
+  /**
+   * The window whose sidebar lists this workspace, when that is not the main
+   * one. Its tabs can still be spread over other windows — those list it too,
+   * as a guest — but this is where it lives. See `homeOfWorkspace`.
+   */
+  windowId?: string
 }
 
 /**
@@ -1664,6 +1670,15 @@ export interface TerminalTabState {
   panes: PaneState[]
   layout: PaneNode
   activePaneId: string
+  /**
+   * The window this tab is shown in, when that is not the main one.
+   *
+   * On the tab rather than the workspace, so one project can be spread over
+   * several monitors — its terminals on one, its editor on another — as well as
+   * kept whole on a screen of its own. Absent means the main window, which is
+   * every tab a document written before there were windows.
+   */
+  windowId?: string
 }
 
 export type NotificationTrigger =
@@ -2193,6 +2208,17 @@ export interface Settings {
    * network call the app makes without being asked, so it is a switch.
    */
   checkUpdatesAtStartup: boolean
+  /**
+   * Getting up every so often: after `moveEveryMin` minutes at the machine,
+   * the app is covered by a break of `moveBreakMin` minutes with an exercise to
+   * do. See `shared/moveBreaks.ts`.
+   */
+  moveBreaks: boolean
+  moveEveryMin: number
+  moveBreakMin: number
+  /** What there is to exercise with, and what to spare. See `EQUIPMENT` and `STRAINS`. */
+  moveEquipment: string[]
+  moveAvoid: string[]
   notifications: NotificationSettings
 }
 
@@ -2259,6 +2285,110 @@ export interface WindowState {
   maximized: boolean
 }
 
+/**
+ * What a window is for.
+ *
+ * `main` is the window the app has always had, and closing it quits. A
+ * `workspace` window shows whichever tabs have been moved to it and closes on
+ * its own, handing them back. The `overview` holds no tabs at all: it is every
+ * workspace and agent at a glance, meant for a screen of its own.
+ */
+export type AppWindowKind = 'main' | 'workspace' | 'overview'
+
+/** A window other than the main one, as it is remembered between runs. Main writes these. */
+export interface WindowRecord {
+  id: string
+  kind: Exclude<AppWindowKind, 'main'>
+  bounds: WindowState
+}
+
+/**
+ * What a window other than the main one has on screen.
+ *
+ * The main window keeps its selection where it always has — the document's
+ * `activeWorkspaceId` and each workspace's `activeTabId` — so a document written
+ * before there were windows reads exactly as it did. Every other window keeps
+ * its own here, under its id, and only that window writes it.
+ */
+export interface WindowView {
+  activeWorkspaceId: string | null
+  /** Workspace id to the tab shown when that workspace is selected in this window. */
+  activeTabs: Record<string, string>
+  /**
+   * With windows linked, this one keeps showing its own workspace instead of
+   * following the list — a log, an agent or a preview kept in view whatever
+   * you are switching between. Means nothing with windows separate.
+   */
+  pinned?: boolean
+  /**
+   * Whether this window shows the workspace list. Absent is the default for
+   * the mode: shown when windows are separate, hidden when they are linked,
+   * where the main window is the list and the others are panes.
+   */
+  listShown?: boolean
+}
+
+/**
+ * How the windows share the workspaces.
+ *
+ * `separate`: every window is complete — its own list, its own tree, its own
+ * selection. `linked`: the main window holds the list and the docked tree, the
+ * others are panes on other monitors, and picking a workspace switches every
+ * window to it, each showing that workspace's tabs that are on its monitor.
+ */
+export type WindowMode = 'separate' | 'linked'
+
+/** An open window, as the windows tell each other about one another. */
+export interface WindowInfo {
+  id: string
+  kind: AppWindowKind
+  /** 1 for the main window, then in the order the others were opened. */
+  number: number
+  focused: boolean
+}
+
+/** Where to put something that is moving to another window. */
+export interface WindowPlacement {
+  /** Screen coordinates to centre the new window's title bar on — where a tab was dropped. */
+  x?: number
+  y?: number
+}
+
+/** Asking for a new window. */
+export interface OpenWindowRequest {
+  kind: 'workspace' | 'overview'
+  /** Tabs to move into it. */
+  tabIds?: string[]
+  /**
+   * A workspace to show in it. With `tabIds` empty, every tab of this
+   * workspace moves; with none at all, the window opens on it with a fresh tab.
+   */
+  workspaceId?: string
+  /** Moving every tab of `workspaceId` rather than opening it empty. */
+  wholeWorkspace?: boolean
+  at?: WindowPlacement
+}
+
+/** Something one window asks another to put on screen. */
+export interface WindowTarget {
+  workspaceId?: string
+  tabId?: string
+  paneId?: string
+  /**
+   * Show it without bringing the window forward — for following along from
+   * another window, where taking the focus away would be the wrong half.
+   */
+  quiet?: boolean
+}
+
+/** The workspace document as it travels between main and the windows. */
+export interface StateRevision {
+  rev: number
+  doc: unknown
+  /** The window whose save produced this revision, or `''` for one main made itself. */
+  from: string
+}
+
 /** The full persisted document, written to userData/workspace.json. */
 export interface PersistedState {
   version: number
@@ -2299,6 +2429,12 @@ export interface PersistedState {
    */
   monitorOrder: string[]
   window: WindowState
+  /** Every window other than the main one, so they come back where they were. Main writes it. */
+  windows?: WindowRecord[]
+  /** What each window other than the main one is showing. See `WindowView`. */
+  views?: Record<string, WindowView>
+  /** Absent is `separate`, which is how windows worked before there was a choice. */
+  windowMode?: WindowMode
   settings: Settings
 }
 
@@ -3096,6 +3232,11 @@ export const DEFAULT_SETTINGS: Settings = {
   nestingMarker: 'hook',
   agentIntegration: 'unset',
   checkUpdatesAtStartup: true,
+  moveBreaks: true,
+  moveEveryMin: 25,
+  moveBreakMin: 5,
+  moveEquipment: [],
+  moveAvoid: [],
   notifications: DEFAULT_NOTIFICATIONS,
 }
 

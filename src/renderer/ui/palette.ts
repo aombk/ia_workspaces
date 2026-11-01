@@ -693,6 +693,64 @@ function collect(): Command[] {
       },
       { kind: 'Action', label: 'Settings', detail: 'Ctrl+,', run: () => actions.openSettings() }
     )
+    // Other screens. Only where the host can open another window.
+    if (backend().windows) {
+      const tab = store.activeTab
+      out.push(
+        {
+          kind: 'Action',
+          label: 'Overview of every workspace',
+          detail: 'A window for another screen — Ctrl+Shift+O',
+          run: () => actions.openOverview(),
+        },
+        { kind: 'Action', label: 'New window', detail: `on ${active.name}`, run: () => actions.newWindow(id) },
+        store.linked
+          ? {
+              kind: 'Action',
+              label: 'Windows: separate',
+              detail: 'each window its own list, tree and workspace',
+              run: () => store.setWindowMode('separate'),
+            }
+          : {
+              kind: 'Action',
+              label: 'Windows: linked to one list',
+              detail: 'the list switches every monitor; other windows are panes',
+              run: () => store.setWindowMode('linked'),
+            },
+        ...(store.linked && store.windowKind === 'workspace'
+          ? [
+              {
+                kind: 'Action',
+                label: store.listShown ? 'Hide the workspace list in this window' : 'Show the workspace list in this window',
+                detail: 'Ctrl+B',
+                run: () => store.setListShown(!store.listShown),
+              },
+              {
+                kind: 'Action',
+                label: store.pinned ? 'Unpin this window' : 'Pin this window to this workspace',
+                detail: store.pinned ? 'follow the list again' : `keep showing ${active.name} while the list switches`,
+                run: () => store.setPinned(!store.pinned),
+              },
+            ]
+          : []),
+        {
+          kind: 'Action',
+          label: 'Move workspace to new window',
+          detail: active.name,
+          run: () => actions.moveWorkspaceToNewWindow(id),
+        },
+        ...(tab
+          ? [
+              {
+                kind: 'Action',
+                label: 'Move tab to new window',
+                detail: `${tabLabel(tab)} — Ctrl+Alt+N`,
+                run: () => actions.moveTabToNewWindow(tab.id),
+              },
+            ]
+          : [])
+      )
+    }
   }
 
   return out

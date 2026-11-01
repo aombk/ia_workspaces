@@ -1,4 +1,13 @@
 import type { PowerLockState } from '../shared/powerLock'
+import type { BreakOutcome, BreakPosture, BreakRecord, BreakState } from '../shared/moveBreaks'
+import type {
+  AppWindowKind,
+  OpenWindowRequest,
+  WindowPlacement,
+  StateRevision,
+  WindowInfo,
+  WindowTarget,
+} from '../shared/types'
 import type { PlatformKind } from '../shared/platform'
 import type { SshHost } from '../shared/ssh'
 import type { WslAction } from '../shared/wsl'
@@ -128,10 +137,67 @@ export interface FileFilter {
   extensions: string[]
 }
 
+/**
+ * Several windows on one document. Only where the host can open more than one
+ * — absent, the app is the single window it always was.
+ */
+export interface WindowsBackend {
+  /** This window's id: `main`, or the id main gave it. */
+  readonly id: string
+  readonly kind: AppWindowKind
+  /** The document with the revision it is at. */
+  loadState(): Promise<StateRevision>
+  /** A save, naming the revision it was built on so main can merge it. */
+  saveState(doc: unknown, baseRev: number): Promise<void>
+  saveStateSync(doc: unknown, baseRev: number): void
+  /** Every new revision, this window's own saves included. */
+  onState(cb: (next: StateRevision) => void): () => void
+
+  list(): Promise<WindowInfo[]>
+  onChanged(cb: (windows: WindowInfo[]) => void): () => void
+  /** Opens a window and returns its id, or null. */
+  open(request: OpenWindowRequest): Promise<string | null>
+  moveTabs(tabIds: string[], to: string): Promise<boolean>
+  /**
+   * Tabs dragged out of their window and dropped on the desktop at a screen
+   * point: into the window on that monitor, or a new window there.
+   */
+  dropAt(tabIds: string[], at: WindowPlacement, workspaceId?: string): Promise<string | null>
+  /** A whole workspace into another window: listed there, with every tab. */
+  moveWorkspace(workspaceId: string, to: string): Promise<boolean>
+  focus(id: string, target?: WindowTarget): Promise<boolean>
+  /** Another window asked this one to show something. */
+  onTarget(cb: (target: WindowTarget) => void): () => void
+  /** Panes and workspaces looked at here, so the other windows stop flagging them. */
+  seen(seen: { panes: string[]; workspaces: string[] }): void
+  onSeen(cb: (seen: { panes: string[]; workspaces: string[] }) => void): () => void
+  /** Every live pane's status, for a window that missed the ones already sent. */
+  statuses(): Promise<PaneStatus[]>
+}
+
+/**
+ * Movement breaks, which main keeps the clock for so every window shows the
+ * same break. See `shared/moveBreaks.ts`.
+ */
+export interface BreaksBackend {
+  state(): Promise<BreakState>
+  onChange(cb: (state: BreakState) => void): () => void
+  choose(posture: BreakPosture): Promise<void>
+  /** False when refused — a countdown not finished yet. */
+  finish(outcome: BreakOutcome): Promise<boolean>
+  snooze(): Promise<boolean>
+  now(): Promise<void>
+  today(): Promise<BreakRecord[]>
+}
+
 export interface Backend {
   /** Which runtime answered. One per entry point — see `src/renderer/entry.*`. */
   readonly name: 'electron' | 'tauri' | 'wails'
   readonly capabilities: Capabilities
+  /** See `WindowsBackend`. Absent on a host with one window. */
+  readonly windows?: WindowsBackend
+  /** See `BreaksBackend`. Absent where the host cannot tell whether anyone is at the machine. */
+  readonly breaks?: BreaksBackend
 
   loadState(): Promise<unknown>
   saveState(state: unknown): Promise<void>

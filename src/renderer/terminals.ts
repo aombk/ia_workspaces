@@ -52,7 +52,8 @@ import {
 } from './ui/paneHistory'
 import { shellBindsHistory } from '../shared/historyBinding'
 import type { HistoryScope } from './ui/paneHistory'
-import { beginDrag, draggingTab, endDrag } from './ui/dragState'
+import { beginDrag, draggingPane, draggingTab, endDrag } from './ui/dragState'
+import { dropOutside, endedOutside, isForeignDrag, markCrossDrag, readForeignDrag, takeForeignDrag } from './ui/windowDrag'
 import { isMac, isPrimary } from './ui/keys'
 import { DomZoom, UnavailablePane, type AuxPane, type PaneZoom } from './auxPane'
 import { bufferWhileHidden, clearPending, drainPending } from './paneBuffer'
@@ -81,6 +82,8 @@ export interface PaneHooks {
   movePane(tabId: string, sourceId: string, targetId: string, side: DropSide): void
   /** A whole tab dropped beside a pane: its panes graft in, its tab goes. */
   dropTabIntoPane(tabId: string, targetPaneId: string, side: DropSide): void
+  /** This pane, in a window of its own. */
+  toNewWindow(paneId: string): void
   remount(): void
 }
 
@@ -1305,10 +1308,15 @@ export class TerminalManager {
       // the payload is deliberately unreadable. Same reason tabs do it.
       beginDrag({ kind: 'pane', id: pane.id, from: tab.id })
       e.dataTransfer?.setData('application/x-iaw-pane', pane.id)
+      markCrossDrag(e, 'pane', pane.id)
       if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
     })
-    header.addEventListener('dragend', () => {
+    header.addEventListener('dragend', (e) => {
       this.dragging = null
+      // Off the window: this pane, on the monitor it was dropped on.
+      if (draggingPane()?.id === pane.id && endedOutside(e)) {
+        dropOutside({ kind: 'pane', id: pane.id, windowId: store.windowId }, e)
+      }
       endDrag()
       this.clearDropHints()
     })
@@ -1350,6 +1358,11 @@ export class TerminalManager {
         disabled: tab.panes.length < 2,
         onClick: () => this.paneHooks?.merge(pane.id),
       },
+      // The pane on a screen of its own: lifted out of its split into a tab,
+      // and that tab into a new window.
+      ...(backend().windows
+        ? [{ label: 'Move to new window', onClick: () => this.paneHooks?.toNewWindow(pane.id) }]
+        : []),
       'separator',
       {
         label: 'Close pane',
@@ -1448,7 +1461,7 @@ export class TerminalManager {
         Boolean(this.dragging) &&
         this.dragging !== targetId &&
         Boolean(e.dataTransfer?.types.includes('application/x-iaw-pane'))
-      if (!paneDrag && !droppableTab()) return
+      if (!paneDrag && !droppableTab() && !isForeignDrag(e)) return
       e.preventDefault()
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
       hint.hidden = false
@@ -1461,6 +1474,16 @@ export class TerminalManager {
 
     shell.addEventListener('drop', (e) => {
       hint.hidden = true
+
+      // From another window: a pane or tab splits this pane, the same as it
+      // would have in its own window; a workspace just comes into this one.
+      const foreign = readForeignDrag(e)
+      if (foreign) {
+        e.preventDefault()
+        e.stopPropagation()
+        if (takeForeignDrag(foreign, { paneId: targetId, side: sideFor(e) })) this.paneHooks?.remount()
+        return
+      }
 
       const source = e.dataTransfer?.getData('application/x-iaw-pane')
       if (source) {
@@ -2022,6 +2045,54 @@ export class TerminalManager {
     }
     inst.element.remove()
     this.instances.delete(paneId)
+  }
+
+  /**
+   * Lets go of every pane this window no longer shows, without ending any.
+   *
+   * A tab sent to another window is drawn there from now on, and the copy here
+   * has to go: two windows drawing one pane would both answer its colour
+   * queries and fight over its size. Nothing is killed — the shell, the agent
+   * in it and the file an editor had open all carry on, and the other window
+   * takes them over. The same happens to a tab another window closed, whose
+   * shell that window has already ended.
+   *
+   * Cheap enough for every render: a loop over the panes this window has
+   * mounted, which is the handful it has shown.
+   */
+  releaseElsewhere(): void {
+    for (const paneId of [...this.instances.keys(), ...this.aux.keys()]) {
+      const tab = store.tabOfPane(paneId)
+      if (tab && store.ownsTab(tab)) continue
+      const auxPane = this.aux.get(paneId)
+      if (auxPane) {
+        auxPane.dispose()
+        this.aux.delete(paneId)
+        continue
+      }
+      const inst = this.instances.get(paneId)
+      if (!inst) continue
+      inst.disposed = true
+      if (inst.webgl) {
+        const webgl = inst.webgl
+        inst.webgl = null
+        releaseWebgl(webgl)
+      }
+      try {
+        inst.term.dispose()
+      } catch {
+        /* already gone */
+      }
+      inst.element.remove()
+      this.instances.delete(paneId)
+    }
+    for (const [tabId, entry] of this.trees) {
+      const tab = store.tab(tabId)
+      if (tab && store.ownsTab(tab)) continue
+      entry.element.remove()
+      this.trees.delete(tabId)
+      if (this.mountedTabId === tabId) this.mountedTabId = null
+    }
   }
 
   /**

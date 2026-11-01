@@ -13,7 +13,7 @@
  */
 
 /** Fields of the workspace document that main owns and the renderer only reads. */
-export const MAIN_OWNED_FIELDS: readonly string[] = ['window']
+export const MAIN_OWNED_FIELDS: readonly string[] = ['window', 'windows']
 
 /**
  * The document to store when the renderer sends `next`, given what main holds.

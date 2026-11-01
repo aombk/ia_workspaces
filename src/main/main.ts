@@ -57,6 +57,8 @@ import { registerImageScheme, serveImages } from './imageProtocol'
 import { registerDocumentScheme, serveDocuments } from './docProtocol'
 import { registerMediaScheme, serveMedia } from './mediaProtocol'
 import { PowerLock } from './powerLock'
+import { MoveBreaks } from './moveBreaks'
+import { readBreakSettings } from '../shared/moveBreaks'
 import {
   readDirectory,
   listByExtension,
@@ -106,7 +108,19 @@ import { CommandHistory } from './history'
 import { primeToolPath } from './toolPath'
 import { refreshPanePath } from './windowsPath'
 import { guardBrowserPane } from './browserGuard'
-import { mergeRendererState } from './rendererState'
+import { MAIN_OWNED_FIELDS } from './rendererState'
+import { StateHub } from './stateHub'
+import { AppWindows } from './appWindows'
+import {
+  assignTabs,
+  assignWorkspace,
+  isLinked,
+  keepOnlyWindows,
+  MAIN_WINDOW,
+  ownerOfTab,
+  recordWindow,
+  releaseWindow,
+} from '../shared/windowLayout'
 import { SessionVault } from './vault'
 import { PidMap } from './pidMap'
 import { directoryFromArgv, isContextMenuInstalled, setContextMenu } from './explorerMenu'
@@ -130,7 +144,12 @@ import type {
   ExternalApp,
   HistoryFilter,
   SpawnRequest,
+  OpenWindowRequest,
+  StateRevision,
   WeatherRequest,
+  WindowPlacement,
+  WindowState,
+  WindowTarget,
 } from '../shared/types'
 
 /** The title bar's height. Must match `--titlebar-h` in styles.css. */
@@ -380,12 +399,31 @@ function bootApp(): void {
 
   app.setPath('userData', SHARED_DATA_DIR)
 
+  /**
+   * The main window: the one the app has always had, and the one whose closing
+   * quits. Kept under its old name because most of what refers to it means
+   * exactly that window — the dock bounce, the second-instance focus, Explorer's
+   * folder. Everything that means "whichever window" goes through `windows`.
+   */
   let win: BrowserWindow | null = null
+  const windows = new AppWindows()
+  /** The document every window edits. Built once the store is. See `stateHub.ts`. */
+  let hub: StateHub
+  /** Which window drew each pane last — where its output goes. See `routePane`. */
+  const paneOwner = new Map<string, string>()
+  /**
+   * Output held back from a pane while the screen it is being taken over with
+   * is rebuilt, so nothing it prints in those milliseconds lands above it.
+   */
+  const holding = new Map<string, string[]>()
+  /** Set once a quit has begun, so a window closing on the way out keeps its tabs. */
+  let quitting = false
   /** Set while a quit waits for the renderer's last save. See `before-quit`. */
   let quitWhenFlushed: (() => void) | null = null
   let store: Store
   let ptys: PtyManager
   let powerLock: PowerLock | undefined
+  let moveBreaks: MoveBreaks | undefined
   let scrollback: ScrollbackStore
   let pidMap: PidMap
   /**
@@ -443,8 +481,115 @@ function bootApp(): void {
   /** A folder Explorer handed us at launch, held until the UI is ready for it. */
   let pendingFolder: string | null = directoryFromArgv(process.argv.slice(1))
 
+  /** To the main window only. Most callers want `windows.broadcast` or `routePane`. */
   const send = (channel: string, payload: unknown): void => {
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
+  }
+
+  /**
+   * The window a pane is drawn in.
+   *
+   * The window that last started or took it over, while that window is open;
+   * otherwise the window its tab is filed under; otherwise the main one. The
+   * first answer is the live one — it changes the moment a window mounts the
+   * pane — and the second covers a pane nobody has mounted yet this run.
+   */
+  function windowOfPane(paneId: string): string {
+    const drawn = paneOwner.get(paneId)
+    if (drawn && windows.get(drawn)) return drawn
+    const doc = hub?.doc as { workspaces?: Array<{ tabs?: Array<{ windowId?: string; panes?: Array<{ id: string }> }> }> }
+    for (const workspace of doc?.workspaces ?? []) {
+      for (const tab of workspace.tabs ?? []) {
+        if (tab.panes?.some((p) => p.id === paneId)) {
+          const owner = ownerOfTab(tab)
+          return windows.get(owner) ? owner : MAIN_WINDOW
+        }
+      }
+    }
+    return MAIN_WINDOW
+  }
+
+  /** Terminal bytes and the like, to the one window drawing that pane. */
+  function routePane(paneId: string, channel: string, payload: unknown): void {
+    windows.sendTo(windowOfPane(paneId), channel, payload)
+  }
+
+  /**
+   * A pane a window has just taken over, with its screen rebuilt.
+   *
+   * The pane's shell kept running while it changed windows, but its screen was
+   * in the window it left. The ring is read synchronously, inside
+   * `liveScreen`'s first step, at the same moment the pane's output starts
+   * being held here — so what was printed is either in the rebuilt screen or in
+   * what is held, never in both and never in neither.
+   */
+  async function takeOver(paneId: string): Promise<void> {
+    holding.set(paneId, [])
+    let screen: string | null = null
+    try {
+      screen = await ptys.liveScreen(paneId)
+    } catch {
+      // A screen that cannot be rebuilt is a blank pane that carries on — which
+      // is what a moved pane used to be every time.
+    }
+    const held = holding.get(paneId) ?? []
+    holding.delete(paneId)
+    const data = (screen ?? '') + held.join('')
+    if (data) routePane(paneId, IPC.onPtyData, { paneId, data })
+  }
+
+  /** Persists and sends a new revision of the document to every window. */
+  function publish(next: StateRevision): void {
+    store.save(next.doc)
+    windows.broadcast(IPC.onState, next)
+    closeEmptiedWindows(next.doc as Record<string, unknown>)
+  }
+
+  /** Windows other than the main one that have held at least one tab. */
+  const hadTabs = new Set<string>()
+
+  /**
+   * Closes a window whose last tab has just been taken away — dragged to
+   * another monitor, or into a pane somewhere else.
+   *
+   * An empty window left behind on a screen is clutter nobody asked for, and
+   * it is what dragging the last thing out of a window means everywhere else.
+   * Only once it has held something: a window just opened onto a workspace has
+   * no tab for the moment between opening and starting its terminal, and must
+   * not close in that moment.
+   */
+  function closeEmptiedWindows(doc: Record<string, unknown>): void {
+    // Linked, a window is a monitor's share of whichever workspace is picked,
+    // and a workspace with nothing on that monitor is not a reason to lose it.
+    if (isLinked(doc)) return
+    const counts = new Map<string, number>()
+    for (const workspace of (doc.workspaces as Array<{ windowId?: string; tabs?: Array<{ windowId?: string }> }> | undefined) ?? []) {
+      // A workspace listed there, even with no tab open, is something in it.
+      const home = ownerOfTab(workspace)
+      counts.set(home, (counts.get(home) ?? 0) + 1)
+      for (const tab of workspace.tabs ?? []) {
+        const owner = ownerOfTab(tab)
+        counts.set(owner, (counts.get(owner) ?? 0) + 1)
+      }
+    }
+    for (const entry of windows.all()) {
+      if (entry.kind !== 'workspace') continue
+      if (counts.get(entry.id)) hadTabs.add(entry.id)
+      else if (hadTabs.has(entry.id) && !quitting) {
+        hadTabs.delete(entry.id)
+        entry.win.close()
+      }
+    }
+  }
+
+  /** Main's own edit of the document, sent to every window. */
+  function editDoc(fn: (doc: Record<string, unknown>) => Record<string, unknown>): void {
+    publish(hub.replace(fn(hub.doc)))
+  }
+
+  /** Tells every window which windows exist, after one opens, closes or takes focus. */
+  function announceWindows(): void {
+    windows.broadcast(IPC.onWindowsChanged, windows.info())
   }
 
   /**
@@ -717,18 +862,34 @@ function bootApp(): void {
     return existing ?? running
   }
 
+  /** The main window, built from where it was left. */
   function createWindow(): void {
-    const persisted = (store.state ?? {}) as { window?: Record<string, number | boolean> }
-    const bounds = persisted.window ?? {}
+    const persisted = (hub.doc ?? {}) as { window?: Partial<WindowState> }
     transparentWindow = wantsTransparentWindow()
+    win = buildWindow(MAIN_WINDOW, 'main', persisted.window ?? {})
+  }
 
-    win = new BrowserWindow({
+  /**
+   * Builds one app window, of any kind.
+   *
+   * Every window is the same page with the same preload — a second window is a
+   * second copy of the whole app pointed at the same document, which is why it
+   * needed no second UI. The query string says which window it is, and the page
+   * takes it from there. See `windowId` in the renderer's store.
+   */
+  function buildWindow(
+    id: string,
+    kind: 'main' | 'workspace' | 'overview',
+    saved: Partial<WindowState>
+  ): BrowserWindow {
+    const bounds = kind === 'main' ? saved : visibleBounds(saved)
+    const win = new BrowserWindow({
       width: Number(bounds.width ?? 1360),
       height: Number(bounds.height ?? 860),
       x: bounds.x as number | undefined,
       y: bounds.y as number | undefined,
-      minWidth: 720,
-      minHeight: 480,
+      minWidth: kind === 'overview' ? 360 : 720,
+      minHeight: kind === 'overview' ? 320 : 480,
       show: false,
       // Set for every build, not just the unpackaged one.
       //
@@ -820,27 +981,36 @@ function bootApp(): void {
     if (transparentWindow && process.platform === 'win32') snapToTop(win)
 
     if (bounds.maximized) win.maximize()
+    windows.add(id, kind, win)
+    // Opened holding tabs — sent to it, or restored — so emptying it later
+    // closes it. See `closeEmptiedWindows`.
+    if (kind === 'workspace') closeEmptiedWindows(hub.doc)
     win.once('ready-to-show', () => {
-      if (!UI_TEST) win?.show()
-      if (pendingFolder) {
+      if (!UI_TEST) win.show()
+      if (kind === 'main' && pendingFolder) {
         send(IPC.onOpenFolder, pendingFolder)
         pendingFolder = null
       }
     })
-    win.loadFile(path.join(__dirname, '../renderer/index.html'))
+    win.loadFile(path.join(__dirname, '../renderer/index.html'), { query: { window: id, kind } })
 
-    win.on('focus', () => send(IPC.onWindowFocus, true))
-    win.on('blur', () => send(IPC.onWindowFocus, false))
+    win.on('focus', () => {
+      windows.sendTo(id, IPC.onWindowFocus, true)
+      announceWindows()
+    })
+    win.on('blur', () => windows.sendTo(id, IPC.onWindowFocus, false))
 
+    // Main's own field for the main window, as it always was; a record in the
+    // window list for any other. Neither is a revision the windows are sent:
+    // only main reads these, and a document broadcast on every drag of a window
+    // edge is a lot of document for nobody.
     const persistBounds = () => {
-      if (!win || win.isDestroyed()) return
+      if (win.isDestroyed()) return
       const b = win.getNormalBounds()
-      // `patch`, not a spread of `store.state`: that getter goes back to the
-      // disk, and doing so in the middle of a read-modify-write is how a
-      // workspace deleted a moment ago came back.
-      store.patch({
-        window: { width: b.width, height: b.height, x: b.x, y: b.y, maximized: win.isMaximized() },
-      })
+      const state: WindowState = { width: b.width, height: b.height, x: b.x, y: b.y, maximized: win.isMaximized() }
+      if (kind === 'main') hub.patchMainOwned({ window: state })
+      else hub.patchMainOwned({ windows: recordWindow(hub.doc, { id, kind, bounds: state }).windows })
+      store.save(hub.doc)
     }
     win.on('resized', persistBounds)
     win.on('moved', persistBounds)
@@ -857,8 +1027,28 @@ function bootApp(): void {
     // attached at all. See `browserGuard.ts`.
     guardBrowserPane(win, path.join(__dirname, '../preload/webviewPreload.js'))
 
+    // The main window is the app: closing it quits, with every other window,
+    // through the same path as Cmd+Q so each of them gets to save first. Any
+    // other window just goes, and hands its tabs back.
+    win.on('close', (e) => {
+      if (kind !== 'main' || quitting) return
+      if (windows.all().length > 1) {
+        e.preventDefault()
+        app.quit()
+      }
+    })
+
     win.on('closed', () => {
-      win = null
+      windows.remove(id)
+      for (const [pane, owner] of paneOwner) if (owner === id) paneOwner.delete(pane)
+      if (kind === 'main') {
+        // The variable, not the parameter shadowing it: `win` out there is the
+        // main window, and this is it going.
+        clearMainWindow()
+      } else if (!quitting) {
+        editDoc((doc) => releaseWindow(doc, id))
+        announceWindows()
+      }
 
       // Quit from the window itself rather than waiting for `window-all-closed`.
       //
@@ -875,6 +1065,180 @@ function bootApp(): void {
         hardExit('last window closed')
       }
     })
+    return win
+  }
+
+  /**
+   * Bounds that put a window on a screen that is still there.
+   *
+   * A window remembered on a monitor that has since been unplugged would open
+   * off every screen there is, and a window you cannot see is one you cannot
+   * close. Kept where it was if any part of its title bar is on a display;
+   * otherwise centred on the main one.
+   */
+  function visibleBounds(saved: Partial<WindowState>): Partial<WindowState> {
+    const width = Number(saved.width) || 1100
+    const height = Number(saved.height) || 760
+    if (typeof saved.x === 'number' && typeof saved.y === 'number') {
+      const bar = { x: saved.x, y: saved.y, width, height: CAPTION_H }
+      const onScreen = screen.getAllDisplays().some((d) => {
+        const a = d.workArea
+        return bar.x < a.x + a.width - 40 && bar.x + bar.width > a.x + 40 && bar.y >= a.y - 8 && bar.y < a.y + a.height - 20
+      })
+      if (onScreen) return { ...saved, width, height }
+    }
+    const area = screen.getPrimaryDisplay().workArea
+    return {
+      width: Math.min(width, area.width),
+      height: Math.min(height, area.height),
+      x: Math.round(area.x + (area.width - Math.min(width, area.width)) / 2),
+      y: Math.round(area.y + (area.height - Math.min(height, area.height)) / 2),
+      maximized: Boolean(saved.maximized),
+    }
+  }
+
+  /** A new window id: short, and never one in use or remembered. */
+  function newWindowId(): string {
+    return `w${randomUUID().slice(0, 8)}`
+  }
+
+  /**
+   * Opens a window, moving into it whatever the request names.
+   *
+   * There is only ever one overview: asking for a second shows the first.
+   * A workspace window takes the tabs it was asked for, or a whole workspace's,
+   * and with neither opens on a workspace with nothing in it yet — the page
+   * starts a terminal there, the same as for any workspace with no tabs.
+   */
+  function openWindow(request: OpenWindowRequest): string | null {
+    if (request.kind === 'overview') {
+      const existing = windows.all().find((w) => w.kind === 'overview')
+      if (existing) {
+        windows.reveal(existing.id)
+        return existing.id
+      }
+    }
+    const id = newWindowId()
+    const kind = request.kind === 'overview' ? 'overview' : 'workspace'
+    const bounds = placeNewWindow(kind, request.at)
+
+    // The document first, then the window: the page reads it as it loads and
+    // should find its tabs already there rather than arrive empty and fill.
+    editDoc((doc) => {
+      let next = recordWindow(doc, { id, kind, bounds })
+      if (kind === 'workspace') {
+        if (request.workspaceId && request.wholeWorkspace && !request.tabIds?.length) {
+          return assignWorkspace(next, request.workspaceId, id)
+        }
+        const tabIds = request.tabIds ?? []
+        if (tabIds.length) next = assignTabs(next, tabIds, id)
+        else if (request.workspaceId) {
+          const views = { ...((next.views as Record<string, unknown>) ?? {}) }
+          views[id] = { activeWorkspaceId: request.workspaceId, activeTabs: {} }
+          next = { ...next, views }
+        }
+      }
+      return next
+    })
+    buildWindow(id, kind, bounds)
+    announceWindows()
+    return id
+  }
+
+  /**
+   * Where a new window goes: centred under the point a tab was dropped at, on
+   * whichever display that is, or offset from the window you are in.
+   */
+  function placeNewWindow(kind: 'workspace' | 'overview', at?: WindowPlacement): WindowState {
+    const from = windows.focusedForContent()?.win ?? win
+    const size = from && !from.isDestroyed() ? from.getNormalBounds() : { x: 80, y: 80, width: 1200, height: 800 }
+    const width = kind === 'overview' ? 460 : size.width
+    const height = kind === 'overview' ? Math.max(560, Math.round(size.height * 0.9)) : size.height
+    if (typeof at?.x === 'number' && typeof at?.y === 'number') {
+      const area = screen.getDisplayNearestPoint({ x: Math.round(at.x), y: Math.round(at.y) }).workArea
+      const w = Math.min(width, area.width)
+      const h = Math.min(height, area.height)
+      const x = Math.min(Math.max(Math.round(at.x - w / 2), area.x), area.x + area.width - w)
+      const y = Math.min(Math.max(Math.round(at.y - CAPTION_H / 2), area.y), area.y + area.height - h)
+      return { x, y, width: w, height: h, maximized: false }
+    }
+    return { x: size.x + 40, y: size.y + 40, width, height, maximized: false }
+  }
+
+  /** Sends tabs to another window and brings that window forward. */
+  function moveTabs(tabIds: string[], to: string): boolean {
+    if (!tabIds.length) return false
+    const target = windows.get(to)
+    if (!target || target.kind === 'overview') return false
+    editDoc((doc) => assignTabs(doc, tabIds, to))
+    windows.reveal(to)
+    return true
+  }
+
+  /**
+   * Tabs dropped on the desktop: one monitor, one window.
+   *
+   * Dropped on a monitor that already has one of the app's windows, they go
+   * into it — which is how something dragged back to the main window's monitor
+   * goes home. Dropped on a monitor with none, they become a new window there.
+   * The window they came from does not count as being on its own monitor:
+   * dragging a tab off a window onto the empty part of the same screen is
+   * asking for a second window beside it.
+   */
+  function dropAt(tabIds: string[], at: WindowPlacement, from?: string, workspaceId?: string): string | null {
+    if ((!tabIds.length && !workspaceId) || typeof at.x !== 'number' || typeof at.y !== 'number') return null
+    const display = screen.getDisplayNearestPoint({ x: Math.round(at.x), y: Math.round(at.y) })
+    const onThatMonitor = windows
+      .all()
+      .filter((w) => w.kind !== 'overview' && w.id !== from && !w.win.isMinimized())
+      .find((w) => screen.getDisplayMatching(w.win.getBounds()).id === display.id)
+    if (onThatMonitor) {
+      if (workspaceId) moveWorkspace(workspaceId, onThatMonitor.id)
+      else moveTabs(tabIds, onThatMonitor.id)
+      return onThatMonitor.id
+    }
+    return workspaceId
+      ? openWindow({ kind: 'workspace', workspaceId, wholeWorkspace: true, at })
+      : openWindow({ kind: 'workspace', tabIds, at })
+  }
+
+  /** A whole workspace into another window — listed there, every tab with it. */
+  function moveWorkspace(workspaceId: string, to: string): boolean {
+    const target = windows.get(to)
+    if (!target || target.kind === 'overview') return false
+    editDoc((doc) => assignWorkspace(doc, workspaceId, to))
+    windows.reveal(to)
+    return true
+  }
+
+  /** Brings a window forward and has it show something. */
+  function focusWindow(id: string, target?: WindowTarget): boolean {
+    if (target?.quiet) {
+      if (!windows.get(id)) return false
+    } else if (!windows.reveal(id)) return false
+    if (target) windows.sendTo(id, IPC.onWindowTarget, target)
+    return true
+  }
+
+  /**
+   * Opens every window that was open when the app last quit, where it was.
+   *
+   * Tabs filed under a window that is not coming back — its record lost, or
+   * from a document older than windows — go to the main window first, so no
+   * tab is left belonging to nobody.
+   */
+  function restoreWindows(): void {
+    const records = ((hub.doc as { windows?: Array<{ id: string; kind: string; bounds: WindowState }> }).windows ?? [])
+      .filter((r) => r && typeof r.id === 'string' && (r.kind === 'workspace' || r.kind === 'overview'))
+    const live = new Set(records.map((r) => r.id))
+    editDoc((doc) => ({ ...keepOnlyWindows(doc, live), windows: records }))
+    for (const record of records) buildWindow(record.id, record.kind as 'workspace' | 'overview', record.bounds ?? {})
+    if (records.length) announceWindows()
+  }
+
+  /** Forgets the main window once it has closed. */
+  function clearMainWindow(): void {
+    win = null
   }
 
   /**
@@ -899,7 +1263,7 @@ function bootApp(): void {
     if (trustedPanes.has(from)) return Promise.resolve(true)
     if (!win || win.isDestroyed()) return Promise.resolve(false)
 
-    const panes = flattenPanes(buildTree(store.state, (id) => ptys.has(id)))
+    const panes = flattenPanes(buildTree(hub.doc, (id) => ptys.has(id)))
     const describe = (id: string) => {
       const pane = panes.find((p) => p.id === id)
       return pane ? pane.title || pane.cwd || 'an unnamed pane' : 'a pane that no longer exists'
@@ -922,10 +1286,21 @@ function bootApp(): void {
     })
   }
 
-  /** Takes the renderer's document, keeping the fields only main writes. See `rendererState.ts`. */
-  function adoptRendererState(next: unknown): void {
-    const merged = mergeRendererState(store.state, next)
-    if (merged) store.save(merged)
+  /**
+   * A window's save, merged into the document every window shares.
+   *
+   * `baseRev` is the revision the window built it on; without one — the
+   * original single-window call — what it sent is taken whole, as it always
+   * was. See `stateHub.ts`.
+   */
+  function adoptWindowSave(sender: Electron.WebContents, next: unknown, baseRev?: number): void {
+    const from = windows.ofSender(sender)
+    // The overview edits nothing. A save from it is a bug, and a bug that
+    // could rewrite every workspace is not one to let through.
+    if (!from || from.kind === 'overview') return
+    const result = hub.save(next, baseRev, from.kind === 'main')
+    if (!result) return
+    publish({ ...result, from: from.id })
   }
 
   function registerIpc(): void {
@@ -940,8 +1315,10 @@ function bootApp(): void {
      * a property of everything else staying right, and this makes it a rule:
      * the caller must be this window's top frame, and nothing else.
      */
-    const trusted = (e: IpcMainEvent | IpcMainInvokeEvent): boolean =>
-      !!win && !win.isDestroyed() && e.sender === win.webContents && e.senderFrame === win.webContents.mainFrame
+    const trusted = (e: IpcMainEvent | IpcMainInvokeEvent): boolean => {
+      const from = windows.ofSender(e.sender)
+      return !!from && e.senderFrame === from.win.webContents.mainFrame
+    }
 
     function handle<A extends unknown[]>(
       channel: string,
@@ -963,9 +1340,9 @@ function bootApp(): void {
       })
     }
 
-    handle(IPC.loadState, () => store.state)
-    handle(IPC.saveState, (_e, next: unknown) => {
-      adoptRendererState(next)
+    handle(IPC.loadState, () => hub.doc)
+    handle(IPC.saveState, (e, next: unknown) => {
+      adoptWindowSave(e.sender, next)
       // The keep-awake setting arrives in here with everything else, and
       // turning it off is a request about *now* — the poll used to be what
       // eventually noticed, which meant a setting that took effect somewhere
@@ -977,14 +1354,51 @@ function bootApp(): void {
     // until this returns, which is the point: it is the one save that cannot
     // be overtaken by the process ending.
     listen(IPC.saveStateSync, (e, next: unknown) => {
-      adoptRendererState(next)
+      adoptWindowSave(e.sender, next)
       // Written now, not on the store's own debounce: this save is only ever
       // made on the way out, and "main has it in memory" is one more step
       // that has to go right before it is safe.
       store.flush()
       e.returnValue = true
-      quitWhenFlushed?.()
     })
+
+    // The same three, with revisions, for windows that keep up with each other.
+    handle(IPC.stateLoad, () => hub.snapshot())
+    handle(IPC.stateSave, (e, next: unknown, baseRev: number) => {
+      adoptWindowSave(e.sender, next, baseRev)
+      powerLock?.evaluate()
+      // The break settings live in the document; a change applies now.
+      moveBreaks?.tick()
+    })
+    listen(IPC.stateSaveSync, (e, next: unknown, baseRev: number) => {
+      adoptWindowSave(e.sender, next, baseRev)
+      store.flush()
+      e.returnValue = true
+    })
+
+    handle(IPC.windowsList, () => windows.info())
+    handle(IPC.windowsOpen, (_e, request: OpenWindowRequest) => openWindow(request))
+    handle(IPC.windowsMoveTabs, (_e, tabIds: string[], to: string) => moveTabs(tabIds, to))
+    handle(IPC.windowsDropAt, (e, tabIds: string[], at: WindowPlacement, workspaceId?: string) =>
+      dropAt(tabIds, at, windows.ofSender(e.sender)?.id, workspaceId)
+    )
+    handle(IPC.windowsMoveWorkspace, (_e, workspaceId: string, to: string) => moveWorkspace(workspaceId, to))
+    handle(IPC.windowsFocus, (_e, id: string, target?: WindowTarget) => focusWindow(id, target))
+    handle(IPC.windowsSeen, (e, seen: { panes: string[]; workspaces: string[] }) => {
+      windows.broadcast(IPC.onWindowsSeen, seen, windows.ofSender(e.sender)?.id)
+    })
+    handle(IPC.paneStatuses, () => ptys.statuses())
+
+    handle(IPC.breaksState, () => moveBreaks?.state())
+    handle(IPC.breaksChoose, (_e, posture: 'standing' | 'seated') => {
+      if (posture === 'standing' || posture === 'seated') moveBreaks?.choose(posture)
+    })
+    handle(IPC.breaksFinish, (_e, outcome: string) =>
+      outcome === 'done' || outcome === 'seated' || outcome === 'skipped' ? (moveBreaks?.finish(outcome) ?? false) : false
+    )
+    handle(IPC.breaksSnooze, () => moveBreaks?.snooze() ?? false)
+    handle(IPC.breaksNow, () => moveBreaks?.now())
+    handle(IPC.breaksToday, () => moveBreaks?.today() ?? [])
 
     // Your answer to "may this pane act on that one". Ignored for an id that is
     // not waiting — a stale or forged answer has nothing to settle.
@@ -1061,7 +1475,7 @@ function bootApp(): void {
     // What git is doing, while it is doing it. Wired here rather than imported
     // by the module, because `git.ts` is also loaded by the CLI and by the
     // tests, where there is no window to send anything to.
-    git.onGitProgress((p) => send(IPC.onGitProgress, p))
+    git.onGitProgress((p) => windows.broadcast(IPC.onGitProgress, p))
 
     // The git panes. Every one of these is a thin forward: the module owns the
     // decisions, including which of them are allowed to exist at all.
@@ -1312,10 +1726,11 @@ function bootApp(): void {
      * If that ever changes, a material has to go on a window that is not
      * transparent, decided at construction, and never on this one.
      */
-    handle(IPC.setTranslucent, (_e, translucent: boolean) => {
-      if (!win || win.isDestroyed()) return
+    handle(IPC.setTranslucent, (e, translucent: boolean) => {
+      const target = windows.ofSender(e.sender)?.win
+      if (!target || target.isDestroyed()) return
       try {
-        win.setBackgroundColor(translucent ? '#00000000' : '#141414')
+        target.setBackgroundColor(translucent ? '#00000000' : '#141414')
       } catch {
         /* the window can go between the guard above and here */
       }
@@ -1330,18 +1745,20 @@ function bootApp(): void {
     // Sent on every theme change: the overlay keeps whatever colours it was
     // built with until it is told otherwise, so without this the strip stays at
     // the startup theme's palette while the rest of the UI moves on.
-    handle(IPC.setOverlayColors, (_e, color: string, symbolColor: string) => {
-      if (!win || win.isDestroyed() || transparentWindow) return
+    handle(IPC.setOverlayColors, (e, color: string, symbolColor: string) => {
+      const target = windows.ofSender(e.sender)?.win
+      if (!target || target.isDestroyed() || transparentWindow) return
       try {
-        win.setTitleBarOverlay({ color, symbolColor, height: CAPTION_H })
+        target.setTitleBarOverlay({ color, symbolColor, height: CAPTION_H })
       } catch {
         /* no overlay on this window: the page is drawing the buttons instead */
       }
     })
 
-    handle(IPC.pickFolder, async (_e, defaultPath?: string) => {
-      if (!win) return null
-      const res = await dialog.showOpenDialog(win, {
+    handle(IPC.pickFolder, async (e, defaultPath?: string) => {
+      const parent = windows.ofSender(e.sender)?.win
+      if (!parent) return null
+      const res = await dialog.showOpenDialog(parent, {
         title: 'Choose a folder',
         properties: ['openDirectory', 'createDirectory'],
         defaultPath: defaultPath || app.getPath('home'),
@@ -1352,11 +1769,12 @@ function bootApp(): void {
     handle(
       IPC.pickSaveFile,
       async (
-        _e,
+        e,
         opts: { title: string; defaultName: string; filters?: Electron.FileFilter[] }
       ) => {
-        if (!win) return null
-        const res = await dialog.showSaveDialog(win, {
+        const parent = windows.ofSender(e.sender)?.win
+        if (!parent) return null
+        const res = await dialog.showSaveDialog(parent, {
           title: opts.title,
           defaultPath: opts.defaultName,
           // The caller's own type where it named one. Workspace files are only
@@ -1370,9 +1788,10 @@ function bootApp(): void {
 
     handle(
       IPC.pickOpenFile,
-      async (_e, opts: { title: string; anyFile?: boolean; filters?: Electron.FileFilter[] }) => {
-        if (!win) return null
-        const res = await dialog.showOpenDialog(win, {
+      async (e, opts: { title: string; anyFile?: boolean; filters?: Electron.FileFilter[] }) => {
+        const parent = windows.ofSender(e.sender)?.win
+        if (!parent) return null
+        const res = await dialog.showOpenDialog(parent, {
           title: opts.title,
           filters: opts.filters ?? (opts.anyFile ? ANY_FILTERS : WORKSPACE_FILTERS),
           properties: ['openFile'],
@@ -1381,7 +1800,18 @@ function bootApp(): void {
       }
     )
 
-    handle(IPC.ptySpawn, (_e, req: SpawnRequest) => ptys.spawn(req))
+    // The window asking is the window drawing the pane from now on — which is
+    // how a pane moved to another window starts receiving its output there. A
+    // pane whose shell is already running here is being taken over rather than
+    // started: its screen is rebuilt and sent, and it is sized to its new home.
+    handle(IPC.ptySpawn, (e, req: SpawnRequest) => {
+      const from = windows.ofSender(e.sender)
+      if (from) paneOwner.set(req.paneId, from.id)
+      if (!ptys.has(req.paneId)) return ptys.spawn(req)
+      void takeOver(req.paneId)
+      ptys.resize(req.paneId, req.cols, req.rows)
+      return { ok: true }
+    })
     handle(IPC.ptyWrite, (_e, id: string, data: string) => ptys.write(id, data))
     handle(IPC.ptyResize, (_e, id: string, cols: number, rows: number) =>
       ptys.resize(id, cols, rows)
@@ -1492,21 +1922,22 @@ function bootApp(): void {
           body: opts.body,
           silent: true, // the renderer plays our own chime
         })
+        // To the window the pane is in, which is not necessarily the one
+        // that raised the notification.
         notification.on('click', () => {
-          if (!win || win.isDestroyed()) return
-          if (win.isMinimized()) win.restore()
-          if (!win.isVisible()) win.show()
-          win.focus()
-          send(IPC.onFocusTerminal, { workspaceId: opts.workspaceId, paneId: opts.paneId })
+          const owner = windowOfPane(opts.paneId)
+          if (!windows.reveal(owner)) return
+          windows.sendTo(owner, IPC.onFocusTerminal, { workspaceId: opts.workspaceId, paneId: opts.paneId })
         })
         notification.show()
       }
     )
 
-    handle(IPC.setBadge, (_e, count: number) => {
-      if (!win || win.isDestroyed()) return
+    handle(IPC.setBadge, (e, count: number) => {
+      const target = windows.ofSender(e.sender)?.win
+      if (!target || target.isDestroyed()) return
       // Windows has no dock badge; flashing the taskbar is the closest signal.
-      win.flashFrame(count > 0 && !win.isFocused())
+      target.flashFrame(count > 0 && !target.isFocused())
     })
 
     handle(IPC.openExternal, (_e, url: string) => {
@@ -1527,13 +1958,16 @@ function bootApp(): void {
       )
     )
 
-    handle(IPC.windowMinimize, () => win?.minimize())
-    handle(IPC.windowMaximizeToggle, () => {
-      if (!win) return
-      if (win.isMaximized()) win.unmaximize()
-      else win.maximize()
+    // Each window's own caption buttons act on that window.
+    const senderWindow = (e: IpcMainInvokeEvent) => windows.ofSender(e.sender)?.win
+    handle(IPC.windowMinimize, (e) => senderWindow(e)?.minimize())
+    handle(IPC.windowMaximizeToggle, (e) => {
+      const target = senderWindow(e)
+      if (!target) return
+      if (target.isMaximized()) target.unmaximize()
+      else target.maximize()
     })
-    handle(IPC.windowClose, () => win?.close())
+    handle(IPC.windowClose, (e) => senderWindow(e)?.close())
   }
 
   /**
@@ -1566,7 +2000,11 @@ function bootApp(): void {
     ensureStartMenuShortcut()
     const userData = SHARED_DATA_DIR
     store = new Store(userData)
-    store.watchExternal((state) => send(IPC.onExternalState, state))
+    hub = new StateHub(store.state, MAIN_OWNED_FIELDS)
+    // Another copy of the app rewrote the file. Its document is a revision
+    // like any other: every window takes it, merging whatever it had not yet
+    // saved on top.
+    store.watchExternal((state) => windows.broadcast(IPC.onState, hub.replace(state)))
     prepareIntegrationScript(userData)
 
     // Kept separate from the Tauri shim so the two can't overwrite each
@@ -1636,9 +2074,9 @@ function bootApp(): void {
           return { ok: true, data: ptys.agentState(req.paneId) }
 
         case 'tree':
-          return { ok: true, data: buildTree(store.state, (id) => ptys.has(id)) }
+          return { ok: true, data: buildTree(hub.doc, (id) => ptys.has(id)) }
         case 'list-panes': {
-          const panes = flattenPanes(buildTree(store.state, (id) => ptys.has(id)))
+          const panes = flattenPanes(buildTree(hub.doc, (id) => ptys.has(id)))
           // With a pane named, this answers "tell me about that one" — which is
           // how a script inside a pane finds out where it is.
           return {
@@ -1653,12 +2091,15 @@ function bootApp(): void {
         // pane's business to report, in the pane, the way it does for a file
         // opened any other way.
         case 'open': {
-          if (!win || win.isDestroyed()) return { ok: false, error: 'no window is open' }
+          // The window the asking pane is in — `iaw open` from a terminal in a
+          // second window opens beside that terminal — or the one in front.
+          const target = req.paneId ? windows.get(windowOfPane(req.paneId)) : windows.focusedForContent()
+          if (!target) return { ok: false, error: 'no window is open' }
           const kinds = Object.keys(OPENABLE_PANES)
           if (req.openPane && !kinds.includes(req.openPane)) {
             return { ok: false, error: `unknown pane kind — try one of: ${kinds.join(', ')}` }
           }
-          send(IPC.onOpenView, {
+          windows.sendTo(target.id, IPC.onOpenView, {
             paneId: req.paneId ?? '',
             target: req.target ?? '',
             openPane: req.openPane ?? '',
@@ -1710,16 +2151,20 @@ function bootApp(): void {
 
     ptys = new PtyManager(
       {
-        onData: (p) => send(IPC.onPtyData, p),
+        onData: (p) => {
+          const held = holding.get(p.paneId)
+          if (held) held.push(p.data)
+          else routePane(p.paneId, IPC.onPtyData, p)
+        },
         onExit: (p) => {
-          send(IPC.onPtyExit, p)
+          routePane(p.paneId, IPC.onPtyExit, p)
           events.emit('pane', 'exit', {
             paneId: p.paneId,
             data: { exitCode: p.exitCode, signal: p.signal },
           })
         },
         onMeta: (p) => {
-          send(IPC.onPtyMeta, p)
+          routePane(p.paneId, IPC.onPtyMeta, p)
           // The shell integration already reports every submitted line so a
           // restored agent pane can be resumed; keeping more than the last one
           // is the whole of the history feature.
@@ -1734,7 +2179,7 @@ function bootApp(): void {
         // the history is a list of things you typed, with no idea which worked.
         onOutcome: ({ paneId, exitCode, ms }) => history.finish(paneId, exitCode, ms),
         onAlert: (a) => {
-          send(IPC.onAlert, a)
+          windows.broadcast(IPC.onAlert, a)
           events.emit('alert', a.trigger, {
             paneId: a.paneId,
             workspaceId: a.workspaceId,
@@ -1742,7 +2187,7 @@ function bootApp(): void {
           })
         },
         onStatus: (s) => {
-          send(IPC.onPaneStatus, s)
+          windows.broadcast(IPC.onPaneStatus, s)
           // An agent starting or finishing is the event the wake lock exists
           // for, so it is answered here rather than left to the next poll. The
           // poll is the safety net for the case with no event at all — an agent
@@ -1807,6 +2252,21 @@ function bootApp(): void {
       () => store.settings.keepAwake
     )
 
+    // Every window covers itself when a break is up; the notification is for
+    // when none of them is in front of you, which is most of the time.
+    moveBreaks = new MoveBreaks(
+      SHARED_DATA_DIR,
+      () => readBreakSettings(store.settings),
+      (state) => windows.broadcast(IPC.onBreaks, state),
+      () => {
+        if (Notification.isSupported()) {
+          new Notification({ title: 'Time to get up', body: 'A few minutes of moving — ia_workspaces has an exercise for you.' }).show()
+        }
+        for (const entry of windows.all()) if (!entry.win.isDestroyed() && !entry.win.isFocused()) entry.win.flashFrame(true)
+      }
+    )
+    moveBreaks.start()
+
     // Unawaited on purpose. Nothing in the app is waiting on a file that has
     // been sitting there for a month, and a slow disk should not hold up the
     // window.
@@ -1814,6 +2274,7 @@ function bootApp(): void {
 
     registerIpc()
     createWindow()
+    restoreWindows()
     scheduleOrphanSweep()
 
     app.on('activate', () => {
@@ -1839,7 +2300,7 @@ function bootApp(): void {
     setTimeout(() => {
       let live: Set<string>
       try {
-        live = new Set(flattenPanes(buildTree(store.state, () => false)).map((p) => p.id))
+        live = new Set(flattenPanes(buildTree(hub.doc, () => false)).map((p) => p.id))
       } catch {
         // A document we cannot read is not evidence that anything is an orphan.
         // Sweeping on a guess would kill live shells.
@@ -1902,6 +2363,7 @@ function bootApp(): void {
       // it outlives nothing else we hold, but while it is registered the
       // machine will not sleep, and there is no longer an app to release it.
       powerLock?.dispose()
+      moveBreaks?.dispose()
       scrollback?.shutdownSync()
       scrollback?.dispose()
       ptys?.release()
@@ -1962,7 +2424,9 @@ function bootApp(): void {
     // moment it arrives. Bounded, because a renderer that is hung or gone must
     // not be able to stop the app quitting: past the deadline it quits with
     // whatever main already has, which is how every quit used to behave.
-    if (win && !win.isDestroyed() && !quitWhenFlushed) {
+    quitting = true
+    const open = windows.all()
+    if (open.length && !quitWhenFlushed) {
       e.preventDefault()
       let done = false
       quitWhenFlushed = () => {
@@ -1977,10 +2441,12 @@ function bootApp(): void {
       // after the call has run, and the save inside it is synchronous, so by
       // the time this resolves the document is either here or there was
       // nothing pending. See `flushNow` in the renderer's store.
-      win.webContents
-        .executeJavaScript('window.__iawFlushState?.()')
-        .then(() => quitWhenFlushed?.())
-        .catch(() => quitWhenFlushed?.())
+      //
+      // Every window, and only once all of them have answered: each holds its
+      // own unsent edits, and quitting on the first answer would drop the rest.
+      void Promise.allSettled(
+        open.map((entry) => entry.win.webContents.executeJavaScript('window.__iawFlushState?.()'))
+      ).then(() => quitWhenFlushed?.())
       return
     }
     shutdown()

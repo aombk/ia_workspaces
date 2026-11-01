@@ -20,6 +20,36 @@ export function createElectronBackend(): Backend {
     // like any other pane rather than floating over it.
     capabilities: { browser: 'dom', documents: true, platform: api.platform },
 
+    windows: {
+      id: api.windows.id,
+      kind: api.windows.kind,
+      loadState: () => api.windows.loadState(),
+      saveState: (doc, baseRev) => api.windows.saveState(doc, baseRev),
+      saveStateSync: (doc, baseRev) => api.windows.saveStateSync(doc, baseRev),
+      onState: (cb) => api.on.state(cb),
+      list: () => api.windows.list(),
+      onChanged: (cb) => api.on.windowsChanged(cb),
+      open: (request) => api.windows.open(request),
+      moveTabs: (tabIds, to) => api.windows.moveTabs(tabIds, to),
+      dropAt: (tabIds, at, workspaceId) => api.windows.dropAt(tabIds, at, workspaceId),
+      moveWorkspace: (workspaceId, to) => api.windows.moveWorkspace(workspaceId, to),
+      focus: (id, target) => api.windows.focus(id, target),
+      onTarget: (cb) => api.on.windowTarget(cb),
+      seen: (seen) => void api.windows.seen(seen),
+      onSeen: (cb) => api.on.windowsSeen(cb),
+      statuses: () => api.windows.statuses(),
+    },
+
+    breaks: {
+      state: () => api.breaks.state(),
+      onChange: (cb) => api.on.breaks(cb),
+      choose: (posture) => api.breaks.choose(posture),
+      finish: (outcome) => api.breaks.finish(outcome),
+      snooze: () => api.breaks.snooze(),
+      now: () => api.breaks.now(),
+      today: () => api.breaks.today(),
+    },
+
     powerLock: () => api.powerLock(),
 
     scratch: {

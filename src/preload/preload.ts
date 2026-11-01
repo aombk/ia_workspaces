@@ -3,9 +3,16 @@ import { IPC } from '../shared/ipc'
 import { platformKind } from '../shared/platform'
 import { encodeImagePath } from '../shared/images'
 import type { PowerLockState } from '../shared/powerLock'
+import type { BreakOutcome, BreakPosture, BreakRecord, BreakState } from '../shared/moveBreaks'
 import type { SshHost } from '../shared/ssh'
 import type { WslAction } from '../shared/wsl'
 import type {
+  AppWindowKind,
+  OpenWindowRequest,
+  WindowPlacement,
+  StateRevision,
+  WindowInfo,
+  WindowTarget,
   FileEntry,
   GitStatusMap,
   PaneAgentState,
@@ -367,6 +374,39 @@ const api = {
       ipcRenderer.invoke(IPC.setClaudeIntegration, enabled),
   },
 
+  /**
+   * Which window this is, read from the address main loaded it with. See
+   * `buildWindow` in main.ts.
+   */
+  windows: {
+    id: new URLSearchParams(location.search).get('window') || 'main',
+    kind: (new URLSearchParams(location.search).get('kind') || 'main') as AppWindowKind,
+    loadState: (): Promise<StateRevision> => ipcRenderer.invoke(IPC.stateLoad),
+    saveState: (doc: unknown, baseRev: number): Promise<void> => ipcRenderer.invoke(IPC.stateSave, doc, baseRev),
+    saveStateSync: (doc: unknown, baseRev: number): void => {
+      ipcRenderer.sendSync(IPC.stateSaveSync, doc, baseRev)
+    },
+    list: (): Promise<WindowInfo[]> => ipcRenderer.invoke(IPC.windowsList),
+    open: (request: OpenWindowRequest): Promise<string | null> => ipcRenderer.invoke(IPC.windowsOpen, request),
+    moveTabs: (tabIds: string[], to: string): Promise<boolean> => ipcRenderer.invoke(IPC.windowsMoveTabs, tabIds, to),
+    dropAt: (tabIds: string[], at: WindowPlacement, workspaceId?: string): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.windowsDropAt, tabIds, at, workspaceId),
+    moveWorkspace: (workspaceId: string, to: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.windowsMoveWorkspace, workspaceId, to),
+    focus: (id: string, target?: WindowTarget): Promise<boolean> => ipcRenderer.invoke(IPC.windowsFocus, id, target),
+    seen: (seen: { panes: string[]; workspaces: string[] }): Promise<void> => ipcRenderer.invoke(IPC.windowsSeen, seen),
+    statuses: (): Promise<PaneStatus[]> => ipcRenderer.invoke(IPC.paneStatuses),
+  },
+
+  breaks: {
+    state: (): Promise<BreakState> => ipcRenderer.invoke(IPC.breaksState),
+    choose: (posture: BreakPosture): Promise<void> => ipcRenderer.invoke(IPC.breaksChoose, posture),
+    finish: (outcome: BreakOutcome): Promise<boolean> => ipcRenderer.invoke(IPC.breaksFinish, outcome),
+    snooze: (): Promise<boolean> => ipcRenderer.invoke(IPC.breaksSnooze),
+    now: (): Promise<void> => ipcRenderer.invoke(IPC.breaksNow),
+    today: (): Promise<BreakRecord[]> => ipcRenderer.invoke(IPC.breaksToday),
+  },
+
   window: {
     // Sync because wireWindowControls() runs during startup and has to know
     // straight away whether Windows is drawing the caption buttons.
@@ -392,6 +432,12 @@ const api = {
     windowFocus: (cb: (focused: boolean) => void) => subscribe(IPC.onWindowFocus, cb),
     externalState: (cb: (state: unknown) => void) => subscribe(IPC.onExternalState, cb),
     gitProgress: (cb: (p: GitProgress) => void) => subscribe(IPC.onGitProgress, cb),
+    state: (cb: (next: StateRevision) => void) => subscribe(IPC.onState, cb),
+    windowsChanged: (cb: (windows: WindowInfo[]) => void) => subscribe(IPC.onWindowsChanged, cb),
+    windowTarget: (cb: (target: WindowTarget) => void) => subscribe(IPC.onWindowTarget, cb),
+    windowsSeen: (cb: (seen: { panes: string[]; workspaces: string[] }) => void) =>
+      subscribe(IPC.onWindowsSeen, cb),
+    breaks: (cb: (state: BreakState) => void) => subscribe(IPC.onBreaks, cb),
   },
 }
 

@@ -30,6 +30,7 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { recentPanePath } from './windowsPath'
 
 /**
  * How long the login shell gets to answer.
@@ -154,6 +155,12 @@ export function primeToolPath(): Promise<string> {
  * every caller after the first shell call is better off.
  */
 export function toolPath(): string | undefined {
+  // Windows has no login shell to ask, and the inherited PATH is frozen at
+  // whatever Explorer had when the app started — so `gh` installed while the
+  // app was open stayed "not installed" in the publish panel until a restart,
+  // and one Explorer had lost the user PATH for never showed up at all. The
+  // registry is where an installer writes, and the panes already read it.
+  if (process.platform === 'win32') return recentPanePath(30_000) ?? current
   return current
 }
 

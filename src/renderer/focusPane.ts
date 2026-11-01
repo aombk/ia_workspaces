@@ -1,5 +1,5 @@
 /**
- * The project's own desk: where the time went, what is left to do, and a timer.
+ * The project's own desk: where the time went, what is left to do, and breaks.
  *
  * One pane rather than three, because the ask was productivity tools for a
  * project *in one place* — and three tabs holding a number each is the thing
@@ -14,14 +14,17 @@
  * - **To do** is the project's own `TODO.md`, whose name says what it holds.
  *   Markdown checkboxes, so the list versions in git with the code and is
  *   readable in anything.
- * - **The timer** is a timer. It is here because it is the one part that has to
- *   be started deliberately, and because it belongs beside the thing it times.
+ * - **Breaks** take themselves. There used to be a pomodoro here with a start
+ *   button, and nobody pressed it; the movement breaks in `shared/moveBreaks.ts`
+ *   notice that you have been sitting and come to you, and this only shows
+ *   how today has gone.
  */
 import type { AuxPane } from './auxPane'
 import { Redraw } from './redraw'
 import { store } from './state'
 import { backend } from '../backend'
 import { joinPath } from '../shared/platform'
+import type { BreakRecord, BreakState } from '../shared/moveBreaks'
 import {
   byDay,
   dayKey,
@@ -33,10 +36,6 @@ import {
 
 /** Days of history in the little bar chart. Three weeks fits and reads. */
 const DAYS = 21
-
-/** The two halves of a pomodoro, in minutes. The traditional pair. */
-const WORK_MIN = 25
-const BREAK_MIN = 5
 
 /** A markdown task line: `- [ ] thing` or `* [x] thing`, at any indent. */
 const TASK = /^(\s*)([-*])\s+\[( |x|X)\]\s+(.*)$/
@@ -54,17 +53,15 @@ export class FocusPane implements AuxPane {
   private unwatch: (() => void) | null = null
   private disposed = false
   private readonly redraw: Redraw
-  /** The timer's countdown, kept so a tick can update it alone. */
-  private clock: HTMLElement | null = null
 
   /** The task file's lines, held so a toggle can rewrite exactly one of them. */
   private lines: string[] = []
   private tasks: Task[] = []
   private taskError = ''
 
-  private endsAt = 0
-  private onBreak = false
-  private tick: ReturnType<typeof setInterval> | null = null
+  private breaks: BreakState | null = null
+  private breaksToday: BreakRecord[] = []
+  private unwatchBreaks: (() => void) | null = null
 
   constructor(
     readonly paneId: string,
@@ -89,6 +86,22 @@ export class FocusPane implements AuxPane {
     this.unwatch = watchTime(() => this.refresh())
     refreshTimeNow()
     void this.loadTasks()
+    const breaks = backend().breaks
+    if (breaks) {
+      this.unwatchBreaks = breaks.onChange((state) => {
+        this.breaks = state
+        void this.loadBreaks()
+      })
+      void breaks.state().then((state) => {
+        this.breaks = state
+        void this.loadBreaks()
+      })
+    }
+  }
+
+  private async loadBreaks(): Promise<void> {
+    this.breaksToday = (await backend().breaks?.today()) ?? []
+    if (!this.disposed) this.refresh()
   }
 
   sync(): void {
@@ -106,8 +119,10 @@ export class FocusPane implements AuxPane {
       timeSpans(),
       this.tasks,
       this.taskError,
-      this.endsAt,
-      this.onBreak,
+      this.breaks?.settings,
+      this.breaks?.sittingSince,
+      this.breaks?.snoozedUntil,
+      this.breaksToday,
       dayKey(Date.now()),
     ]
   }
@@ -121,8 +136,8 @@ export class FocusPane implements AuxPane {
     this.disposed = true
     this.unwatch?.()
     this.unwatch = null
-    if (this.tick) clearInterval(this.tick)
-    this.tick = null
+    this.unwatchBreaks?.()
+    this.unwatchBreaks = null
   }
 
   private workspace() {
@@ -142,7 +157,7 @@ export class FocusPane implements AuxPane {
 
     this.body.appendChild(this.timeCard(workspace.cwd))
     this.body.appendChild(this.tasksCard())
-    this.body.appendChild(this.timerCard())
+    this.body.appendChild(this.breaksCard())
   }
 
   // ------------------------------------------------------------------- time
@@ -325,92 +340,61 @@ export class FocusPane implements AuxPane {
     }
   }
 
-  // ------------------------------------------------------------------ timer
+  // ----------------------------------------------------------------- breaks
 
-  private timerCard(): HTMLElement {
+  /**
+   * Today's movement breaks, and when the next one is.
+   *
+   * Nothing to start: the break comes when you have been sitting long enough.
+   * The one button is for taking it early.
+   */
+  private breaksCard(): HTMLElement {
     const card = document.createElement('div')
     card.className = 'focus-card'
-    card.appendChild(heading(this.onBreak ? 'break' : 'timer'))
+    card.appendChild(heading('movement breaks'))
 
-    const left = this.endsAt ? Math.max(0, this.endsAt - Date.now()) : 0
+    const state = this.breaks
+    if (!state) {
+      card.appendChild(note('Breaks need the desktop app, which can tell whether you are at the machine.'))
+      return card
+    }
+    if (!state.settings.enabled) {
+      card.appendChild(note('Switched off in Settings → Movement breaks.'))
+      return card
+    }
 
-    const clock = document.createElement('div')
-    clock.className = 'focus-clock' + (this.endsAt ? ' running' : '')
-    clock.textContent = this.endsAt ? clockText(left) : `${WORK_MIN}:00`
-    card.appendChild(clock)
-    this.clock = clock
+    const count = (...outcomes: string[]) => this.breaksToday.filter((r) => outcomes.includes(r.outcome)).length
+    const row = document.createElement('div')
+    row.className = 'focus-figures'
+    row.append(
+      figure(String(count('done', 'away')), 'got up'),
+      figure(String(count('seated')), 'seated'),
+      figure(String(count('skipped')), 'skipped')
+    )
+    card.appendChild(row)
+
+    const now = Date.now()
+    let next = 'Away from the machine — the count starts when you are back.'
+    if (state.snoozedUntil) next = `Put off; back in ${Math.max(1, Math.ceil((state.snoozedUntil - now) / 60_000))} min.`
+    else if (state.sittingSince !== null) {
+      const sat = Math.floor((now - state.sittingSince) / 60_000)
+      const left = Math.max(0, Math.ceil((state.sittingSince + state.settings.everyMin * 60_000 - now) / 60_000))
+      next = `Sitting for ${sat} min; the next break is in ${left} min.`
+    }
+    card.appendChild(note(next))
 
     const buttons = document.createElement('div')
     buttons.className = 'focus-buttons'
-
-    // Both buttons are always here, one of them dead, so neither moves under
-    // the cursor when the timer starts or stops.
-    buttons.appendChild(
-      button(this.endsAt ? 'Stop' : `Start ${WORK_MIN} minutes`, () => this.startStop())
-    )
-    buttons.appendChild(
-      button('Take a break', () => this.start(BREAK_MIN, true), this.endsAt !== 0)
-    )
+    buttons.appendChild(button('Take a break now', () => void backend().breaks?.now()))
     card.appendChild(buttons)
 
     card.appendChild(
       note(
-        'A plain pomodoro. It does not need to be running for time to be counted — that happens ' +
-          'anyway, above. This is for deciding to concentrate, which is a different thing.'
+        `Every ${state.settings.everyMin} minutes at the machine, ${state.settings.breakMin} minutes of moving. ` +
+          'Walking away for that long counts as a break too.'
       )
     )
     return card
-  }
-
-  private startStop(): void {
-    if (this.endsAt) {
-      this.endsAt = 0
-      this.onBreak = false
-      if (this.tick) clearInterval(this.tick)
-      this.tick = null
-      this.render()
-      return
-    }
-    this.start(WORK_MIN, false)
-  }
-
-  private start(minutes: number, isBreak: boolean): void {
-    this.endsAt = Date.now() + minutes * 60_000
-    this.onBreak = isBreak
-    if (this.tick) clearInterval(this.tick)
-    // Every second, because the number on screen is seconds. This is the only
-    // clock in the app that has to be that fast, and it stops when it is done.
-    this.tick = setInterval(() => this.onTick(), 1000)
-    this.render()
-  }
-
-  private onTick(): void {
-    if (this.disposed) return
-    if (Date.now() < this.endsAt) {
-      // The seconds only. Redrawing the card every second replaced the Stop
-      // button under the cursor often enough to swallow the click on it.
-      if (this.clock) this.clock.textContent = clockText(Math.max(0, this.endsAt - Date.now()))
-      return
-    }
-
-    const wasBreak = this.onBreak
-    this.endsAt = 0
-    this.onBreak = false
-    if (this.tick) clearInterval(this.tick)
-    this.tick = null
-    this.render()
-
-    const workspace = this.workspace()
-    void backend()
-      .notify({
-        title: wasBreak ? 'Break over' : `${WORK_MIN} minutes done`,
-        body: workspace ? workspace.name : '',
-        paneId: this.paneId,
-        workspaceId: this.workspaceId,
-      })
-      .catch(() => {
-        // Notifications can be refused by the system. The pane already says it.
-      })
   }
 }
 
@@ -431,11 +415,6 @@ function withinDays(key: string, n: number): boolean {
   cutoff.setHours(0, 0, 0, 0)
   cutoff.setDate(cutoff.getDate() - (n - 1))
   return key >= dayKey(cutoff.getTime())
-}
-
-function clockText(ms: number): string {
-  const total = Math.ceil(ms / 1000)
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
 function heading(text: string): HTMLElement {

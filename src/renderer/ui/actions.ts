@@ -1,4 +1,4 @@
-import type { ShellKind, ShellTarget } from '../../shared/types'
+import type { ShellKind, ShellTarget, WindowPlacement } from '../../shared/types'
 
 /** Operations the UI components need from the app shell. */
 export interface UiActions {
@@ -12,6 +12,24 @@ export interface UiActions {
 
   selectTab(workspaceId: string, tabId: string): void
   newTab(workspaceId: string, cwd?: string): void
+
+  /** A tab into a window of its own — at `at`, in screen coordinates, when it was dragged there. */
+  moveTabToNewWindow(tabId: string, at?: WindowPlacement): void
+  moveTabToWindow(tabId: string, windowId: string): void
+  /** Every tab of a workspace into a window of its own: the workspace, on another screen. */
+  moveWorkspaceToNewWindow(workspaceId: string): void
+  moveWorkspaceToWindow(workspaceId: string, windowId: string): void
+  /**
+   * A fresh terminal of this workspace in another window — how one workspace
+   * comes to span several monitors without moving anything it already has.
+   */
+  newTabInWindow(workspaceId: string, windowId: string): void
+  /** A new window on this workspace, with a fresh terminal and nothing moved. */
+  newWindow(workspaceId: string): void
+  /** Every workspace and agent at a glance, in a window of its own. */
+  openOverview(): void
+  /** One pane into a window of its own, lifted out of its tab if it shares one. */
+  movePaneToNewWindow(paneId: string): void
   /** A whole tab that is a file tree, rather than a pane beside terminals. */
   newFileTab(workspaceId: string, cwd?: string): void
   /** Show or hide the app-wide "waiting for you" panel. */

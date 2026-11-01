@@ -86,11 +86,14 @@ export async function registryMergedPath(
 /** The last answer, or nothing before the first read has finished. */
 let latest: string | undefined
 let reading = false
+/** When the last read started, for callers that can live with an older answer. */
+let readAt = 0
 
 /** Starts a background read unless one is already running. */
 export function refreshPanePath(): void {
   if (reading) return
   reading = true
+  readAt = Date.now()
   registryMergedPath(process.env.PATH, process.env)
     .then((p) => {
       latest = p
@@ -98,6 +101,19 @@ export function refreshPanePath(): void {
     .finally(() => {
       reading = false
     })
+}
+
+/**
+ * The same PATH, re-read at most once per `maxAgeMs`.
+ *
+ * For `toolPath`, which every git command asks: a terminal opens a few times an
+ * hour, git runs several times a second while a pane is busy, and two `reg.exe`
+ * processes per git command is a lot of processes to find one folder that was
+ * installed this afternoon.
+ */
+export function recentPanePath(maxAgeMs: number): string | undefined {
+  if (Date.now() - readAt > maxAgeMs) refreshPanePath()
+  return latest
 }
 
 /**

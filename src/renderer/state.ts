@@ -28,7 +28,14 @@ import {
   type OpenWithApp,
   type WeatherPlace,
   type Workspace,
+  type AppWindowKind,
+  type StateRevision,
+  type WindowInfo,
+  type WindowView,
+  type WindowMode,
 } from '../shared/types'
+import { jsonEqual, merge3 } from '../shared/merge3'
+import { homeOfWorkspace, MAIN_WINDOW, ownerOfTab } from '../shared/windowLayout'
 
 import { parseWslPath, toWslSharePath } from '../shared/wsl'
 import { fallbackCwd } from '../shared/platform'
@@ -159,6 +166,42 @@ class WorkspaceState {
   private listeners = new Set<Listener>()
   private saveTimer: number | null = null
 
+  /**
+   * Which window this store is drawing, and what kind of window that is.
+   *
+   * Every window runs its own copy of this store over the one document main
+   * holds. They differ in two things only: which tabs are theirs to show (see
+   * `ownsTab`), and what they have selected (see `WindowView`).
+   */
+  windowId: string = MAIN_WINDOW
+  windowKind: AppWindowKind = 'main'
+  /** The windows open now, this one included, as main last listed them. */
+  openWindows: WindowInfo[] = []
+  /**
+   * The document as main last sent it, and its revision.
+   *
+   * A save says which revision it was built on, so main can tell this window's
+   * edits from everything it simply had not heard about yet. And an incoming
+   * revision is merged over this window's own unsent edits using this as the
+   * common ancestor. See `merge3`.
+   */
+  private synced: PersistedState | null = null
+  private syncedRev = 0
+  /** Saves sent and not yet seen coming back as a revision. */
+  private awaitingAcks = 0
+  /**
+   * A workspace this window asked the list to switch to, and when.
+   *
+   * Linked, a pane window's selection is the main window's, so picking one
+   * here is a request to the main window — and a revision built before it got
+   * there would otherwise switch this window straight back for a moment.
+   */
+  private pendingFollow: { id: string; at: number } | null = null
+  /** Set while a tab is being opened for another window; see `openTabsIn`. */
+  private tabsGoTo: string | null = null
+  /** Told when this window has looked at something, so the others stop flagging it. */
+  private seenListener: ((seen: { panes: string[]; workspaces: string[] }) => void) | null = null
+
   /** Panes with unseen activity, shown as a dot on the tab and workspace. */
   readonly attention = new Set<string>()
   /** Newest first. Ephemeral: cleared on restart, like the panes themselves. */
@@ -174,14 +217,35 @@ class WorkspaceState {
   private readonly runEndedListeners = new Set<(paneId: string) => void>()
 
   async load(): Promise<void> {
-    this.data = normalize(await backend().loadState())
-    if (!this.data.workspaces.length) this.seedFirstWorkspace()
+    const windows = backend().windows
+    if (windows) {
+      this.windowId = windows.id
+      this.windowKind = windows.kind
+      const first = await windows.loadState()
+      this.synced = first.doc as PersistedState
+      this.syncedRev = first.rev
+      this.data = normalize(first.doc)
+      this.readViewFromDoc()
+      windows.onState((next) => this.adoptRevision(next))
+      this.openWindows = await windows.list()
+      windows.onChanged((list) => {
+        this.openWindows = list
+        this.emit()
+      })
+      windows.onSeen((seen) => this.settleFromElsewhere(seen))
+    } else {
+      this.data = normalize(await backend().loadState())
+      backend().onExternalStateChange((external) => this.mergeExternal(normalize(external)))
+    }
+    // Only the main window starts somebody off with a workspace: another
+    // window opening onto an empty document is opening onto one that the main
+    // window is about to fill.
+    if (!this.data.workspaces.length && this.windowId === MAIN_WINDOW) this.seedFirstWorkspace()
     if (!this.data.activeWorkspaceId && this.data.workspaces[0]) {
       this.data.activeWorkspaceId = this.data.workspaces[0].id
     }
+    this.fixView()
     this.emit()
-
-    backend().onExternalStateChange((external) => this.mergeExternal(normalize(external)))
 
     // The two ways the app ends, and each needs its own hook. Closing the
     // window unloads this page, so `pagehide` runs here first. Quitting
@@ -193,6 +257,369 @@ class WorkspaceState {
     // stand-in for `window`, which has timers and nothing else.
     window.addEventListener?.('pagehide', () => this.flushNow())
     ;(window as unknown as { __iawFlushState?: () => void }).__iawFlushState = () => this.flushNow()
+  }
+
+  // ---------------------------------------------------------------- windows
+
+  get isOverview(): boolean {
+    return this.windowKind === 'overview'
+  }
+
+  /** Whether this window shows the tab. Every tab is shown in exactly one window. */
+  ownsTab(tab: TerminalTabState): boolean {
+    return ownerOfTab(tab) === this.windowId
+  }
+
+  /** The tabs of a workspace that this window shows, in order. */
+  tabsHere(workspace: Workspace): TerminalTabState[] {
+    return workspace.tabs.filter((t) => this.ownsTab(t))
+  }
+
+  /** Whether this window is where the workspace lives — see `homeOfWorkspace`. */
+  ownsWorkspace(workspace: Workspace): boolean {
+    return homeOfWorkspace(workspace) === this.windowId
+  }
+
+  /**
+   * Whether this window's sidebar lists the workspace: it lives here, or some
+   * of its tabs are here. Each window has its own list; a workspace spread over
+   * several monitors is in the list of each window it is spread over. The
+   * overview lists everything.
+   */
+  listedHere(workspace: Workspace): boolean {
+    // Linked, there is one list and every window shows it when it shows one.
+    if (this.isOverview || this.linked) return true
+    return this.ownsWorkspace(workspace) || workspace.tabs.some((t) => this.ownsTab(t))
+  }
+
+  /** The window a workspace lives in, as the window list knows it. */
+  homeWindowOf(workspace: Workspace): WindowInfo | null {
+    return this.openWindows.find((w) => w.id === homeOfWorkspace(workspace)) ?? null
+  }
+
+  /**
+   * The other windows, each with how many workspaces live there — what the
+   * foot of the sidebar offers in place of listing them.
+   */
+  otherWindowLists(): Array<{ window: WindowInfo; workspaces: Workspace[] }> {
+    if (this.linked) return []
+    return this.openWindows
+      .filter((w) => w.id !== this.windowId && w.kind !== 'overview')
+      .map((window) => ({
+        window,
+        workspaces: this.data.workspaces.filter((ws) => homeOfWorkspace(ws) === window.id),
+      }))
+      .filter((entry) => entry.workspaces.length)
+  }
+
+  /**
+   * Which other windows hold tabs of this workspace, each with how many.
+   * In window order, so "Window 2" comes before "Window 3".
+   */
+  elsewhere(workspace: Workspace): Array<{ window: WindowInfo; tabs: TerminalTabState[] }> {
+    const out: Array<{ window: WindowInfo; tabs: TerminalTabState[] }> = []
+    for (const window of this.openWindows) {
+      if (window.id === this.windowId) continue
+      const tabs = workspace.tabs.filter((t) => ownerOfTab(t) === window.id)
+      if (tabs.length) out.push({ window, tabs })
+    }
+    return out
+  }
+
+  /** The window a tab is in, as the window list knows it. */
+  windowOfTab(tab: TerminalTabState): WindowInfo | null {
+    return this.openWindows.find((w) => w.id === ownerOfTab(tab)) ?? null
+  }
+
+  /** "Window 2", or "the main window". */
+  windowName(window: WindowInfo): string {
+    return window.kind === 'main' ? 'Main window' : window.kind === 'overview' ? 'Overview' : `Window ${window.number}`
+  }
+
+  /** Windows a tab could be sent to from here: every other one that shows tabs. */
+  otherTabWindows(): WindowInfo[] {
+    return this.openWindows.filter((w) => w.id !== this.windowId && w.kind !== 'overview')
+  }
+
+  /** Whether the windows follow one list. See `WindowMode`. */
+  get linked(): boolean {
+    return this.data.windowMode === 'linked'
+  }
+
+  get windowMode(): WindowMode {
+    return this.data.windowMode ?? 'separate'
+  }
+
+  setWindowMode(mode: WindowMode): void {
+    if (this.windowMode === mode) return
+    if (mode === 'separate') delete this.data.windowMode
+    else this.data.windowMode = mode
+    this.commit()
+  }
+
+  private get ownView(): WindowView | undefined {
+    return this.windowId === MAIN_WINDOW ? undefined : this.data.views?.[this.windowId]
+  }
+
+  /** Whether this window keeps its own workspace while the list switches. Never the main window, which is the list. */
+  get pinned(): boolean {
+    return Boolean(this.ownView?.pinned)
+  }
+
+  /** Whether this window's workspace is whatever the main window's list has picked. */
+  get followsList(): boolean {
+    return this.linked && this.windowId !== MAIN_WINDOW && !this.isOverview && !this.pinned
+  }
+
+  /** Whether this window shows the workspace list. The main window always does. */
+  get listShown(): boolean {
+    if (this.windowId === MAIN_WINDOW || this.isOverview) return true
+    return this.ownView?.listShown ?? !this.linked
+  }
+
+  setListShown(shown: boolean): void {
+    this.editOwnView({ listShown: shown })
+  }
+
+  /**
+   * Pins this window to the workspace it is showing, or lets it follow the list
+   * again — at once, to whatever the list has picked.
+   */
+  setPinned(pinned: boolean): void {
+    if (this.windowId === MAIN_WINDOW) return
+    if (!pinned && this.synced?.activeWorkspaceId) this.data.activeWorkspaceId = this.synced.activeWorkspaceId
+    this.editOwnView({ pinned: pinned || undefined })
+  }
+
+  private editOwnView(patch: Partial<WindowView>): void {
+    if (this.windowId === MAIN_WINDOW) return
+    const views = { ...(this.data.views ?? {}) }
+    const view: WindowView = {
+      ...(views[this.windowId] ?? { activeWorkspaceId: this.data.activeWorkspaceId, activeTabs: {} }),
+      ...patch,
+    }
+    for (const key of Object.keys(view) as Array<keyof WindowView>) if (view[key] === undefined) delete view[key]
+    views[this.windowId] = view
+    this.data.views = views
+    this.commit()
+  }
+
+  /**
+   * The window that should take a tab opened from here for this workspace, or
+   * null for this one.
+   *
+   * Only linked, where the main window is the list and the tree and the panes
+   * are on other monitors: a file opened from the tree belongs beside the
+   * workspace's other tabs, not in the window you happened to click in. A
+   * workspace with tabs here keeps getting them here. One with none anywhere
+   * goes to a pane window too, if this window is purely the list.
+   */
+  paneWindowFor(workspace: Workspace): string | null {
+    if (!this.linked || this.isOverview || this.tabsHere(workspace).length) return null
+    const away = this.elsewhere(workspace).find((e) => e.window.kind === 'workspace')
+    if (away) return away.window.id
+    if (this.windowId !== MAIN_WINDOW) return null
+    if (this.data.workspaces.some((w) => this.tabsHere(w).length)) return null
+    const pinned = new Set(
+      Object.entries(this.data.views ?? {})
+        .filter(([, v]) => v.pinned)
+        .map(([id]) => id)
+    )
+    return this.openWindows.find((w) => w.kind === 'workspace' && !pinned.has(w.id))?.id ?? null
+  }
+
+  /** The tab another window is showing for a workspace. */
+  tabShownIn(windowId: string, workspace: Workspace): TerminalTabState | null {
+    const there = workspace.tabs.filter((t) => ownerOfTab(t) === windowId)
+    const wanted = windowId === MAIN_WINDOW ? workspace.activeTabId : this.data.views?.[windowId]?.activeTabs[workspace.id]
+    return there.find((t) => t.id === wanted) ?? there[0] ?? null
+  }
+
+  /**
+   * Runs `open` with every tab it creates belonging to another window, and
+   * returns the ids of those tabs.
+   *
+   * Made there from the start, rather than made here and moved, so this window
+   * never mounts one and never starts its terminal: the window it is for does,
+   * once it hears of it.
+   */
+  openTabsIn(windowId: string, open: () => void): string[] {
+    const before = new Set(this.data.workspaces.flatMap((w) => w.tabs.map((t) => t.id)))
+    this.tabsGoTo = windowId
+    try {
+      open()
+    } finally {
+      this.tabsGoTo = null
+    }
+    return this.data.workspaces.flatMap((w) => w.tabs.map((t) => t.id)).filter((id) => !before.has(id))
+  }
+
+  onLocalSeen(cb: (seen: { panes: string[]; workspaces: string[] }) => void): void {
+    this.seenListener = cb
+  }
+
+  /**
+   * A revision from main: another window's save, this window's own coming
+   * back, or main's own edit.
+   *
+   * With nothing of this window's still on its way, the revision is simply
+   * taken. With something — a save not sent yet, or sent and not back — the
+   * revision is merged under this window's copy, so an edit made here a
+   * moment ago is not wiped by a revision built before it arrived.
+   *
+   * What this window has selected is its own and is kept, except when main
+   * made the revision itself: that is a window being opened or tabs being sent
+   * here, and showing what was sent is the point of sending it.
+   */
+  private adoptRevision(next: StateRevision): void {
+    if (next.from === this.windowId) this.awaitingAcks = Math.max(0, this.awaitingAcks - 1)
+    const incoming = next.doc as PersistedState
+    const view = next.from === '' ? null : this.captureView()
+
+    if (this.isOverview || (this.saveTimer === null && this.awaitingAcks === 0)) {
+      // Nothing changed for this window: its own save, come back as it went.
+      if (this.synced && jsonEqual(incoming, this.toSaved())) {
+        this.synced = incoming
+        this.syncedRev = next.rev
+        return
+      }
+      this.data = normalize(incoming)
+    } else {
+      this.data = normalize(merge3(this.synced, this.toSaved(), incoming, 'ours'))
+    }
+    this.synced = incoming
+    this.syncedRev = next.rev
+
+    if (view) this.applyView(view)
+    else this.readViewFromDoc()
+    this.fixView()
+    this.emit()
+  }
+
+  /** What this window has selected, to put back after a revision replaces the document. */
+  private captureView(): { active: string | null; tabs: Map<string, string | null> } {
+    return {
+      active: this.data.activeWorkspaceId,
+      tabs: new Map(this.data.workspaces.map((w) => [w.id, w.activeTabId])),
+    }
+  }
+
+  private applyView(view: { active: string | null; tabs: Map<string, string | null> }): void {
+    // Following the list, the workspace is the revision's; the tabs are still ours.
+    if (!this.followList() && view.active && this.data.workspaces.some((w) => w.id === view.active)) {
+      this.data.activeWorkspaceId = view.active
+    }
+    for (const w of this.data.workspaces) {
+      const tab = view.tabs.get(w.id)
+      if (tab && w.tabs.some((t) => t.id === tab)) w.activeTabId = tab
+    }
+  }
+
+  /**
+   * This window's selection, from the document. The main window's is the
+   * document's own fields and needs nothing doing; any other's is its entry in
+   * `views`.
+   */
+  private readViewFromDoc(): void {
+    if (this.windowId === MAIN_WINDOW) return
+    const view = this.data.views?.[this.windowId]
+    for (const w of this.data.workspaces) {
+      const tab = view?.activeTabs[w.id]
+      w.activeTabId = tab && w.tabs.some((t) => t.id === tab) ? tab : null
+    }
+    // Following the list, the workspace is the document's own: the main window's.
+    if (this.followList()) return
+    const wanted = view?.activeWorkspaceId
+    this.data.activeWorkspaceId =
+      wanted && this.data.workspaces.some((w) => w.id === wanted)
+        ? wanted
+        : (this.data.workspaces.find((w) => this.tabsHere(w).length)?.id ?? this.data.workspaces[0]?.id ?? null)
+  }
+
+  /**
+   * Puts the list's workspace on screen, when this window follows the list.
+   *
+   * The document has just been replaced, so the active workspace is already
+   * the main window's — unless this window asked for another a moment ago and
+   * the main window has not got there yet, in which case the request stands.
+   */
+  private followList(): boolean {
+    if (!this.followsList) return false
+    const wanted = this.pendingFollow
+    if (!wanted || Date.now() - wanted.at > 2000 || !this.data.workspaces.some((w) => w.id === wanted.id)) {
+      this.pendingFollow = null
+    } else if (this.data.activeWorkspaceId === wanted.id) this.pendingFollow = null
+    else this.data.activeWorkspaceId = wanted.id
+    return true
+  }
+
+  /**
+   * Keeps the selection pointing at things this window shows: each workspace's
+   * tab at one of its tabs here, or nothing when it has none here.
+   */
+  private fixView(): void {
+    for (const w of this.data.workspaces) {
+      const current = w.tabs.find((t) => t.id === w.activeTabId)
+      if (current && this.ownsTab(current)) continue
+      w.activeTabId = this.tabsHere(w)[0]?.id ?? null
+    }
+    const active = this.data.workspaces.find((w) => w.id === this.data.activeWorkspaceId)
+    if (!active || !this.listedHere(active)) {
+      this.data.activeWorkspaceId =
+        this.data.workspaces.find((w) => this.listedHere(w))?.id ?? (this.isOverview ? (this.data.workspaces[0]?.id ?? null) : null)
+    }
+  }
+
+  /**
+   * The document as this window saves it.
+   *
+   * The main window's is its document. Any other window leaves the main
+   * window's selection exactly as it found it and writes its own into `views`,
+   * so two windows looking at different things never argue about it.
+   */
+  private toSaved(): PersistedState {
+    const doc = forDisk(this.data)
+    if (this.windowId === MAIN_WINDOW) return doc
+    const synced = this.synced
+    const held = new Map((synced?.workspaces ?? []).map((w) => [w.id, w.activeTabId ?? null]))
+    const activeTabs: Record<string, string> = {}
+    for (const w of doc.workspaces) {
+      if (w.activeTabId) activeTabs[w.id] = w.activeTabId
+      w.activeTabId = held.has(w.id) ? held.get(w.id)! : (w.tabs.find((t) => !t.windowId)?.id ?? null)
+    }
+    doc.activeWorkspaceId = synced?.activeWorkspaceId ?? null
+    const own = this.ownView
+    const view: WindowView = {
+      activeWorkspaceId: this.data.activeWorkspaceId,
+      activeTabs,
+      ...(own?.pinned ? { pinned: true } : {}),
+      ...(typeof own?.listShown === 'boolean' ? { listShown: own.listShown } : {}),
+    }
+    doc.views = { ...(synced?.views ?? {}), [this.windowId]: view }
+    return doc
+  }
+
+  /** Another window looked at these: stop flagging them here too. */
+  private settleFromElsewhere(seen: { panes: string[]; workspaces: string[] }): void {
+    let changed = false
+    for (const paneId of seen.panes) {
+      if (this.attention.delete(paneId)) changed = true
+      if (this.paneBlocked(paneId) && !this.seenInput.has(paneId)) {
+        this.seenInput.add(paneId)
+        changed = true
+      }
+    }
+    for (const id of seen.workspaces) {
+      if (!this.seenInputWorkspaces.has(id)) {
+        this.seenInputWorkspaces.add(id)
+        changed = true
+      }
+    }
+    if (changed) this.emit()
+  }
+
+  private announceSeen(panes: string[], workspaces: string[]): void {
+    if (panes.length || workspaces.length) this.seenListener?.({ panes, workspaces })
   }
 
   /**
@@ -225,7 +652,16 @@ class WorkspaceState {
 
   private makeWorkspace(name: string, cwd: string): Workspace {
     const color = WORKSPACE_COLORS[this.data.workspaces.length % WORKSPACE_COLORS.length]
-    return { id: crypto.randomUUID(), name, cwd, color, tabs: [], activeTabId: null }
+    return {
+      id: crypto.randomUUID(),
+      name,
+      cwd,
+      color,
+      tabs: [],
+      activeTabId: null,
+      // Made in this window, so listed in this window.
+      ...(this.windowId !== MAIN_WINDOW ? { windowId: this.windowId } : {}),
+    }
   }
 
   subscribe(cb: Listener): () => void {
@@ -257,16 +693,40 @@ class WorkspaceState {
 
   /** Notify the UI and schedule a write. */
   private commit(): void {
+    this.fixView()
     this.emit()
     this.save()
   }
 
   save(): void {
+    // The overview reads the document and never writes it.
+    if (this.isOverview) return
     if (this.saveTimer !== null) window.clearTimeout(this.saveTimer)
     this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null
-      void backend().saveState(forDisk(this.data))
+      this.send(false)
     }, 250)
+  }
+
+  /** Sends a save now rather than at the end of the debounce. */
+  saveNow(): void {
+    if (this.isOverview) return
+    if (this.saveTimer !== null) window.clearTimeout(this.saveTimer)
+    this.saveTimer = null
+    this.send(false)
+  }
+
+  private send(sync: boolean): void {
+    const windows = backend().windows
+    if (!windows) {
+      if (sync) backend().saveStateSync(forDisk(this.data))
+      else void backend().saveState(forDisk(this.data))
+      return
+    }
+    this.awaitingAcks++
+    const doc = this.toSaved()
+    if (sync) windows.saveStateSync(doc, this.syncedRev)
+    else void windows.saveState(doc, this.syncedRev)
   }
 
   /**
@@ -283,10 +743,10 @@ class WorkspaceState {
     window.clearTimeout(this.saveTimer)
     this.saveTimer = null
     try {
-      backend().saveStateSync(forDisk(this.data))
+      this.send(true)
     } catch {
       // A host without a synchronous save. The ordinary one may still land.
-      void backend().saveState(forDisk(this.data))
+      this.send(false)
     }
   }
 
@@ -311,7 +771,9 @@ class WorkspaceState {
   get activeTab(): TerminalTabState | null {
     const w = this.activeWorkspace
     if (!w) return null
-    return w.tabs.find((t) => t.id === w.activeTabId) ?? null
+    const tab = w.tabs.find((t) => t.id === w.activeTabId) ?? null
+    // Only ever a tab this window shows: everything that reads this mounts it.
+    return tab && this.ownsTab(tab) ? tab : null
   }
 
   get activePane(): PaneState | null {
@@ -413,9 +875,13 @@ class WorkspaceState {
    * take its children off the sidebar with nothing left to reopen them by.
    */
   sidebarRows(expandAll = false): SidebarRow[] {
+    // This window's list only. A workspace whose parent is listed elsewhere is
+    // drawn at the top level here rather than not at all.
+    const listed = this.data.workspaces.filter((w) => this.listedHere(w))
+    const ids = new Set(listed.map((w) => w.id))
     const byParent = new Map<string | null, Workspace[]>()
-    for (const w of this.data.workspaces) {
-      const key = w.parentId ?? null
+    for (const w of listed) {
+      const key = w.parentId && ids.has(w.parentId) ? w.parentId : null
       const bucket = byParent.get(key)
       if (bucket) bucket.push(w)
       else byParent.set(key, [w])
@@ -627,7 +1093,16 @@ class WorkspaceState {
   setActiveWorkspace(id: string): void {
     if (this.data.activeWorkspaceId === id) return
     this.data.activeWorkspaceId = id
+    if (this.followsList) {
+      // The list is the main window's: it is asked to switch, and this window
+      // with every other one follows it. Shown here at once all the same.
+      this.pendingFollow = { id, at: Date.now() }
+      void backend().windows?.focus(MAIN_WINDOW, { workspaceId: id, quiet: true })
+    }
     this.commit()
+    // Every other window switches when this reaches them, so it goes now
+    // rather than at the end of the debounce.
+    if (this.linked && this.windowId === MAIN_WINDOW) this.saveNow()
   }
 
   // ------------------------------------------------------------------- tabs
@@ -674,6 +1149,8 @@ class WorkspaceState {
       panes: [pane],
       layout: { kind: 'leaf', paneId: pane.id },
       activePaneId: pane.id,
+      // Opened here, so shown here — or opened for another window. See `openTabsIn`.
+      ...((this.tabsGoTo ?? this.windowId) !== MAIN_WINDOW ? { windowId: this.tabsGoTo ?? this.windowId } : {}),
     }
     w.tabs.push(tab)
     w.activeTabId = tab.id
@@ -787,6 +1264,13 @@ class WorkspaceState {
     })
     if ('error' in result) return result
 
+    // Loaded here, so shown here.
+    if (this.windowId !== MAIN_WINDOW) {
+      for (const w of result.workspaces) {
+        w.windowId = this.windowId
+        for (const t of w.tabs) t.windowId = this.windowId
+      }
+    }
     this.data.workspaces.push(...result.workspaces)
     this.data.activeWorkspaceId = result.workspaces[0].id
     this.commit()
@@ -1174,12 +1658,17 @@ class WorkspaceState {
    * produce the arrangement it already had.
    */
   extractPaneToTab(paneId: string, index?: number): boolean {
+    return this.liftPaneToTab(paneId, index) !== null
+  }
+
+  /** `extractPaneToTab`, answering with the new tab's id rather than whether there is one. */
+  liftPaneToTab(paneId: string, index?: number): string | null {
     const workspace = this.workspaceOfPane(paneId)
     const tab = this.tabOfPane(paneId)
-    if (!workspace || !tab || tab.panes.length <= 1) return false
+    if (!workspace || !tab || tab.panes.length <= 1) return null
 
     const pane = tab.panes.find((p) => p.id === paneId)
-    if (!pane) return false
+    if (!pane) return null
 
     tab.panes = tab.panes.filter((p) => p.id !== paneId)
     tab.layout = removeNode(tab.layout, paneId) ?? { kind: 'leaf', paneId: tab.panes[0].id }
@@ -1191,12 +1680,14 @@ class WorkspaceState {
       panes: [pane],
       layout: { kind: 'leaf', paneId },
       activePaneId: paneId,
+      // In the window the pane was already in.
+      ...(tab.windowId ? { windowId: tab.windowId } : {}),
     }
     const at = index === undefined ? workspace.tabs.length : Math.max(0, Math.min(index, workspace.tabs.length))
     workspace.tabs.splice(at, 0, created)
     workspace.activeTabId = created.id
     this.commit()
-    return true
+    return created.id
   }
 
   renamePane(paneId: string, title: string): void {
@@ -1422,6 +1913,11 @@ class WorkspaceState {
     return this.activity.get(paneId) ?? 'idle'
   }
 
+  /** A command that is not an agent has been running here a while. See `PaneStatus.command`. */
+  paneCommandRunning(paneId: string): boolean {
+    return this.commands.has(paneId)
+  }
+
   paneAgent(paneId: string): PaneAgentState | null {
     return this.agents.get(paneId) ?? null
   }
@@ -1473,6 +1969,7 @@ class WorkspaceState {
 
   clearAttention(paneId: string): void {
     if (!this.attention.delete(paneId)) return
+    this.announceSeen([paneId], [])
     this.emit()
   }
 
@@ -1531,6 +2028,7 @@ class WorkspaceState {
     this.attention.delete(paneId)
     if (this.paneBlocked(paneId)) this.seenInput.add(paneId)
     if (workspaceId) this.seenInputWorkspaces.add(workspaceId)
+    this.announceSeen([paneId], workspaceId ? [workspaceId] : [])
     this.emit()
   }
 
@@ -1538,6 +2036,7 @@ class WorkspaceState {
   markWorkspaceInputSeen(workspaceId: string): void {
     if (this.seenInputWorkspaces.has(workspaceId)) return
     this.seenInputWorkspaces.add(workspaceId)
+    this.announceSeen([], [workspaceId])
     this.emit()
   }
 
@@ -2120,6 +2619,7 @@ function normalize(raw: unknown): PersistedState {
           panes,
           layout,
           activePaneId,
+          ...(typeof rawTab.windowId === 'string' && rawTab.windowId ? { windowId: rawTab.windowId } : {}),
         }
       }
 
@@ -2169,6 +2669,9 @@ function normalize(raw: unknown): PersistedState {
           : undefined,
       color: String(rawWorkspace.color ?? WORKSPACE_COLORS[index % WORKSPACE_COLORS.length]),
       apps: readApps(rawWorkspace.apps),
+      ...(typeof rawWorkspace.windowId === 'string' && rawWorkspace.windowId
+        ? { windowId: rawWorkspace.windowId }
+        : {}),
       tabs,
       treeVisible:
         typeof rawWorkspace.treeVisible === 'boolean'
@@ -2219,8 +2722,32 @@ function normalize(raw: unknown): PersistedState {
         )
       : [],
     window: { ...EMPTY.window, ...((doc.window as object) ?? {}) },
+    // Carried through untouched: main writes the one and each window its own
+    // entry of the other, and a window dropping either would delete it.
+    ...(Array.isArray(doc.windows) ? { windows: doc.windows as PersistedState['windows'] } : {}),
+    ...(readViews(doc.views) ? { views: readViews(doc.views) } : {}),
+    ...(doc.windowMode === 'linked' ? { windowMode: 'linked' as const } : {}),
     settings,
   }
+}
+
+/** Each window's selection, as far as it is well formed. See `WindowView`. */
+function readViews(raw: unknown): Record<string, WindowView> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const out: Record<string, WindowView> = {}
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    const v = value as Partial<WindowView> | null
+    if (!v || typeof v !== 'object') continue
+    const activeTabs: Record<string, string> = {}
+    for (const [w, t] of Object.entries(v.activeTabs ?? {})) if (typeof t === 'string') activeTabs[w] = t
+    out[id] = {
+      activeWorkspaceId: typeof v.activeWorkspaceId === 'string' ? v.activeWorkspaceId : null,
+      activeTabs,
+      ...(v.pinned === true ? { pinned: true } : {}),
+      ...(typeof v.listShown === 'boolean' ? { listShown: v.listShown } : {}),
+    }
+  }
+  return out
 }
 
 /** Drops layout references to panes that no longer exist. */
