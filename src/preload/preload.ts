@@ -400,11 +400,13 @@ const api = {
 
   breaks: {
     state: (): Promise<BreakState> => ipcRenderer.invoke(IPC.breaksState),
-    choose: (posture: BreakPosture): Promise<void> => ipcRenderer.invoke(IPC.breaksChoose, posture),
     finish: (outcome: BreakOutcome): Promise<boolean> => ipcRenderer.invoke(IPC.breaksFinish, outcome),
     snooze: (): Promise<boolean> => ipcRenderer.invoke(IPC.breaksSnooze),
+    lean: (posture: BreakPosture): Promise<void> => ipcRenderer.invoke(IPC.breaksLean, posture),
+    another: (): Promise<void> => ipcRenderer.invoke(IPC.breaksAnother),
     now: (): Promise<void> => ipcRenderer.invoke(IPC.breaksNow),
     today: (): Promise<BreakRecord[]> => ipcRenderer.invoke(IPC.breaksToday),
+    pause: (): Promise<void> => ipcRenderer.invoke(IPC.breaksPause),
   },
 
   window: {

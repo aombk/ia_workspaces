@@ -43,11 +43,13 @@ export function createElectronBackend(): Backend {
     breaks: {
       state: () => api.breaks.state(),
       onChange: (cb) => api.on.breaks(cb),
-      choose: (posture) => api.breaks.choose(posture),
       finish: (outcome) => api.breaks.finish(outcome),
       snooze: () => api.breaks.snooze(),
+      lean: (posture) => api.breaks.lean(posture),
+      another: () => api.breaks.another(),
       now: () => api.breaks.now(),
       today: () => api.breaks.today(),
+      pause: () => api.breaks.pause(),
     },
 
     powerLock: () => api.powerLock(),

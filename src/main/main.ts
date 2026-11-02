@@ -1390,15 +1390,17 @@ function bootApp(): void {
     handle(IPC.paneStatuses, () => ptys.statuses())
 
     handle(IPC.breaksState, () => moveBreaks?.state())
-    handle(IPC.breaksChoose, (_e, posture: 'standing' | 'seated') => {
-      if (posture === 'standing' || posture === 'seated') moveBreaks?.choose(posture)
-    })
     handle(IPC.breaksFinish, (_e, outcome: string) =>
       outcome === 'done' || outcome === 'seated' || outcome === 'skipped' ? (moveBreaks?.finish(outcome) ?? false) : false
     )
     handle(IPC.breaksSnooze, () => moveBreaks?.snooze() ?? false)
+    handle(IPC.breaksLean, (_e, posture: string) => {
+      if (posture === 'standing' || posture === 'seated') moveBreaks?.lean(posture)
+    })
+    handle(IPC.breaksAnother, () => moveBreaks?.another())
     handle(IPC.breaksNow, () => moveBreaks?.now())
     handle(IPC.breaksToday, () => moveBreaks?.today() ?? [])
+    handle(IPC.breaksPause, () => moveBreaks?.pause())
 
     // Your answer to "may this pane act on that one". Ignored for an id that is
     // not waiting — a stale or forged answer has nothing to settle.
@@ -2266,6 +2268,15 @@ function bootApp(): void {
       }
     )
     moveBreaks.start()
+    // Leaving the app for another is a pause in the work here: a break waiting
+    // for one comes up then rather than later in the middle of something. Read
+    // a moment after, since focus moving between two of our windows blurs one
+    // first too.
+    app.on('browser-window-blur', () => {
+      setTimeout(() => {
+        if (!BrowserWindow.getFocusedWindow()) moveBreaks?.pause()
+      }, 300)
+    })
 
     // Unawaited on purpose. Nothing in the app is waiting on a file that has
     // been sitting there for a month, and a slow disk should not hold up the

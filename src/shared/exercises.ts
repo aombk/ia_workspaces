@@ -397,6 +397,191 @@ export const EXERCISES: Exercise[] = [
       pose(SIDE, { rKn: [108, 148], rAn: [114, 180], rToe: [126, 184], lKn: [96, 150], lAn: [84, 178], lToe: [94, 186], rEl: [94, 84], rHa: [88, 106], lEl: [106, 84], lHa: [114, 104] }),
     ],
   },
+  // What sitting does most to a body, undone: the hips and hamstrings it
+  // shortens, the back it rounds, the legs it leaves idle.
+  {
+    id: 'hipflexor',
+    name: 'Hip flexor stretch',
+    how: 'One foot a long step in front of the other. Tuck the tailbone and ease the hips forward until the front of the back hip stretches. Half the time each side.',
+    posture: 'standing',
+    strain: ['hips'],
+    beat: 2200,
+    poses: [
+      pose(SIDE, {
+        ...both('lHip', 'rHip', [100, 114]),
+        lKn: [118, 146],
+        lAn: [120, 182],
+        lToe: [132, 186],
+        rKn: [86, 148],
+        rAn: [72, 178],
+        rToe: [80, 186],
+        lEl: [88, 88],
+        lHa: [98, 110],
+        rEl: [92, 86],
+        rHa: [100, 110],
+      }),
+      pose(SIDE, {
+        head: [106, 48],
+        neck: [107, 66],
+        ...both('lSh', 'rSh', [107, 70]),
+        pelvis: [108, 124],
+        ...both('lHip', 'rHip', [108, 124]),
+        lKn: [132, 150],
+        lAn: [120, 182],
+        lToe: [132, 186],
+        rKn: [88, 152],
+        rAn: [72, 178],
+        rToe: [80, 186],
+        lEl: [95, 96],
+        lHa: [106, 120],
+        rEl: [99, 94],
+        rHa: [108, 120],
+      }),
+    ],
+  },
+  {
+    id: 'hamstring',
+    name: 'Hamstring stretch',
+    how: 'Heel of one foot forward, toes up, leg straight. Bend the other knee and fold forward from the hips, back flat, until the back of the leg stretches. Half the time each side.',
+    posture: 'standing',
+    strain: ['back'],
+    beat: 2200,
+    poses: [
+      pose(SIDE, {
+        head: [96, 38],
+        neck: [96, 56],
+        ...both('lSh', 'rSh', [96, 60]),
+        pelvis: [96, 114],
+        ...both('lHip', 'rHip', [96, 114]),
+        lKn: [114, 148],
+        lAn: [132, 180],
+        lToe: [136, 168],
+        rKn: [94, 150],
+        rAn: [94, 182],
+        rToe: [106, 186],
+        lEl: [104, 86],
+        lHa: [112, 110],
+        rEl: [100, 86],
+        rHa: [110, 112],
+      }),
+      pose(SIDE, {
+        head: [142, 64],
+        neck: [129, 77],
+        ...both('lSh', 'rSh', [128, 80]),
+        pelvis: [88, 118],
+        ...both('lHip', 'rHip', [88, 118]),
+        lKn: [108, 148],
+        lAn: [128, 178],
+        lToe: [132, 166],
+        rKn: [96, 150],
+        rAn: [94, 182],
+        rToe: [106, 186],
+        lEl: [128, 104],
+        lHa: [126, 128],
+        rEl: [124, 106],
+        rHa: [122, 130],
+      }),
+    ],
+  },
+  {
+    id: 'backext',
+    name: 'Standing back extension',
+    how: 'Hands on your lower back, fingers down. Lean back gently and look up a little, then come up straight. Slowly, about 10.',
+    posture: 'standing',
+    strain: ['back'],
+    beat: 1800,
+    poses: [
+      pose(SIDE, { lEl: [88, 86], lHa: [94, 110], rEl: [92, 86], rHa: [96, 110] }),
+      pose(SIDE, {
+        head: [80, 45],
+        neck: [88, 61],
+        ...both('lSh', 'rSh', [88, 65]),
+        pelvis: [104, 112],
+        ...both('lHip', 'rHip', [104, 112]),
+        lEl: [82, 88],
+        lHa: [96, 108],
+        rEl: [86, 88],
+        rHa: [98, 108],
+      }),
+    ],
+  },
+  {
+    id: 'twist',
+    name: 'Torso twists',
+    how: 'Feet planted, arms folded at chest height. Turn the shoulders slowly to one side, back through the middle, then the other. Hips stay facing forward.',
+    posture: 'standing',
+    strain: ['back'],
+    beat: 1100,
+    poses: [
+      pose(FRONT, { lEl: [74, 72], rEl: [126, 72], lHa: [94, 70], rHa: [106, 70] }),
+      pose(FRONT, { head: [104, 38], lSh: [93, 60], rSh: [109, 60], lEl: [104, 74], lHa: [122, 68], rEl: [128, 70], rHa: [118, 68] }),
+      pose(FRONT, { lEl: [74, 72], rEl: [126, 72], lHa: [94, 70], rHa: [106, 70] }),
+      pose(FRONT, { head: [96, 38], lSh: [91, 60], rSh: [107, 60], rEl: [96, 74], rHa: [78, 68], lEl: [72, 70], lHa: [82, 68] }),
+    ],
+  },
+  {
+    id: 'lunge',
+    name: 'Reverse lunges',
+    how: 'Step one foot back and bend both knees until the back knee nearly touches the floor. Push back up. Alternate legs, about 10 each.',
+    posture: 'standing',
+    strain: ['knees', 'balance'],
+    beat: 1400,
+    poses: [
+      pose(SIDE, { lEl: [88, 88], lHa: [98, 110], rEl: [92, 86], rHa: [100, 110] }),
+      pose(SIDE, {
+        head: [96, 64],
+        neck: [96, 82],
+        ...both('lSh', 'rSh', [96, 86]),
+        pelvis: [96, 140],
+        ...both('lHip', 'rHip', [96, 140]),
+        rKn: [130, 146],
+        rAn: [128, 182],
+        rToe: [140, 186],
+        lKn: [90, 174],
+        lAn: [58, 176],
+        lToe: [68, 186],
+        lEl: [84, 112],
+        lHa: [94, 136],
+        rEl: [88, 110],
+        rHa: [96, 136],
+      }),
+    ],
+  },
+  {
+    id: 'balance',
+    name: 'Stand on one leg',
+    how: 'Near the desk in case you wobble. Lift one foot and hold for thirty seconds, eyes on a point ahead, then the other. Harder: close your eyes.',
+    posture: 'standing',
+    strain: ['balance', 'ankles'],
+    beat: 1600,
+    poses: [
+      pose(FRONT, { rKn: [110, 130], rAn: [112, 160], rToe: [118, 164], lEl: [74, 80], lHa: [60, 96], rEl: [126, 80], rHa: [140, 96] }),
+      pose(FRONT, { head: [101, 38], rKn: [110, 130], rAn: [112, 160], rToe: [118, 164], lEl: [74, 78], lHa: [58, 92], rEl: [126, 82], rHa: [142, 100] }),
+    ],
+  },
+  {
+    id: 'jacks',
+    name: 'Jumping jacks',
+    how: 'Jump the feet apart as the arms go up, back together as they come down. Thirty seconds, a breather, thirty more \u2014 or step them out without the jump.',
+    posture: 'standing',
+    strain: ['impact', 'knees', 'ankles'],
+    beat: 420,
+    poses: [
+      FRONT,
+      pose(FRONT, {
+        lEl: [76, 40],
+        lHa: [70, 18],
+        rEl: [124, 40],
+        rHa: [130, 18],
+        lKn: [86, 148],
+        rKn: [114, 148],
+        lAn: [80, 182],
+        rAn: [120, 182],
+        lToe: [74, 186],
+        rToe: [126, 186],
+      }),
+    ],
+  },
 
   // ------------------------------------------------------------- seated
   {
@@ -470,6 +655,43 @@ export const EXERCISES: Exercise[] = [
     prop: 'gaze',
     beat: 2400,
     poses: [pose(SEATED, { head: [98, 45] }), pose(SEATED, { head: [96, 47] })],
+  },
+  // The hands, the neck and the spine: what a keyboard and a screen load all day.
+  {
+    id: 'wrists',
+    name: 'Wrist and forearm stretch',
+    how: 'One arm straight out, palm up. With the other hand, ease the fingers down and back. Then palm down, fingers towards you. Twenty seconds each way, each arm.',
+    posture: 'seated',
+    strain: ['wrists'],
+    prop: 'chair',
+    beat: 2000,
+    poses: [
+      pose(SEATED, { lEl: [118, 68], lHa: [142, 68], rEl: [124, 80], rHa: [146, 58] }),
+      pose(SEATED, { lEl: [118, 68], lHa: [142, 68], rEl: [124, 84], rHa: [146, 78] }),
+    ],
+  },
+  {
+    id: 'chintuck',
+    name: 'Chin tucks',
+    how: 'Sit tall, eyes level. Slide your head straight back as if making a double chin, hold for three, release. About 10.',
+    posture: 'seated',
+    strain: ['neck'],
+    prop: 'chair',
+    beat: 1500,
+    poses: [SEATED, pose(SEATED, { head: [89, 46], neck: [92, 64] })],
+  },
+  {
+    id: 'seattwist',
+    name: 'Seated twist',
+    how: 'Sit tall, one hand on the opposite knee, the other on the back of the chair. Turn to look over your shoulder, breathe, come back. Each side a few times.',
+    posture: 'seated',
+    strain: ['back'],
+    prop: 'chair',
+    beat: 2000,
+    poses: [
+      SEATED,
+      pose(SEATED, { head: [92, 46], lSh: [86, 68], rSh: [104, 68], lEl: [78, 90], lHa: [76, 108], rEl: [114, 94], rHa: [128, 118] }),
+    ],
   },
 
   // ------------------------------------------------------------ equipment
@@ -826,38 +1048,27 @@ export function suits(ex: Exercise, filter: RoutineFilter = {}): boolean {
 }
 
 /**
- * One exercise a minute for a break of `count` minutes.
+ * Every exercise that suits you for a posture, in a random order: the first is
+ * the break, and "another exercise" walks down the rest.
  *
- * Shuffled so it is not the same break every time, and filtered by what you
- * have and what you are avoiding. If you have equipment, one of the minutes
- * uses it \u2014 saying you own a band and never being asked to pick it up
- * would make the setting look broken. Standing ends with a walk, which is the
- * part the research is about; a seated break ends with resting the eyes,
- * which a day at a screen needs either way. Neither strains anything, so a
- * break is never empty however much is being avoided.
+ * One exercise for the whole break — a list of five in five minutes was a
+ * routine to follow rather than a break to take. Filtered by what you have and
+ * what you are avoiding; the walk and resting the eyes strain nothing, so the
+ * list is never empty however much is being avoided.
  */
-export function pickRoutine(
+export function pickChoices(
   posture: BreakPosture,
-  count: number,
   filter: RoutineFilter = {},
-  random: () => number = Math.random
+  random: () => number = Math.random,
+  previous?: string
 ): string[] {
-  const finale = posture === 'standing' ? 'walk' : 'eyes'
-  const shuffle = (list: string[]) => {
-    for (let i = list.length - 1; i > 0; i--) {
-      const j = Math.floor(random() * (i + 1))
-      ;[list[i], list[j]] = [list[j], list[i]]
-    }
-    return list
+  const list = EXERCISES.filter((e) => e.posture === posture && suits(e, filter)).map((e) => e.id)
+  // A plain shuffle, every break on its own: each exercise equally likely to
+  // come first — except the one from the break before, which goes last, so
+  // the same exercise never comes twice in a row. Nothing else is remembered.
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1))
+    ;[list[i], list[j]] = [list[j], list[i]]
   }
-  const fits = EXERCISES.filter((e) => e.posture === posture && e.id !== finale && suits(e, filter))
-  const gear = shuffle(fits.filter((e) => e.equipment).map((e) => e.id))
-  const plain = shuffle(fits.filter((e) => !e.equipment).map((e) => e.id))
-  const pool = gear.length ? [gear[0], ...shuffle([...gear.slice(1), ...plain])] : plain
-  const out: string[] = []
-  if (pool.length) while (out.length < count - 1) out.push(pool[out.length % pool.length])
-  // Nothing left to suggest: the whole break is the walk, or the rest.
-  while (out.length < count - 1) out.push(finale)
-  out.push(finale)
-  return out
+  return previous && list.includes(previous) ? [...list.filter((id) => id !== previous), previous] : list
 }

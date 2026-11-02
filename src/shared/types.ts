@@ -2219,6 +2219,10 @@ export interface Settings {
   /** What there is to exercise with, and what to spare. See `EQUIPMENT` and `STRAINS`. */
   moveEquipment: string[]
   moveAvoid: string[]
+  /** A sound when a break's countdown ends — the notification sound, at its volume. */
+  moveSound: boolean
+  /** Once a break is owed, the most minutes it waits for a pause in your work. 0: on time. */
+  moveWaitMin: number
   notifications: NotificationSettings
 }
 
@@ -3237,6 +3241,8 @@ export const DEFAULT_SETTINGS: Settings = {
   moveBreakMin: 5,
   moveEquipment: [],
   moveAvoid: [],
+  moveSound: true,
+  moveWaitMin: 20,
   notifications: DEFAULT_NOTIFICATIONS,
 }
 

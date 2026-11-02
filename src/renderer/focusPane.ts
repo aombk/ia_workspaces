@@ -122,6 +122,7 @@ export class FocusPane implements AuxPane {
       this.breaks?.settings,
       this.breaks?.sittingSince,
       this.breaks?.snoozedUntil,
+      this.breaks?.waiting,
       this.breaksToday,
       dayKey(Date.now()),
     ]
@@ -375,7 +376,8 @@ export class FocusPane implements AuxPane {
 
     const now = Date.now()
     let next = 'Away from the machine — the count starts when you are back.'
-    if (state.snoozedUntil) next = `Put off; back in ${Math.max(1, Math.ceil((state.snoozedUntil - now) / 60_000))} min.`
+    if (state.waiting) next = 'A break is due — it comes at your next pause.'
+    else if (state.snoozedUntil) next = `Put off; back in ${Math.max(1, Math.ceil((state.snoozedUntil - now) / 60_000))} min.`
     else if (state.sittingSince !== null) {
       const sat = Math.floor((now - state.sittingSince) / 60_000)
       const left = Math.max(0, Math.ceil((state.sittingSince + state.settings.everyMin * 60_000 - now) / 60_000))

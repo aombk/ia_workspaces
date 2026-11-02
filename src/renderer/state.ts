@@ -1093,6 +1093,8 @@ class WorkspaceState {
   setActiveWorkspace(id: string): void {
     if (this.data.activeWorkspaceId === id) return
     this.data.activeWorkspaceId = id
+    // Moving to other work is a pause in this one: a break that is owed comes now.
+    void backend().breaks?.pause()
     if (this.followsList) {
       // The list is the main window's: it is asked to switch, and this window
       // with every other one follows it. Shown here at once all the same.

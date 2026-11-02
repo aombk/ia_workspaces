@@ -14,8 +14,10 @@
  * that costs nothing is the way out that gets taken every time.
  */
 import { backend } from '../../backend'
+import { store } from '../state'
+import { playSound } from '../sound'
 import { BODY, exercise, HEAD_R, holdPaths, propPaths, type Exercise, type Joint, type Pose } from '../../shared/exercises'
-import { SNOOZE_MIN, type BreakPosture, type BreakState } from '../../shared/moveBreaks'
+import { currentExercise, SNOOZE_MIN, type BreakState } from '../../shared/moveBreaks'
 
 /** What has to be typed to skip a break. Compared ignoring case, spacing and a final full stop. */
 export const SKIP_SENTENCE = 'I do not want to get up and do this exercise and I take full responsibility for that'
@@ -28,6 +30,8 @@ let ticker: ReturnType<typeof setInterval> | null = null
 let skipping: string | null = null
 /** What has been typed into the skip box, kept across redraws. */
 let typed = ''
+/** The break whose end has already been rung, so it rings once. */
+let chimed: string | null = null
 
 export function initBreaks(): void {
   const breaks = backend().breaks
@@ -62,7 +66,8 @@ function apply(next: BreakState): void {
     !before ||
     before.due?.id !== next.due?.id ||
     before.due?.posture !== next.due?.posture ||
-    before.due?.startedAt !== next.due?.startedAt
+    before.due?.startedAt !== next.due?.startedAt ||
+    JSON.stringify(before.due?.choice) !== JSON.stringify(next.due?.choice)
   if (changed) render()
 }
 
@@ -88,7 +93,8 @@ function renderChip(): void {
   }
   const now = Date.now()
   let text = ''
-  if (s.snoozedUntil) text = `Break in ${Math.max(1, Math.ceil((s.snoozedUntil - now) / 60_000))} min`
+  if (s.waiting) text = 'Break at your next pause'
+  else if (s.snoozedUntil) text = `Break in ${Math.max(1, Math.ceil((s.snoozedUntil - now) / 60_000))} min`
   else if (s.sittingSince !== null) {
     const left = s.sittingSince + s.settings.everyMin * 60_000 - now
     text = left <= 0 ? 'Break due' : `Break in ${Math.ceil(left / 60_000)} min`
@@ -130,69 +136,71 @@ function render(): void {
   }
 
   const card = el('div', 'break-card')
-  if (!due.posture) card.append(...choosing())
-  else card.append(...running(due.posture))
+  card.append(...running())
   if (skipping === due.id) card.appendChild(skipBox())
   screen.replaceChildren(card)
 
   if (ticker) clearInterval(ticker)
-  ticker = due.posture ? setInterval(updateRunning, 250) : null
-  if (due.posture) updateRunning()
+  ticker = setInterval(updateRunning, 250)
+  updateRunning()
 }
 
-function choosing(): HTMLElement[] {
+/** The exercise on offer, drawn, named and explained. */
+function offer(): HTMLElement[] {
   const due = state!.due!
-  const minutes = state!.settings.breakMin
-  const title = el('h2', 'break-title', 'Time to get up')
-  const sub = el(
-    'p',
-    'break-sub',
-    `You have been at the machine for ${due.satMin} minute${due.satMin === 1 ? '' : 's'}. ` +
-      `${minutes} minute${minutes === 1 ? '' : 's'} of moving, then back to it.`
-  )
-
-  const first = exercise(due.standing[0])
-  const art = el('div', 'break-art')
-  if (first) {
-    figure = figure ?? new Figure()
-    figure.show(first)
-    art.appendChild(figure.svg)
-  }
-
-  const choices = el('div', 'break-choices')
-  const stand = el('button', 'btn primary break-big', `Stand up — ${minutes} minutes`)
-  stand.addEventListener('click', () => void backend().breaks?.choose('standing'))
-  const sit = el('button', 'btn break-big', `I can’t get up — seated, ${minutes} minutes`)
-  sit.addEventListener('click', () => void backend().breaks?.choose('seated'))
-  choices.append(stand, sit)
-
-  return [title, sub, art, choices, outs(due.snoozed)]
-}
-
-function running(posture: BreakPosture): HTMLElement[] {
-  const head = el('div', 'break-step')
-  head.id = 'break-step'
-  const name = el('h2', 'break-title')
+  const current = exercise(currentExercise(due) ?? '')
+  const name = el('h2', 'break-title', current?.name ?? '')
   name.id = 'break-name'
   const art = el('div', 'break-art')
   figure = figure ?? new Figure()
+  if (current) figure.show(current)
   art.appendChild(figure.svg)
-  const how = el('p', 'break-how')
+  const how = el('p', 'break-how', current?.how ?? '')
   how.id = 'break-how'
+  return [name, art, how]
+}
+
+/** "Another exercise", when there is another to offer. */
+function anotherButton(): HTMLElement | null {
+  const due = state!.due!
+  if (due[due.posture].length < 2) return null
+  const button = el('button', 'btn break-big break-secondary', 'Another exercise')
+  button.addEventListener('click', () => void backend().breaks?.another())
+  return button
+}
+
+/**
+ * The break, already counting down: the exercise, the clock, and what you can
+ * do about it — another exercise, a seated one, later, or not at all.
+ */
+function running(): HTMLElement[] {
+  const due = state!.due!
+  const seated = due.posture === 'seated'
+  const title = el('div', 'break-step', 'Time to get up')
+  title.id = 'break-step'
   const clock = el('div', 'break-clock')
   clock.id = 'break-clock'
-  const next = el('p', 'break-next')
-  next.id = 'break-next'
-  const done = el('button', 'btn primary break-big', 'Done — back to work')
+  const choices = el('div', 'break-choices')
+  const done = el('button', 'btn break-big break-primary', 'Done \u2014 back to work')
   done.id = 'break-done'
   done.hidden = true
-  done.addEventListener('click', () => void backend().breaks?.finish(posture === 'standing' ? 'done' : 'seated'))
-  return [head, name, art, how, clock, next, done, outs(true)]
+  done.addEventListener('click', () => void backend().breaks?.finish(state?.due?.posture === 'seated' ? 'seated' : 'done'))
+  choices.appendChild(done)
+  const other = anotherButton()
+  if (other) {
+    other.id = 'break-another'
+    choices.appendChild(other)
+  }
+  const swap = el('button', 'break-link', seated ? 'I can get up \u2014 show a standing one' : 'I can\u2019t get up \u2014 show a seated one')
+  swap.id = 'break-swap'
+  swap.addEventListener('click', () => void backend().breaks?.lean(seated ? 'standing' : 'seated'))
+  return [title, ...offer(), clock, choices, swap, outs(due.snoozed)]
 }
 
 /** The two ways out that are not doing it. */
 function outs(snoozed: boolean): HTMLElement {
   const row = el('div', 'break-outs')
+  row.id = 'break-outs'
   if (!snoozed) {
     const later = el('button', 'break-link', `Not now — in ${SNOOZE_MIN} minutes`)
     later.title = 'Once per break.'
@@ -247,27 +255,38 @@ function matches(text: string): boolean {
 /** The parts of the running screen that change by the second. */
 function updateRunning(): void {
   const due = state?.due
-  if (!due?.posture || !state) return
-  const total = state.settings.breakMin * 60_000
-  const elapsed = Math.max(0, Date.now() - due.startedAt)
-  const left = Math.max(0, total - elapsed)
-  const routine = due.posture === 'standing' ? due.standing : due.seated
-  const stepMs = total / routine.length
-  const index = Math.min(routine.length - 1, Math.floor(elapsed / stepMs))
-  const current = exercise(routine[index])
-  const following = index + 1 < routine.length ? exercise(routine[index + 1]) : null
-
+  if (!due || !state) return
+  const left = Math.max(0, state.settings.breakMin * 60_000 - (Date.now() - due.startedAt))
   const finished = left === 0
-  setText('break-step', finished ? 'Break done' : `${index + 1} of ${routine.length}`)
+  const current = exercise(currentExercise(due) ?? '')
   setText('break-name', finished ? 'Welcome back' : (current?.name ?? ''))
   setText('break-how', finished ? 'Sit down, take a breath, carry on.' : (current?.how ?? ''))
   setText('break-clock', finished ? '0:00' : clockText(left))
-  const stepLeft = stepMs - (elapsed - index * stepMs)
-  setText('break-next', finished || !following ? '' : `Next: ${following.name} in ${clockText(stepLeft)}`)
   const done = document.getElementById('break-done')
   if (done) done.hidden = !finished
-  if (current && !finished) figure?.show(current)
-  else if (finished) figure?.stop()
+  if (finished) chime(due.id)
+  const another = document.getElementById('break-another')
+  if (another) another.hidden = finished
+  // Over: putting it off or skipping it means nothing any more.
+  for (const id of ['break-swap', 'break-outs', 'break-step']) {
+    const node = document.getElementById(id)
+    if (node) node.hidden = finished
+  }
+  if (finished) figure?.stop()
+}
+
+/**
+ * The countdown is over: you are probably across the room, not looking at the
+ * screen, so it is said out loud. The notification sound at its volume —
+ * the one sound you have already chosen to hear from this app — and from the
+ * main window only, or every open window would ring at once.
+ */
+function chime(id: string): void {
+  if (chimed === id) return
+  chimed = id
+  if (store.windowId !== 'main' || store.settings.moveSound === false) return
+  const n = store.settings.notifications
+  playSound(n.soundName, n.volume)
 }
 
 function setText(id: string, text: string): void {
@@ -341,6 +360,10 @@ class Figure {
       const first = next.poses[0]
       const side = first.lSh[0] === first.rSh[0] && first.lSh[1] === first.rSh[1]
       this.svg.classList.toggle('side-view', side)
+      // Drawn at once in its first pose: a window in the background gets no
+      // animation frames, and it should still show the exercise rather than
+      // an empty box until it is looked at.
+      this.draw(next.poses[0], next.poses[0], 0)
     }
     if (!this.frame) this.frame = requestAnimationFrame(this.step)
   }
@@ -355,7 +378,10 @@ class Figure {
     const ex = this.current
     if (!ex || !this.svg.isConnected) return
     const poses = ex.poses
-    const t = (now - this.started) / ex.beat
+    // Clamped: a frame's timestamp is when the frame began, which can be a
+    // moment before `show` read the clock — and a negative time picked pose -1,
+    // threw, and left the figure frozen until something else restarted it.
+    const t = Math.max(0, now - this.started) / ex.beat
     const i = Math.floor(t) % poses.length
     const from = poses[i]
     const to = poses[(i + 1) % poses.length]

@@ -182,11 +182,13 @@ export const IPC = {
   paneStatuses: 'pane:statuses',
   /** Movement breaks: the state, and what the break screen can do about it. */
   breaksState: 'breaks:state',
-  breaksChoose: 'breaks:choose',
   breaksFinish: 'breaks:finish',
   breaksSnooze: 'breaks:snooze',
+  breaksLean: 'breaks:lean',
+  breaksAnother: 'breaks:another',
   breaksNow: 'breaks:now',
   breaksToday: 'breaks:today',
+  breaksPause: 'breaks:pause',
 
   // main -> renderer (send)
   onPtyData: 'pty:data',

@@ -1144,6 +1144,72 @@ kbd {
   margin-top: 18px;
 }
 
+/* A group of rows folded under one line inside a section. */
+.settings-sub {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.settings-sub > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.settings-sub > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-sub > summary::before {
+  content: '\25B8';
+  color: var(--text-faint);
+  transition: transform 0.15s;
+}
+
+.settings-sub[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-sub-title {
+  color: var(--text);
+}
+
+.settings-sub-summary {
+  color: var(--text-faint);
+  font-size: calc(12px * var(--ui-text, 1));
+}
+
+.settings-sub > :not(summary) {
+  margin-left: 12px;
+  margin-right: 10px;
+}
+
+.settings-sub > :last-child {
+  margin-bottom: 10px;
+}
+
+.settings-subheading {
+  margin-top: 14px;
+}
+
+.settings-subheading h4 {
+  margin: 0 0 4px;
+  font-size: calc(12px * var(--ui-text, 1));
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.settings-subheading p {
+  margin: 0 0 6px;
+  font-size: calc(12px * var(--ui-text, 1));
+  color: var(--text-faint);
+  line-height: 1.45;
+}
+
 .settings-section > h3 {
   margin: 0 0 10px;
   font-size: calc(11px * var(--ui-text, 1));
@@ -10484,6 +10550,8 @@ body.monitor-dragging .monitor-dock__body {
 /* ------------------------------------------------------------ movement break */
 
 .status-break {
+  flex: none;
+  white-space: nowrap;
   border: none;
   background: transparent;
   color: var(--text-faint);
@@ -10635,6 +10703,33 @@ body.monitor-dragging .monitor-dock__body {
 .break-big {
   padding: 10px 18px;
   font-size: calc(14px * var(--ui-text, 1));
+}
+
+/* The theme's own accent, not the fixed blue of .btn.primary: the break
+   is the app talking, and it should look like the app. */
+.break-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.break-primary:hover {
+  background: color-mix(in srgb, var(--accent) 85%, var(--text));
+}
+
+.break-secondary {
+  background: transparent;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.break-secondary:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.break-secondary[hidden] {
+  display: none;
 }
 
 .break-big[hidden] {

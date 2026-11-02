@@ -26,8 +26,10 @@ const check = (name, fn) => {
 }
 
 const MIN = 60_000
-const on = { enabled: true, everyMin: 25, breakMin: 5, equipment: [], avoid: [] }
-const clock = () => new B.BreakClock((posture, n) => E.pickRoutine(posture, n), () => 'id')
+// No waiting for a pause, unless a check says otherwise: most of these are about the clock.
+const on = { enabled: true, everyMin: 25, breakMin: 5, equipment: [], avoid: [], waitMin: 0 }
+const patient = { ...on, waitMin: 20 }
+const clock = () => new B.BreakClock((posture) => E.pickChoices(posture), () => 'id')
 
 /** Sits at the machine — input every few seconds — from `from` for `minutes`. */
 function sit(c, from, minutes, settings = on) {
@@ -77,14 +79,63 @@ check('switched off, nothing is counted or raised', () => {
 })
 
 check('settings from the document are kept within sense', () => {
-  assert.deepEqual(B.readBreakSettings({}), { enabled: true, everyMin: 25, breakMin: 5, equipment: [], avoid: [] })
+  assert.deepEqual(B.readBreakSettings({}), { enabled: true, everyMin: 25, breakMin: 5, equipment: [], avoid: [], waitMin: 20 })
   assert.deepEqual(B.readBreakSettings({ moveBreaks: false, moveEveryMin: 0, moveBreakMin: 99, moveEquipment: ['band', 3], moveAvoid: 'knees' }), {
     enabled: false,
     everyMin: 5,
     breakMin: 30,
     equipment: ['band'],
     avoid: [],
+    waitMin: 20,
   })
+  assert.equal(B.readBreakSettings({ moveWaitMin: 0 }).waitMin, 0)
+})
+
+console.log('Waiting for a pause')
+
+check('owed while you are typing, it waits', () => {
+  const c = clock()
+  assert.equal(sit(c, 0, 30, patient), false)
+  assert.equal(c.state().waiting, true)
+  assert.equal(c.state().due, null)
+})
+
+check('the first pause in typing brings it', () => {
+  const c = clock()
+  sit(c, 0, 30, patient)
+  assert.equal(c.tick(30.2 * MIN, B.PAUSE_SEC, patient).raised, true)
+  assert.equal(c.state().waiting, false)
+})
+
+check('a pause before it is owed does nothing', () => {
+  const c = clock()
+  sit(c, 0, 10, patient)
+  assert.equal(c.tick(10.2 * MIN, 30, patient).raised, false)
+  assert.equal(c.state().waiting, false)
+})
+
+check('no pause at all: it comes anyway once the wait is up', () => {
+  const c = clock()
+  assert.equal(sit(c, 0, 44.5, patient), false)
+  assert.equal(sit(c, 44.5 * MIN, 1, patient), true)
+})
+
+check('switching workspace or leaving the app brings an owed break', () => {
+  const c = clock()
+  sit(c, 0, 10, patient)
+  assert.equal(c.pause(10 * MIN), false)
+  sit(c, 10 * MIN, 17, patient)
+  assert.equal(c.pause(27 * MIN), true)
+  assert.ok(c.state().due)
+})
+
+check('a break put off with "not now" comes back on time, pause or not', () => {
+  const c = clock()
+  sit(c, 0, 26, patient)
+  c.tick(26.1 * MIN, 25, patient)
+  assert.ok(c.snooze(26.1 * MIN))
+  assert.equal(c.pause(27 * MIN), false)
+  assert.equal(c.tick(31.2 * MIN, 2, patient).raised, true)
 })
 
 console.log('Getting out of one')
@@ -92,23 +143,24 @@ console.log('Getting out of one')
 const due = () => {
   const c = clock()
   sit(c, 0, 25.5)
-  return { c, at: 26 * MIN }
+  return { c, at: c.state().due.startedAt }
 }
+
+check('the countdown starts as soon as the break comes up, standing', () => {
+  const { c } = due()
+  const d = c.state().due
+  assert.equal(d.startedAt, d.raisedAt)
+  assert.equal(d.posture, 'standing')
+})
 
 check('done is refused before the countdown has run', () => {
   const { c, at } = due()
-  c.choose(at, 'standing')
   assert.equal(c.finish(at + 2 * MIN, 'done'), null)
   assert.ok(c.state().due)
   const record = c.finish(at + 5 * MIN, 'done')
   assert.equal(record.outcome, 'done')
   assert.equal(c.state().due, null)
   assert.equal(c.state().sittingSince, at + 5 * MIN)
-})
-
-check('done is refused without a posture chosen at all', () => {
-  const { c, at } = due()
-  assert.equal(c.finish(at + 10 * MIN, 'done'), null)
 })
 
 check('skipping is allowed at any time', () => {
@@ -135,46 +187,94 @@ check('"not now" works once, then comes back five minutes later without it', () 
 
 console.log('The exercises')
 
-check('a break has one exercise a minute and ends with a walk or with eyes', () => {
-  const standing = E.pickRoutine('standing', 5)
-  assert.equal(standing.length, 5)
-  assert.equal(standing.at(-1), 'walk')
-  assert.equal(new Set(standing).size, 5)
-  const seated = E.pickRoutine('seated', 5)
-  assert.equal(seated.at(-1), 'eyes')
-  assert.ok(seated.every((id) => E.exercise(id).posture === 'seated'))
+check('a break offers one exercise, and "another" moves to a different one', () => {
+  const { c, at } = due()
+  const first = B.currentExercise(c.state().due)
+  assert.ok(E.exercise(first))
+  assert.equal(c.another(), true)
+  const second = B.currentExercise(c.state().due)
+  assert.notEqual(second, first)
+  // The countdown is left alone.
+  assert.equal(c.state().due.startedAt, at)
+})
+
+check('"another" goes round every exercise that suits and back to the first', () => {
+  const { c } = due()
+  const seen = new Set()
+  const count = c.state().due.standing.length
+  for (let i = 0; i < count; i++) {
+    seen.add(B.currentExercise(c.state().due))
+    c.another()
+  }
+  assert.equal(seen.size, count)
+  assert.equal(B.currentExercise(c.state().due), c.state().due.standing[0])
+})
+
+check('switching to seated mid-break shows a seated one and keeps the countdown', () => {
+  const { c, at } = due()
+  assert.equal(c.lean('seated'), true)
+  assert.equal(E.exercise(B.currentExercise(c.state().due)).posture, 'seated')
+  assert.equal(c.state().due.startedAt, at)
+  assert.equal(c.lean('seated'), false)
+  assert.equal(c.finish(at + 5 * MIN, 'seated').outcome, 'seated')
+})
+
+check('the order is a fair shuffle: each exercise first about equally often', () => {
+  const all = E.pickChoices('standing')
+  const firsts = new Map()
+  const runs = all.length * 400
+  for (let n = 0; n < runs; n++) {
+    const first = E.pickChoices('standing')[0]
+    firsts.set(first, (firsts.get(first) ?? 0) + 1)
+  }
+  assert.equal(firsts.size, all.length)
+  for (const [id, count] of firsts) assert.ok(count > 250 && count < 550, `${id} ${count}`)
+})
+
+check("the previous break's exercise never comes first; the rest stay equally likely", () => {
+  const all = E.pickChoices('standing')
+  const firsts = new Map()
+  const runs = (all.length - 1) * 400
+  for (let n = 0; n < runs; n++) {
+    const list = E.pickChoices('standing', {}, Math.random, 'squat')
+    assert.notEqual(list[0], 'squat')
+    assert.equal(list.at(-1), 'squat')
+    firsts.set(list[0], (firsts.get(list[0]) ?? 0) + 1)
+  }
+  assert.equal(firsts.size, all.length - 1)
+  for (const [id, count] of firsts) assert.ok(count > 250 && count < 550, `${id} ${count}`)
+})
+
+check('a finished break records which exercise it was', () => {
+  const { c, at } = due()
+  const offered = B.currentExercise(c.state().due)
+  assert.equal(c.finish(at, 'skipped').exercise, offered)
 })
 
 check('equipment is only suggested to someone who has it', () => {
-  for (let i = 0; i < 30; i++) {
-    for (const id of E.pickRoutine('standing', 5)) assert.equal(E.exercise(id).equipment, undefined, id)
-  }
+  for (const id of E.pickChoices('standing')) assert.equal(E.exercise(id).equipment, undefined, id)
 })
 
-check('with equipment, one minute of every break uses it', () => {
-  for (let i = 0; i < 30; i++) {
-    const routine = E.pickRoutine('standing', 5, { equipment: ['band'] })
-    assert.ok(routine.some((id) => E.exercise(id).equipment === 'band'), routine.join())
-    assert.ok(routine.every((id) => !E.exercise(id).equipment || E.exercise(id).equipment === 'band'))
-  }
+check('with equipment, its exercises are among the choices', () => {
+  const choices = E.pickChoices('standing', { equipment: ['band'] })
+  assert.ok(choices.includes('bandpull') && choices.includes('bandrow'))
+  assert.ok(choices.every((id) => !E.exercise(id).equipment || E.exercise(id).equipment === 'band'))
 })
 
 check('nothing that loads a part being spared is ever suggested', () => {
   const all = { equipment: E.EQUIPMENT.map((e) => e.id), avoid: ['knees', 'shoulders'] }
-  for (let i = 0; i < 50; i++) {
-    for (const posture of ['standing', 'seated']) {
-      for (const id of E.pickRoutine(posture, 5, all)) {
-        const strain = E.exercise(id).strain ?? []
-        assert.ok(!strain.includes('knees') && !strain.includes('shoulders'), id)
-      }
+  for (const posture of ['standing', 'seated']) {
+    for (const id of E.pickChoices(posture, all)) {
+      const strain = E.exercise(id).strain ?? []
+      assert.ok(!strain.includes('knees') && !strain.includes('shoulders'), id)
     }
   }
 })
 
 check('avoiding everything still leaves a break: the walk, or resting the eyes', () => {
   const avoid = E.STRAINS.map((s) => s.id)
-  assert.deepEqual(E.pickRoutine('standing', 3, { avoid }), ['walk', 'walk', 'walk'])
-  assert.deepEqual(E.pickRoutine('seated', 2, { avoid }), ['eyes', 'eyes'])
+  assert.deepEqual(E.pickChoices('standing', { avoid }), ['walk'])
+  assert.deepEqual(E.pickChoices('seated', { avoid }), ['eyes'])
 })
 
 check('every exercise names known equipment and strains', () => {

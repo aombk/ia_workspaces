@@ -182,12 +182,17 @@ export interface WindowsBackend {
 export interface BreaksBackend {
   state(): Promise<BreakState>
   onChange(cb: (state: BreakState) => void): () => void
-  choose(posture: BreakPosture): Promise<void>
   /** False when refused — a countdown not finished yet. */
   finish(outcome: BreakOutcome): Promise<boolean>
   snooze(): Promise<boolean>
+  /** Switch to a standing or a seated exercise; the countdown carries on. */
+  lean(posture: BreakPosture): Promise<void>
+  /** A different exercise than the one on offer. */
+  another(): Promise<void>
   now(): Promise<void>
   today(): Promise<BreakRecord[]>
+  /** You stopped — switched workspace. A break waiting for a pause comes up. */
+  pause(): Promise<void>
 }
 
 export interface Backend {

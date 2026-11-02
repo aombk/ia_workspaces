@@ -85,6 +85,49 @@ function section(title: string, ...children: Node[]): HTMLElement {
   return el
 }
 
+/** Which folded groups are open, by title, so a redraw does not close the one you are in. */
+const openSubsections = new Set<string>()
+
+/**
+ * Rows folded under one line inside a section — for settings that come in a
+ * crowd and are set once. The search opens it when something inside matches;
+ * see `applyFilter`.
+ */
+function subsection(title: string, summary: string, ...children: Node[]): HTMLElement {
+  const box = document.createElement('details')
+  box.className = 'settings-sub'
+  box.open = openSubsections.has(title)
+  box.addEventListener('toggle', () => {
+    if (box.open) openSubsections.add(title)
+    else openSubsections.delete(title)
+  })
+  const head = document.createElement('summary')
+  const name = document.createElement('span')
+  name.className = 'settings-sub-title'
+  name.textContent = title
+  const what = document.createElement('span')
+  what.className = 'settings-sub-summary'
+  what.textContent = summary
+  head.append(name, what)
+  box.append(head, ...children)
+  return box
+}
+
+/** A small heading between rows of a folded group, with a line of explanation. */
+function subheading(title: string, hint = ''): HTMLElement {
+  const wrap = document.createElement('div')
+  wrap.className = 'settings-subheading'
+  const h = document.createElement('h4')
+  h.textContent = title
+  wrap.appendChild(h)
+  if (hint) {
+    const p = document.createElement('p')
+    p.textContent = hint
+    wrap.appendChild(p)
+  }
+  return wrap
+}
+
 /**
  * Past this much explanation, the control moves below the text.
  *
@@ -569,6 +612,15 @@ function applyFilter(next: string): void {
       const match = wholeSection || haystack(row).includes(needle)
       row.classList.toggle(FILTERED, !match)
       if (match) hits++
+      // A folded group with a match inside is opened to show it, and its own
+      // rows are filtered like a section's.
+      if (row instanceof HTMLDetailsElement) {
+        if (needle && match) row.open = true
+        for (const inner of row.children) {
+          if (inner.tagName === 'SUMMARY') continue
+          inner.classList.toggle(FILTERED, !(wholeSection || !needle || haystack(inner).includes(needle)))
+        }
+      }
     }
     sec.classList.toggle(FILTERED, hits === 0)
     shown += hits
@@ -1019,70 +1071,79 @@ async function render(): Promise<void> {
     )
   )
 
-  body.appendChild(
-    section(
-      'Movement breaks',
-      field(
-        'Remind me to get up',
-        'After a stretch at the machine the app is covered by a short break with an exercise to ' +
-          'do, standing or seated. Counted only while you are actually at the computer — any ' +
-          'keyboard or mouse, in any program — and walking away for as long as a break counts ' +
-          'as one. Skipping means typing a sentence; there is no button for it.',
-        toggle(s.moveBreaks !== false, (v) => patch({ moveBreaks: v }))
-      ),
-      field(
-        'Every',
-        'Minutes at the machine between breaks. 25 by default; research on breaking up sitting ' +
-          'found 5 minutes of moving every half hour made the difference.',
-        number(s.moveEveryMin ?? 25, 5, 240, (v) => patch({ moveEveryMin: v }))
-      ),
-      field(
-        'Break length',
-        'Minutes. One exercise for each.',
-        number(s.moveBreakMin ?? 5, 1, 30, (v) => patch({ moveBreakMin: v }))
-      )
-    )
-  )
-
+  // ------------------------------------------------------- breaks and exercise
+  //
+  // One heading, with the main switch on it and everything else folded away
+  // underneath: timing, equipment and what to spare are seventeen switches
+  // that are set once, and laid out flat they were a third of the panel.
   // Two lists of switches rather than a free-text box: each one decides
   // exactly which exercises can come up, and a list says what the choices are.
   const pick = (list: readonly string[], id: string, on: boolean) =>
     on ? [...list.filter((x) => x !== id), id] : list.filter((x) => x !== id)
   body.appendChild(
     section(
-      'Movement breaks \u2014 what you have',
+      'Breaks and exercise',
       field(
-        'Equipment',
-        'Exercises that need something are only suggested if you have it, and then one minute of ' +
-          'every break uses it. Everything else needs only you.',
-        document.createTextNode('')
+        'Remind me to get up',
+        'After a stretch at the machine the app is covered by a short break with an exercise to ' +
+          'do, standing or seated. Counted only while you are actually at the computer \u2014 any ' +
+          'keyboard or mouse, in any program \u2014 and walking away for as long as a break counts ' +
+          'as one. Skipping means typing a sentence; there is no button for it.',
+        toggle(s.moveBreaks !== false, (v) => patch({ moveBreaks: v }))
       ),
-      ...EQUIPMENT.map((item) =>
+      subsection(
+        'Exercise options',
+        'how often, how long, equipment, what to go easy on',
+        subheading('Timing'),
         field(
-          item.label,
-          '',
-          toggle((s.moveEquipment ?? []).includes(item.id), (v) =>
-            patch({ moveEquipment: pick(store.settings.moveEquipment ?? [], item.id, v) })
+          'Every',
+          'Minutes at the machine between breaks. 25 by default; research on breaking up sitting ' +
+            'found 5 minutes of moving every half hour made the difference.',
+          number(s.moveEveryMin ?? 25, 5, 240, (v) => patch({ moveEveryMin: v }))
+        ),
+        field(
+          'Wait for a pause, up to',
+          'Minutes. Once a break is due it waits until you stop — 20 seconds without typing, ' +
+            'switching workspace, leaving the app — so it does not cut into the middle of a ' +
+            'thought. After this long it comes anyway. 0 brings it on time.',
+          number(s.moveWaitMin ?? 20, 0, 120, (v) => patch({ moveWaitMin: v }))
+        ),
+        field(
+          'Break length',
+          'Minutes of the one exercise, counted down on screen.',
+          number(s.moveBreakMin ?? 5, 1, 30, (v) => patch({ moveBreakMin: v }))
+        ),
+        field(
+          'Sound when the break is over',
+          'The notification sound, at its volume \u2014 set under Notifications.',
+          toggle(s.moveSound !== false, (v) => patch({ moveSound: v }))
+        ),
+        subheading(
+          'Equipment you have',
+          'Exercises that need something are only suggested if you have it, and then one minute of ' +
+            'every break uses it. Everything else needs only you.'
+        ),
+        ...EQUIPMENT.map((item) =>
+          field(
+            item.label,
+            '',
+            toggle((s.moveEquipment ?? []).includes(item.id), (v) =>
+              patch({ moveEquipment: pick(store.settings.moveEquipment ?? [], item.id, v) })
+            )
           )
-        )
-      )
-    )
-  )
-  body.appendChild(
-    section(
-      'Movement breaks \u2014 go easy on',
-      field(
-        'Leave out exercises that load',
-        'For a bad knee, a sore back, a wrist that does not like weight. Anything that works the part ' +
-          'you switch on here is never suggested; the walk and resting your eyes are always left.',
-        document.createTextNode('')
-      ),
-      ...STRAINS.map((item) =>
-        field(
-          item.label,
-          '',
-          toggle((s.moveAvoid ?? []).includes(item.id), (v) =>
-            patch({ moveAvoid: pick(store.settings.moveAvoid ?? [], item.id, v) })
+        ),
+        subheading(
+          'Go easy on',
+          'For a bad knee, a sore back, a wrist that does not like weight. Anything that works a part ' +
+            'switched on here is never suggested; the walk and resting your eyes are always left.'
+        ),
+        ...STRAINS.map((item) =>
+          field(
+            item.label,
+            '',
+            toggle((s.moveAvoid ?? []).includes(item.id), (v) =>
+              patch({ moveAvoid: pick(store.settings.moveAvoid ?? [], item.id, v) })
+            )
           )
         )
       )

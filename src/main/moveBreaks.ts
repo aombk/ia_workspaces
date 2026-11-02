@@ -20,7 +20,7 @@ import {
   type BreakSettings,
   type BreakState,
 } from '../shared/moveBreaks'
-import { pickRoutine } from '../shared/exercises'
+import { pickChoices } from '../shared/exercises'
 
 /** How often the idle time is read. A break owed is raised within this of being owed. */
 const TICK_MS = 10_000
@@ -29,7 +29,8 @@ const KEEP_DAYS = 14
 
 export class MoveBreaks {
   private readonly clock = new BreakClock(
-    (posture, count, settings) => pickRoutine(posture, count, { equipment: settings.equipment, avoid: settings.avoid }),
+    (posture, settings) =>
+      pickChoices(posture, { equipment: settings.equipment, avoid: settings.avoid }, Math.random, this.records.at(-1)?.exercise),
     randomUUID
   )
   private timer: ReturnType<typeof setInterval> | null = null
@@ -74,16 +75,20 @@ export class MoveBreaks {
     if (result.raised) this.raised()
   }
 
-  choose(posture: BreakPosture): void {
-    if (this.clock.choose(Date.now(), posture)) this.publish(this.clock.state())
-  }
-
   finish(outcome: BreakOutcome): boolean {
     const record = this.clock.finish(Date.now(), outcome)
     if (!record) return false
     this.remember(record)
     this.publish(this.clock.state())
     return true
+  }
+
+  lean(posture: BreakPosture): void {
+    if (this.clock.lean(posture)) this.publish(this.clock.state())
+  }
+
+  another(): void {
+    if (this.clock.another()) this.publish(this.clock.state())
   }
 
   snooze(): boolean {
@@ -95,6 +100,13 @@ export class MoveBreaks {
   now(): void {
     this.clock.raiseNow(Date.now())
     this.publish(this.clock.state())
+  }
+
+  /** You stopped: a break waiting for a pause comes up. */
+  pause(): void {
+    if (!this.clock.pause(Date.now())) return
+    this.publish(this.clock.state())
+    this.raised()
   }
 
   today(): BreakRecord[] {
