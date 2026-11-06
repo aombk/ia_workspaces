@@ -1448,7 +1448,7 @@ export class PtyManager {
    * synchronous and writes what it produced. See `spawn` for why that ordering
    * is not a style preference.
    */
-  private async prepareReplay(paneId: string): Promise<string | null> {
+  private async prepareReplay(paneId: string): Promise<{ screen: string; rows: number } | null> {
     const saved = this.deps.scrollback.read(paneId)
     if (!saved) return null
 
@@ -1457,11 +1457,21 @@ export class PtyManager {
     // is then used as it stands: it looks worse and is exactly as safe, which is
     // the right way round for a fallback.
     const rendered = await renderReplay(saved.data, saved.cols, saved.rows)
-    return rendered ?? stripInteractive(saved.data)
+    return { screen: rendered ?? stripInteractive(saved.data), rows: saved.rows ?? 0 }
   }
 
-  private emitReplay(paneId: string, screen: string | null, rows: number): void {
-    if (screen === null) return
+  private emitReplay(paneId: string, replay: { screen: string; rows: number } | null, spawnRows: number): void {
+    if (replay === null) return
+    const screen = replay.screen
+    // The padding has to clear the pane as it will be, not as it was measured
+    // at the spawn. At start-up those differ: a pane can be spawned at the size
+    // it had before the layout settled — the default 24 rows, the window not
+    // yet maximised — and grow a moment later. Padded for 24 in a pane that is
+    // 45 tall, the bottom of the restored screen stayed in the viewport, ConPTY
+    // homed onto it, and the new prompt was printed over the old output. The
+    // pane's size at the end of the last session is the size it comes back at,
+    // so the larger of the two is padded for.
+    const rows = Math.max(spawnRows, replay.rows)
     // Only now, because only now has the pane taken ownership of it. A spawn
     // that reattached instead never reaches here and leaves the file alone.
     this.deps.scrollback.consume(paneId)

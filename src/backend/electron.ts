@@ -50,6 +50,7 @@ export function createElectronBackend(): Backend {
       now: () => api.breaks.now(),
       today: () => api.breaks.today(),
       pause: () => api.breaks.pause(),
+      phoneTest: (target) => api.breaks.phoneTest(target),
     },
 
     powerLock: () => api.powerLock(),

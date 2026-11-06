@@ -36,6 +36,8 @@ import {
 } from '../shared/types'
 import { jsonEqual, merge3 } from '../shared/merge3'
 import { homeOfWorkspace, MAIN_WINDOW, ownerOfTab } from '../shared/windowLayout'
+import { makePreset, presetTabs, readPresets, type WorkspacePreset } from '../shared/workspacePreset'
+import { fadedMinutes, sortSiblings, usagePlaces, WORKSPACE_ORDERS, type WorkspaceUsage } from '../shared/workspaceUsage'
 
 import { parseWslPath, toWslSharePath } from '../shared/wsl'
 import { fallbackCwd } from '../shared/platform'
@@ -257,6 +259,71 @@ class WorkspaceState {
     // stand-in for `window`, which has timers and nothing else.
     window.addEventListener?.('pagehide', () => this.flushNow())
     ;(window as unknown as { __iawFlushState?: () => void }).__iawFlushState = () => this.flushNow()
+    this.watchOrder()
+  }
+
+  // ------------------------------------------------------------------ usage
+
+  private orderedAt = 0
+
+  /**
+   * Sorts the list at start, and again on coming back to the app after half a
+   * day away — the one moment it may move while the app runs, before
+   * anything on it is being reached for.
+   */
+  private watchOrder(): void {
+    if (this.isOverview) return
+    window.addEventListener?.('focus', () => {
+      if (Date.now() - this.orderedAt > 12 * 3_600_000) void this.reorder()
+    })
+    void this.reorder()
+  }
+
+  /**
+   * Works the sorted order out again: the places by use, or the folder sizes.
+   * Only when this is called does anything move — at start, on changing the
+   * order or the half-life, and on coming back to the app after half a day.
+   * By name needs nothing worked out, and manual is yours.
+   *
+   * The main window's job: it writes what the order is decided by and every
+   * window sorts by that, so two windows cannot disagree about the order.
+   */
+  async reorder(): Promise<void> {
+    if (this.windowId !== MAIN_WINDOW || this.isOverview) return
+    const order = this.data.settings.workspaceOrder
+    if (order !== 'use' && order !== 'size') return
+    this.orderedAt = Date.now()
+    let changed = false
+    if (order === 'use') {
+      // The time log's spans, read fresh: it is where the hours already are.
+      const spans = await backend().timeSpans?.().catch(() => null)
+      if (!spans) return
+      const minutes = fadedMinutes(spans, this.orderedAt, this.data.settings.workspaceHalfLifeDays)
+      const places = usagePlaces(this.data.workspaces, minutes)
+      for (const w of this.data.workspaces) {
+        const place = places.get(w.id)
+        if (place === undefined || w.usage?.place === place) continue
+        w.usage = { ...w.usage, place }
+        changed = true
+      }
+    } else {
+      // One folder at a time: a big tree is a lot of disk to walk, and the
+      // app is starting up while this runs.
+      const measured = new Map<string, number>()
+      for (const w of [...this.data.workspaces]) {
+        if (w.sshHost || !w.cwd) continue
+        const bytes = await backend().space?.dirSize(w.cwd).catch(() => undefined)
+        if (typeof bytes === 'number') measured.set(w.id, bytes)
+      }
+      // Laid on the document as it is now, which may have moved on while the folders were walked.
+      for (const w of this.data.workspaces) {
+        const bytes = measured.get(w.id)
+        if (bytes === undefined || w.usage?.bytes === bytes) continue
+        w.usage = { ...w.usage, bytes }
+        changed = true
+      }
+    }
+    if (changed) this.commit()
   }
 
   // ---------------------------------------------------------------- windows
@@ -887,6 +954,11 @@ class WorkspaceState {
       else byParent.set(key, [w])
     }
 
+    const order = this.data.settings.workspaceOrder
+    if (order !== 'manual') {
+      for (const [key, group] of byParent) byParent.set(key, sortSiblings(group, order))
+    }
+
     const rows: SidebarRow[] = []
     const walk = (parentId: string | null, depth: number): void => {
       for (const workspace of byParent.get(parentId) ?? []) {
@@ -1080,6 +1152,144 @@ class WorkspaceState {
     }
     this.commit()
     return removed.tabs.flatMap((t) => t.panes.map((p) => p.id))
+  }
+
+  /**
+   * Moves a workspace beside one of its siblings, by hand, in whatever order the
+   * list is in.
+   *
+   * Manual: moved in the list itself. By use: the sibling group's places are
+   * rewritten in the new order, so it stays there until how much each is used
+   * clearly says otherwise (see `usagePlaces`); dropped among ones pinned to
+   * the top or bottom, it is pinned with them. By name or size there is no
+   * place to give it, and nothing happens.
+   */
+  placeWorkspaceBeside(workspaceId: string, ontoId: string, after: boolean): void {
+    const order = this.data.settings.workspaceOrder
+    const moved = this.data.workspaces.find((w) => w.id === workspaceId)
+    const onto = this.data.workspaces.find((w) => w.id === ontoId)
+    if (!moved || !onto || moved === onto || (moved.parentId ?? null) !== (onto.parentId ?? null)) return
+    if (order === 'manual') {
+      const from = this.data.workspaces.indexOf(moved)
+      const at = this.data.workspaces.indexOf(onto)
+      let to = at + (after ? 1 : 0)
+      if (from < to) to -= 1
+      this.moveWorkspace(from, to)
+      return
+    }
+    if (order !== 'use') return
+    const group = sortSiblings(this.siblingsOf(moved), 'use').filter((w) => w !== moved)
+    const at = group.indexOf(onto) + (after ? 1 : 0)
+    group.splice(at, 0, moved)
+    const above = group[at - 1]?.usage?.pin
+    const below = group[at + 1]?.usage?.pin
+    const pin = above === 'top' ? 'top' : below === 'bottom' ? 'bottom' : undefined
+    moved.usage = { ...moved.usage, pin }
+    if (!pin) delete moved.usage.pin
+    group.forEach((w, i) => {
+      w.usage = { ...w.usage, place: i }
+    })
+    this.commit()
+  }
+
+  /**
+   * To the top or bottom of its siblings. In a sorted order it stays there
+   * (`usage.pin`) until let go with `unpinWorkspace`; in the manual order it is
+   * simply moved there.
+   */
+  sendWorkspace(workspaceId: string, where: 'top' | 'bottom'): void {
+    const w = this.data.workspaces.find((x) => x.id === workspaceId)
+    if (!w) return
+    const order = this.data.settings.workspaceOrder
+    if (order === 'manual') {
+      const siblings = this.siblingsOf(w).filter((x) => x !== w)
+      const edge = where === 'top' ? siblings[0] : siblings.at(-1)
+      if (edge) this.placeWorkspaceBeside(workspaceId, edge.id, where === 'bottom')
+      return
+    }
+    const group = sortSiblings(this.siblingsOf(w), order).filter((x) => x !== w && x.usage?.pin === where)
+    // Below the ones already sent to the top, above the ones already sent to the bottom.
+    const list = where === 'top' ? [...group, w] : [w, ...group]
+    w.usage = { ...w.usage, pin: where }
+    if (order === 'use') {
+      const all = sortSiblings(this.siblingsOf(w), 'use').filter((x) => !list.includes(x))
+      const merged = where === 'top' ? [...list, ...all] : [...all, ...list]
+      merged.forEach((x, i) => {
+        x.usage = { ...x.usage, place: i }
+      })
+    }
+    this.commit()
+  }
+
+  /** Lets a workspace sent to the top or bottom be sorted again. */
+  unpinWorkspace(workspaceId: string): void {
+    const w = this.data.workspaces.find((x) => x.id === workspaceId)
+    if (!w?.usage?.pin) return
+    w.usage = { ...w.usage }
+    delete w.usage.pin
+    this.commit()
+    void this.reorder()
+  }
+
+  // ---------------------------------------------------------------- presets
+
+  get presets(): WorkspacePreset[] {
+    return this.data.settings.workspacePresets
+  }
+
+  /** The workspace's tabs saved as a preset, replacing one of the same name. */
+  savePreset(workspaceId: string, name: string): boolean {
+    const w = this.data.workspaces.find((x) => x.id === workspaceId)
+    if (!w || !name.trim()) return false
+    const preset = makePreset(name.trim(), w)
+    const list = this.data.settings.workspacePresets.filter((p) => p.name !== preset.name)
+    this.data.settings = { ...this.data.settings, workspacePresets: [...list, preset] }
+    this.commit()
+    return true
+  }
+
+  deletePreset(name: string): void {
+    const s = this.data.settings
+    this.data.settings = {
+      ...s,
+      workspacePresets: s.workspacePresets.filter((p) => p.name !== name),
+      newWorkspacePreset: s.newWorkspacePreset === name ? '' : s.newWorkspacePreset,
+    }
+    this.commit()
+  }
+
+  setNewWorkspacePreset(name: string): void {
+    this.data.settings = { ...this.data.settings, newWorkspacePreset: name }
+    this.commit()
+  }
+
+  /**
+   * A preset's tabs added to a workspace, in its folder, the first of them
+   * shown. Added beside what is there rather than replacing it: nothing
+   * running is closed by loading a layout.
+   */
+  applyPreset(workspaceId: string, name: string): boolean {
+    const w = this.data.workspaces.find((x) => x.id === workspaceId)
+    const preset = this.data.settings.workspacePresets.find((p) => p.name === name)
+    if (!w || !preset) return false
+    const tabs = presetTabs(preset, w.cwd, () => crypto.randomUUID())
+    if (!tabs.length) return false
+    // Opened here, so shown here — as `pushTab` does.
+    const target = this.tabsGoTo ?? this.windowId
+    if (target !== MAIN_WINDOW) for (const t of tabs) t.windowId = target
+    w.tabs.push(...tabs)
+    w.activeTabId = tabs[0].id
+    if (preset.treeVisible) w.treeVisible = true
+    this.commit()
+    return true
+  }
+
+  /** The workspaces with the same parent as `w`, itself included, in the list's own order. */
+  private siblingsOf(w: Workspace): Workspace[] {
+    const ids = new Set(this.data.workspaces.map((x) => x.id))
+    const parentOf = (x: Workspace) => (x.parentId && ids.has(x.parentId) ? x.parentId : null)
+    const parent = parentOf(w)
+    return this.data.workspaces.filter((x) => parentOf(x) === parent)
   }
 
   moveWorkspace(from: number, to: number): void {
@@ -1966,7 +2176,31 @@ class WorkspaceState {
     }
     if (this.attention.has(paneId)) return
     this.attention.add(paneId)
+    this.attentionSince.set(paneId, Date.now())
     this.emit()
+  }
+
+  /**
+   * When each notice arrived, so the sidebar can blink faster the longer one
+   * has been waiting. Only read for panes still in `attention`, so an entry
+   * left behind when a notice is cleared is harmless, and is overwritten the
+   * next time that pane finishes.
+   */
+  private readonly attentionSince = new Map<string, number>()
+
+  /** When the oldest unseen notice in this workspace arrived, or null if it has none. */
+  workspaceNoticeSince(workspaceId: string, includeSubtree = false): number | null {
+    const ids = includeSubtree ? this.subtreeOf(workspaceId).map((w) => w.id) : [workspaceId]
+    let oldest: number | null = null
+    for (const id of ids) {
+      const w = this.data.workspaces.find((x) => x.id === id)
+      for (const p of w?.tabs.flatMap((t) => t.panes) ?? []) {
+        if (!this.attention.has(p.id)) continue
+        const since = this.attentionSince.get(p.id) ?? Date.now()
+        if (oldest === null || since < oldest) oldest = since
+      }
+    }
+    return oldest
   }
 
   clearAttention(paneId: string): void {
@@ -2118,8 +2352,13 @@ class WorkspaceState {
   // --------------------------------------------------------------- settings
 
   updateSettings(patch: Partial<Settings>): void {
+    const before = this.data.settings
     this.data.settings = { ...this.data.settings, ...patch }
     this.commit()
+    const after = this.data.settings
+    if (after.workspaceOrder !== before.workspaceOrder || after.workspaceHalfLifeDays !== before.workspaceHalfLifeDays) {
+      void this.reorder()
+    }
   }
 
   updateNotifications(patch: Partial<Settings['notifications']>): void {
@@ -2527,6 +2766,23 @@ function normalize(raw: unknown): PersistedState {
   if (settings.gitFileOrder !== 'name' && settings.gitFileOrder !== 'size') {
     settings.gitFileOrder = DEFAULT_SETTINGS.gitFileOrder
   }
+  // The switch this replaced, from a build that only had sorting by use.
+  const legacySort = (settings as { sortWorkspacesByUse?: unknown }).sortWorkspacesByUse
+  delete (settings as { sortWorkspacesByUse?: unknown }).sortWorkspacesByUse
+  if (!WORKSPACE_ORDERS.includes(settings.workspaceOrder)) {
+    settings.workspaceOrder = legacySort === true ? 'use' : DEFAULT_SETTINGS.workspaceOrder
+  }
+  {
+    const days = Number(settings.workspaceHalfLifeDays)
+    settings.workspaceHalfLifeDays = Number.isFinite(days)
+      ? Math.min(365, Math.max(1, Math.round(days)))
+      : DEFAULT_SETTINGS.workspaceHalfLifeDays
+  }
+
+  settings.workspacePresets = readPresets(settings.workspacePresets)
+  if (typeof settings.newWorkspacePreset !== 'string' || !settings.workspacePresets.some((p) => p.name === settings.newWorkspacePreset)) {
+    settings.newWorkspacePreset = ''
+  }
 
   // The shared folder was `tokenShareDir` while token totals were the only
   // thing written into it. Relay writes there too now, so the key says what it
@@ -2671,6 +2927,7 @@ function normalize(raw: unknown): PersistedState {
           : undefined,
       color: String(rawWorkspace.color ?? WORKSPACE_COLORS[index % WORKSPACE_COLORS.length]),
       apps: readApps(rawWorkspace.apps),
+      usage: readUsage(rawWorkspace.usage),
       ...(typeof rawWorkspace.windowId === 'string' && rawWorkspace.windowId
         ? { windowId: rawWorkspace.windowId }
         : {}),
@@ -2791,6 +3048,21 @@ function pruneLayout(node: PaneNode | undefined, known: Set<string>): PaneNode |
  * none of them — a document that could run a program by being opened is a
  * document worth being afraid of. Every launch is a menu item somebody clicked.
  */
+function readUsage(raw: unknown): WorkspaceUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const u = raw as Record<string, unknown>
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+  const place = num(u.place)
+  const bytes = num(u.bytes)
+  const pin = u.pin === 'top' || u.pin === 'bottom' ? u.pin : undefined
+  if (place === undefined && bytes === undefined && !pin) return undefined
+  return {
+    ...(place === undefined ? {} : { place }),
+    ...(bytes === undefined ? {} : { bytes }),
+    ...(pin ? { pin } : {}),
+  }
+}
+
 function readApps(raw: unknown): ExternalApp[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const apps: ExternalApp[] = []

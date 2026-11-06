@@ -407,6 +407,7 @@ const api = {
     now: (): Promise<void> => ipcRenderer.invoke(IPC.breaksNow),
     today: (): Promise<BreakRecord[]> => ipcRenderer.invoke(IPC.breaksToday),
     pause: (): Promise<void> => ipcRenderer.invoke(IPC.breaksPause),
+    phoneTest: (target: string): Promise<string | null> => ipcRenderer.invoke(IPC.breaksPhoneTest, target),
   },
 
   window: {

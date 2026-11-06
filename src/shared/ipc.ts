@@ -189,6 +189,7 @@ export const IPC = {
   breaksNow: 'breaks:now',
   breaksToday: 'breaks:today',
   breaksPause: 'breaks:pause',
+  breaksPhoneTest: 'breaks:phoneTest',
 
   // main -> renderer (send)
   onPtyData: 'pty:data',

@@ -58,6 +58,8 @@ import { registerDocumentScheme, serveDocuments } from './docProtocol'
 import { registerMediaScheme, serveMedia } from './mediaProtocol'
 import { PowerLock } from './powerLock'
 import { MoveBreaks } from './moveBreaks'
+import { BreakBuzz } from './breakBuzz'
+import { sendNtfy } from '../shared/phoneNotify'
 import { readBreakSettings } from '../shared/moveBreaks'
 import {
   readDirectory,
@@ -1401,6 +1403,13 @@ function bootApp(): void {
     handle(IPC.breaksNow, () => moveBreaks?.now())
     handle(IPC.breaksToday, () => moveBreaks?.today() ?? [])
     handle(IPC.breaksPause, () => moveBreaks?.pause())
+    handle(IPC.breaksPhoneTest, (_e, target: unknown) =>
+      sendNtfy(typeof target === 'string' ? target : '', {
+        title: 'ia_workspaces',
+        body: 'Test: breaks will buzz here.',
+        tags: ['bell'],
+      })
+    )
 
     // Your answer to "may this pane act on that one". Ignored for an id that is
     // not waiting — a stale or forged answer has nothing to settle.
@@ -2256,10 +2265,18 @@ function bootApp(): void {
 
     // Every window covers itself when a break is up; the notification is for
     // when none of them is in front of you, which is most of the time.
+    const setting = (v: unknown) => (typeof v === 'string' ? v : '')
+    const buzz = new BreakBuzz(
+      () => setting(store.settings.movePhoneNtfy),
+      () => setting(store.settings.movePhoneNtfyEnd)
+    )
     moveBreaks = new MoveBreaks(
       SHARED_DATA_DIR,
       () => readBreakSettings(store.settings),
-      (state) => windows.broadcast(IPC.onBreaks, state),
+      (state) => {
+        buzz.update(state)
+        windows.broadcast(IPC.onBreaks, state)
+      },
       () => {
         if (Notification.isSupported()) {
           new Notification({ title: 'Time to get up', body: 'A few minutes of moving — ia_workspaces has an exercise for you.' }).show()

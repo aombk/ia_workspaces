@@ -183,7 +183,7 @@ function running(): HTMLElement[] {
   const choices = el('div', 'break-choices')
   const done = el('button', 'btn break-big break-primary', 'Done \u2014 back to work')
   done.id = 'break-done'
-  done.hidden = true
+  done.style.visibility = 'hidden'
   done.addEventListener('click', () => void backend().breaks?.finish(state?.due?.posture === 'seated' ? 'seated' : 'done'))
   choices.appendChild(done)
   const other = anotherButton()
@@ -259,18 +259,31 @@ function updateRunning(): void {
   const left = Math.max(0, state.settings.breakMin * 60_000 - (Date.now() - due.startedAt))
   const finished = left === 0
   const current = exercise(currentExercise(due) ?? '')
+  // Nothing on the screen moves when the countdown ends: the shorter text keeps
+  // the height the exercise's had, and what goes away is made invisible rather
+  // than removed, so the figure and the clock stay exactly where they were.
+  if (finished) {
+    for (const id of ['break-name', 'break-how']) {
+      const node = document.getElementById(id)
+      if (node && !node.style.minHeight) node.style.minHeight = `${node.offsetHeight}px`
+    }
+  }
   setText('break-name', finished ? 'Welcome back' : (current?.name ?? ''))
   setText('break-how', finished ? 'Sit down, take a breath, carry on.' : (current?.how ?? ''))
   setText('break-clock', finished ? '0:00' : clockText(left))
-  const done = document.getElementById('break-done')
-  if (done) done.hidden = !finished
   if (finished) chime(due.id)
-  const another = document.getElementById('break-another')
-  if (another) another.hidden = finished
-  // Over: putting it off or skipping it means nothing any more.
-  for (const id of ['break-swap', 'break-outs', 'break-step']) {
+  // Done takes Another's place — the two share one spot, see .break-choices.
+  // Over, putting it off or skipping it means nothing any more.
+  const shown: Array<[string, boolean]> = [
+    ['break-done', finished],
+    ['break-another', !finished],
+    ['break-swap', !finished],
+    ['break-outs', !finished],
+    ['break-step', !finished],
+  ]
+  for (const [id, show] of shown) {
     const node = document.getElementById(id)
-    if (node) node.hidden = finished
+    if (node) node.style.visibility = show ? '' : 'hidden'
   }
   if (finished) figure?.stop()
 }

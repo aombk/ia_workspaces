@@ -515,6 +515,68 @@ html.mac-caption .titlebar-drag {
 }
 
 /*
+ * Left waiting, the breathing turns into a double flash: two quick fades out
+ * and back (about 150ms each way), then stillness. A sudden movement after a
+ * pause is what the corner of the eye catches; a steady throb, however fast,
+ * becomes background again. After a couple of minutes the pair comes every
+ * 3.6s; after ten, every 1.8s, and the row's edge flashes with it in the
+ * workspace's own colour so it is never mistaken for a question's red. The
+ * cycle lengths are mirrored by `NOTICE_STEPS` in sidebar.ts.
+ */
+.workspace.has-attention.notice-step-1 .workspace-dot {
+  animation: flash-twice-slow 3.6s ease-in-out infinite;
+}
+
+.workspace.has-attention.notice-step-2 .workspace-dot {
+  animation: flash-twice 1.8s ease-in-out infinite;
+}
+
+.workspace.has-attention.notice-step-2 {
+  animation: flash-twice-edge 1.8s ease-in-out infinite;
+}
+
+/* 3.6s: each fade 150ms ≈ 4.2%, the pair over in 0.6s, then 3s still. */
+@keyframes flash-twice-slow {
+  0%,
+  8.4%,
+  16.8%,
+  100% {
+    opacity: 1;
+  }
+  4.2%,
+  12.6% {
+    opacity: 0.08;
+  }
+}
+
+/* 1.8s: each fade 150ms ≈ 8.3%, the pair over in 0.6s, then 1.2s still. */
+@keyframes flash-twice {
+  0%,
+  16.7%,
+  33.3%,
+  100% {
+    opacity: 1;
+  }
+  8.3%,
+  25% {
+    opacity: 0.08;
+  }
+}
+
+@keyframes flash-twice-edge {
+  0%,
+  16.7%,
+  33.3%,
+  100% {
+    box-shadow: inset 2px 0 0 var(--workspace-color, var(--accent));
+  }
+  8.3%,
+  25% {
+    box-shadow: inset 2px 0 0 transparent;
+  }
+}
+
+/*
  * Slow, and no halo.
  *
  * A blink is noticed by moving, not by being bright, and a 1.1s throb with a
@@ -10693,11 +10755,17 @@ body.monitor-dragging .monitor-dock__body {
   font-size: calc(13px * var(--ui-text, 1));
 }
 
+/* Done and Another exercise in one spot, stacked: the row is as big as the
+   bigger of the two whichever is showing, so swapping them at the end of the
+   countdown moves nothing. */
 .break-choices {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
+  display: grid;
+  justify-items: center;
+  align-items: center;
+}
+
+.break-choices > * {
+  grid-area: 1 / 1;
 }
 
 .break-big {

@@ -193,6 +193,8 @@ export interface BreaksBackend {
   today(): Promise<BreakRecord[]>
   /** You stopped — switched workspace. A break waiting for a pause comes up. */
   pause(): Promise<void>
+  /** A test notification to the phone through ntfy. Null when it was accepted, or why not. */
+  phoneTest?(target: string): Promise<string | null>
 }
 
 export interface Backend {

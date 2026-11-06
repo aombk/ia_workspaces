@@ -1072,3 +1072,39 @@ export function pickChoices(
   }
   return previous && list.includes(previous) ? [...list.filter((id) => id !== previous), previous] : list
 }
+
+/**
+ * The exercises in rounds, like a shuffled deck: every one that suits you comes
+ * up once, in a random order, before any comes up again, and when the round is
+ * used up a new one is shuffled.
+ *
+ * `round` is what is still to come this round, in order, and is kept by the
+ * caller between breaks; an exercise leaves it when a break with it ends (see
+ * `playedInRound`), not when it is offered, so one put off with "not now" or
+ * passed over with "another exercise" still comes up later in the round. What
+ * no longer suits you is dropped from it, and what newly does waits for the
+ * next round. A new round never starts with `previous`, so the turn of a round
+ * cannot repeat the exercise just done.
+ *
+ * Returns the break's list (the rest of the round first, so "another exercise"
+ * walks through what has not been done yet, then the round's done ones) and
+ * the round to keep.
+ */
+export function dealChoices(
+  posture: BreakPosture,
+  filter: RoutineFilter,
+  round: readonly string[],
+  random: () => number = Math.random,
+  previous?: string
+): { choices: string[]; round: string[] } {
+  const suitable = pickChoices(posture, filter, random)
+  let rest = round.filter((id) => suitable.includes(id))
+  if (!rest.length) rest = pickChoices(posture, filter, random, previous)
+  const done = suitable.filter((id) => !rest.includes(id))
+  return { choices: [...rest, ...done], round: rest }
+}
+
+/** The round with `played` taken out of it, after a break with it ended. */
+export function playedInRound(round: readonly string[], played: string | undefined): string[] {
+  return round.filter((id) => id !== played)
+}

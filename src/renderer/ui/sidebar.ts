@@ -1,7 +1,7 @@
 import { backend } from '../../backend'
 import { revealLabel } from '../../shared/fileManager'
 import { store, type SidebarRow } from '../state'
-import { NESTING_GLYPHS, WORKSPACE_COLORS } from '../../shared/types'
+import { NESTING_GLYPHS, WORKSPACE_COLORS, type Workspace } from '../../shared/types'
 import { showContextMenu, type MenuEntry } from './contextMenu'
 import { promptDialog } from './confirm'
 import { showToast } from './toast'
@@ -204,6 +204,7 @@ export function renderSidebar(): void {
       )
     : null
   const rowsShown = store.sidebarRows(store.state.sidebarCollapsed)
+  nextNoticeStep = Infinity
   // One row is reachable with Tab and the arrows move between them: the one
   // with the focus if a row has it, otherwise the workspace on screen.
   const roving =
@@ -227,7 +228,32 @@ export function renderSidebar(): void {
 
   replaceChildrenKeeping(list, rows, editing)
   restoreFocus(list, 'data-workspace-id', focus)
+
+  // Nothing in the store changes when a notice crosses into its next step, so
+  // the list asks to be redrawn at that moment itself.
+  clearTimeout(noticeTimer)
+  if (nextNoticeStep < Infinity) {
+    noticeTimer = setTimeout(renderSidebar, Math.max(1000, nextNoticeStep - Date.now() + 50))
+  }
 }
+
+/**
+ * A finished workspace gets louder the longer it goes unvisited: the slow
+ * breathing is right while you are still nearby, and too easy to stop seeing
+ * once it has been waiting a while, so it turns into a quick double fade and a
+ * pause, the pause shortening at the last step. Fades, never a hard on/off.
+ * `ms` is one whole cycle and must match `.notice-step-*` in styles.css.
+ * Visiting the workspace clears the notice, and with it the step.
+ */
+const NOTICE_STEPS = [
+  { after: 0, ms: 2200 },
+  { after: 2 * 60_000, ms: 3600 },
+  { after: 10 * 60_000, ms: 1800 },
+]
+
+/** When the next row moves up a step, so the list is redrawn then. */
+let nextNoticeStep = Infinity
+let noticeTimer: ReturnType<typeof setTimeout> | undefined
 
 /** One turn of the working spinner. Must match `.workspace-working` in styles.css. */
 const WORKING_SPIN_MS = 900
@@ -310,6 +336,20 @@ ${workspace.cwd}`
     : hasAttention
       ? 'A terminal in here needs attention'
       : ''
+  if (hasAttention) {
+    // The longer it has waited, the faster and deeper it fades — see
+    // `NOTICE_STEPS`. Phased off the clock like the spinner, so a rebuild does
+    // not restart the fade.
+    const since = store.workspaceNoticeSince(workspace.id, workspace.collapsed) ?? Date.now()
+    const waited = Date.now() - since
+    const step = NOTICE_STEPS.reduce((at, s, i) => (waited >= s.after ? i : at), 0)
+    const next = NOTICE_STEPS[step + 1]
+    if (next) nextNoticeStep = Math.min(nextNoticeStep, since + next.after)
+    if (step > 0) el.classList.add(`notice-step-${step}`)
+    const phase = `-${Date.now() % NOTICE_STEPS[step].ms}ms`
+    dot.style.animationDelay = phase
+    el.style.animationDelay = phase
+  }
   el.appendChild(dot)
 
   if (renaming === workspace.id) {
@@ -563,13 +603,10 @@ function wireDragAndDrop(row: HTMLElement): void {
     }
 
     // Reordering as a sibling means adopting the target's parent, then moving.
+    // Sorted by use, the drop rewrites the places, and it holds until use
+    // clearly says otherwise; by name or size only the parent changes.
     store.setWorkspaceParent(moved, onto.parentId ?? null)
-    const from = store.workspaces.findIndex((w) => w.id === moved)
-    const at = store.workspaces.findIndex((w) => w.id === ontoId)
-    if (from === -1 || at === -1) return
-    let to = at + (offset >= 0.75 ? 1 : 0)
-    if (from < to) to -= 1
-    store.moveWorkspace(from, to)
+    store.placeWorkspaceBeside(moved, ontoId, offset >= 0.75)
   })
 }
 
@@ -745,93 +782,77 @@ function windowEntries(workspaceId: string): MenuEntry[] {
   ]
 }
 
+/**
+ * Presets: the tabs you set up in every new workspace, saved once and laid out
+ * again in any workspace, folders relative to its own. See
+ * `shared/workspacePreset.ts`.
+ */
+function presetsMenu(workspaceId: string): MenuEntry {
+  const presets = store.presets
+  const starting = store.settings.newWorkspacePreset
+  return {
+    label: 'Presets',
+    submenu: [
+      ...presets.map((p) => ({
+        label: `Load "${p.name}"`,
+        onClick: () => actions.loadPreset(workspaceId, p.name),
+      })),
+      ...(presets.length ? (['separator'] as MenuEntry[]) : []),
+      { label: 'Save tabs as preset…', onClick: () => actions.savePreset(workspaceId) },
+      ...(presets.length
+        ? [
+            {
+              label: 'New workspaces start with',
+              submenu: [
+                { label: 'One terminal', checked: !starting, onClick: () => store.setNewWorkspacePreset('') },
+                ...presets.map((p) => ({
+                  label: p.name,
+                  checked: starting === p.name,
+                  onClick: () => store.setNewWorkspacePreset(p.name),
+                })),
+              ],
+            },
+            {
+              label: 'Delete preset',
+              submenu: presets.map((p) => ({
+                label: p.name,
+                danger: true,
+                onClick: () => store.deletePreset(p.name),
+              })),
+            },
+          ]
+        : []),
+    ],
+  }
+}
+
+/** Send to top or bottom, and in a sorted list, letting it go again. */
+function orderEntries(workspace: Workspace): MenuEntry[] {
+  const pin = workspace.usage?.pin
+  const sorted = store.settings.workspaceOrder !== 'manual'
+  return [
+    { label: 'Send to top', checked: sorted && pin === 'top' ? true : undefined, onClick: () => store.sendWorkspace(workspace.id, 'top') },
+    { label: 'Send to bottom', checked: sorted && pin === 'bottom' ? true : undefined, onClick: () => store.sendWorkspace(workspace.id, 'bottom') },
+    ...(sorted && pin
+      ? [{ label: 'Let it sort again', onClick: () => store.unpinWorkspace(workspace.id) }]
+      : []),
+  ]
+}
+
 function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
   const workspace = store.workspaces.find((w) => w.id === workspaceId)
   if (!workspace) return
 
   showContextMenu(x, y, [
-    { label: 'New terminal', shortcut: 'Ctrl+T', onClick: () => actions.newTab(workspaceId) },
-    {
-      label: 'new file tree tab',
-      shortcut: 'Ctrl+Shift+F',
-      onClick: () => actions.newFileTab(workspaceId, workspace.cwd),
-    },
-    {
-      label: 'editor',
-      shortcut: 'Ctrl+Shift+O',
-      onClick: () => actions.openEditor(workspaceId),
-    },
-    // One entry for one pane; History is the switch inside it. See the same
-    // list in `tabstrip.ts`.
-    {
-      label: 'git',
-      shortcut: 'Ctrl+Shift+D',
-      onClick: () => actions.openDiff(workspaceId),
-    },
-    {
-      label: 'compare files…',
-      shortcut: 'Ctrl+Alt+D',
-      onClick: () => void actions.openCompare(workspaceId),
-    },
-    {
-      label: 'search',
-      shortcut: 'Ctrl+Shift+S',
-      onClick: () => actions.openSearch(workspaceId),
-    },
-    {
-      label: 'images',
-      shortcut: 'Ctrl+Shift+G',
-      onClick: () => actions.openImages(workspaceId),
-    },
-    {
-      label: 'running processes',
-      shortcut: 'Ctrl+Shift+R',
-      onClick: () => actions.openPorts(workspaceId),
-    },
-    {
-      label: 'token stats',
-      onClick: () => actions.openTokens(workspaceId),
-    },
-    {
-      label: 'prompts',
-      onClick: () => actions.openPrompts(workspaceId),
-    },
-    {
-      label: 'space',
-      onClick: () => actions.openSpace(workspaceId),
-    },
-    {
-      label: 'focus',
-      onClick: () => actions.openFocus(workspaceId),
-    },
-    {
-      label: 'today',
-      onClick: () => actions.openDay(workspaceId),
-    },
-    {
-      label: 'canvas',
-      onClick: () => actions.openCanvas(workspaceId),
-    },
-    // No system monitor: this is the same list of tab kinds the tab strip
-    // offers, and the monitor is a docked panel rather than a tab. It stays in
-    // the command palette, which is a list of things to *do* rather than a list
-    // of tabs to make.
-    // Only where a host can actually show a web page. A menu entry that opens
-    // an empty box is worse than no entry.
-    ...(backend().capabilities.browser
-      ? [
-          {
-            label: 'browser',
-            shortcut: 'Ctrl+Shift+B',
-            onClick: () => actions.openBrowser(workspaceId),
-          },
-        ]
-      : []),
+    // The kinds of tab a workspace can open are on the tab strip's + button,
+    // where tabs are made; this menu is about the workspace.
     {
       label: store.treeVisible ? 'Hide docked tree' : 'Dock file tree',
       shortcut: 'Ctrl+Shift+E',
       onClick: () => actions.toggleFileTree(),
     },
+    'separator',
+    presetsMenu(workspaceId),
     'separator',
     {
       label: 'Save workspace…',
@@ -847,6 +868,7 @@ function openWorkspaceMenu(x: number, y: number, workspaceId: string): void {
     },
     ...windowEntries(workspaceId),
     'separator',
+    ...orderEntries(workspace),
     // Nesting is mostly done by dragging; this is the keyboard-reachable way
     // to the same thing, and the only way to un-nest without a drag.
     ...(workspace.parentId

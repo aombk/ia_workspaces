@@ -5,6 +5,10 @@ export interface UiActions {
   selectWorkspace(workspaceId: string): void
   /** `parentId` nests the new workspace inside that one. */
   addWorkspace(parentId?: string): void
+  /** Saves the workspace's tabs as a preset, asking for its name. */
+  savePreset(workspaceId: string): void
+  /** Adds a preset's tabs to the workspace. */
+  loadPreset(workspaceId: string, name: string): void
   /** Creates a git worktree and a workspace sitting in it, nested under this one. */
   newWorktree(workspaceId: string): void
   changeWorkspaceFolder(workspaceId: string): void

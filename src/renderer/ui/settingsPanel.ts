@@ -301,6 +301,29 @@ function number(value: number, min: number, max: number, onInput: (n: number) =>
   return input
 }
 
+/** The ntfy topic, with a button that sends a test to it. */
+function phoneField(value: string, placeholder: string, onInput: (v: string) => void): HTMLElement {
+  const row = document.createElement('div')
+  row.style.display = 'flex'
+  row.style.gap = '6px'
+  const input = text(value, placeholder, onInput) as HTMLInputElement
+  input.style.flex = '1'
+  const test = document.createElement('button')
+  test.className = 'btn'
+  test.textContent = 'Send test'
+  test.addEventListener('click', async () => {
+    const send = backend().breaks?.phoneTest
+    if (!input.value.trim() || !send) return
+    test.disabled = true
+    const problem = await send(input.value.trim()).catch((err: Error) => err.message)
+    test.disabled = false
+    if (problem) showToast('Not sent', problem)
+    else showToast('Sent', 'If the phone is subscribed to that topic, it has it now.')
+  })
+  row.append(input, test)
+  return row
+}
+
 function text(value: string, placeholder: string, onInput: (v: string) => void): HTMLElement {
   const input = document.createElement('input')
   input.type = 'text'
@@ -743,6 +766,34 @@ async function render(): Promise<void> {
         toggle(s.notesOnPaste, (v) => patch({ notesOnPaste: v }))
       ),
       field(
+        'Workspace order',
+        'Nesting is kept in every order: a workspace is only sorted among its siblings. ' +
+          'Sorted, dragging still nests a workspace or moves it to another parent, and the order ' +
+          'you dragged is kept for when you go back to manual. Size is the folder on disk, ' +
+          'biggest first, measured when the app starts. How often I work in it uses the hours the ' +
+          'time log has already recorded for each workspace\u2019s folder \u2014 not which one you ' +
+          'opened last \u2014 so it works from day one, and a parent climbs with everything under it. Size and use are re-sorted only when the app ' +
+          'starts and when you come back to it after half a day, so nothing jumps while you work.',
+        select(
+          [
+            { value: 'manual' as const, label: 'Manual (drag)' },
+            { value: 'name' as const, label: 'Name' },
+            { value: 'size' as const, label: 'Size on disk' },
+            { value: 'use' as const, label: 'How often I work in it' },
+          ],
+          s.workspaceOrder,
+          (v) => patch({ workspaceOrder: v })
+        )
+      ),
+      field(
+        'Halve the counted time every',
+        'Days, for ordering by how often you work in it. Shorter and a project you stop using ' +
+          'sinks sooner, and a new one reaches the top sooner; longer and a few weeks away does ' +
+          'not cost a project its place. A workspace only passes another with clearly more use, ' +
+          'so two used about equally do not keep swapping.',
+        number(s.workspaceHalfLifeDays ?? 14, 1, 365, (v) => patch({ workspaceHalfLifeDays: v }))
+      ),
+      field(
         'Folder for new workspaces',
         'Where a workspace made with + starts. Leave blank for your home folder.',
         text(s.newWorkspaceDir, 'your home folder', (v) => patch({ newWorkspaceDir: v }))
@@ -1117,6 +1168,21 @@ async function render(): Promise<void> {
           'Sound when the break is over',
           'The notification sound, at its volume \u2014 set under Notifications.',
           toggle(s.moveSound !== false, (v) => patch({ moveSound: v }))
+        ),
+        field(
+          'Notify my phone: get up (ntfy)',
+          'A notification when a break starts and when it ends, so a watch or band that buzzes for ' +
+            "your phone's notifications buzzes too. Install the ntfy app, subscribe to a topic, and " +
+            'put that topic here \u2014 or a whole address, for your own ntfy server. On the public ' +
+            'server anyone who knows a topic can read it, so make it long and random. Allow the ntfy ' +
+            "app's notifications in your band's phone app. Blank sends nothing.",
+          phoneField(s.movePhoneNtfy ?? '', 'ntfy.sh/get_up_\u2026', (v) => patch({ movePhoneNtfy: v.trim() }))
+        ),
+        field(
+          'Notify my phone: break over',
+          'Its own topic, so the phone can give it a different sound or vibration (per subscription, in ' +
+            'the ntfy app). Blank sends it to the one above.',
+          phoneField(s.movePhoneNtfyEnd ?? '', 'ntfy.sh/sit_down_\u2026', (v) => patch({ movePhoneNtfyEnd: v.trim() }))
         ),
         subheading(
           'Equipment you have',

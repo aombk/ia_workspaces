@@ -296,4 +296,71 @@ check('every pose names every joint', () => {
   }
 })
 
+/** Plays `n` breaks through the rounds, the way main does, and returns what each one was. */
+function playRounds(n, filter = {}) {
+  let round = []
+  let previous
+  const played = []
+  for (let i = 0; i < n; i++) {
+    const dealt = E.dealChoices('standing', filter, round, Math.random, previous)
+    previous = dealt.choices[0]
+    played.push(previous)
+    round = E.playedInRound(dealt.round, previous)
+  }
+  return played
+}
+
+check('rounds: every exercise once, in a random order, before any repeats', () => {
+  const all = E.pickChoices('standing')
+  for (let trial = 0; trial < 50; trial++) {
+    const played = playRounds(all.length * 3)
+    for (let r = 0; r < 3; r++) {
+      const one = played.slice(r * all.length, (r + 1) * all.length)
+      assert.deepEqual([...one].sort(), [...all].sort(), `round ${r}`)
+    }
+    for (let i = 1; i < played.length; i++) assert.notEqual(played[i], played[i - 1], 'same twice in a row')
+  }
+})
+
+check('rounds: the order differs from one round to the next', () => {
+  const all = E.pickChoices('standing')
+  const played = playRounds(all.length * 20)
+  const orders = new Set()
+  for (let r = 0; r < 20; r++) orders.add(played.slice(r * all.length, (r + 1) * all.length).join())
+  assert.ok(orders.size > 15, `${orders.size} distinct orders`)
+})
+
+check('rounds: passed over or put off, an exercise is still to come; another exercise walks the rest of the round first', () => {
+  const first = E.dealChoices('standing', {}, [])
+  const again = E.dealChoices('standing', {}, first.round)
+  assert.deepEqual(again.choices.slice(0, first.round.length), first.round)
+  const afterOne = E.playedInRound(first.round, first.choices[1])
+  const next = E.dealChoices('standing', {}, afterOne)
+  assert.deepEqual(next.choices.slice(0, afterOne.length), afterOne)
+  assert.equal(next.choices.at(-1), first.choices[1])
+})
+
+check('rounds: what no longer suits you drops out of the round', () => {
+  const avoid = E.STRAINS.slice(0, 2).map((s) => s.id)
+  const round = E.pickChoices('standing')
+  const dealt = E.dealChoices('standing', { avoid }, round)
+  assert.ok(dealt.choices.length < round.length, 'nothing was avoided')
+  for (const id of dealt.choices) assert.ok(E.suits(E.exercise(id), { avoid }), id)
+})
+
+{
+  const out2 = fs.mkdtempSync(path.join(os.tmpdir(), 'iaw-ntfy-'))
+  await build({ entryPoints: { ntfy: 'src/shared/phoneNotify.ts' }, bundle: true, platform: 'node', format: 'esm', outdir: out2 })
+  const N = await import(`file://${out2}/ntfy.js`)
+  check('ntfy: a bare topic goes to ntfy.sh, an address to its own server, anything else nowhere', () => {
+    assert.equal(N.ntfyUrl('k-getup-7f3q9x'), 'https://ntfy.sh/k-getup-7f3q9x')
+    assert.equal(N.ntfyUrl(' https://ntfy.example.org/breaks/ '), 'https://ntfy.example.org/breaks')
+    assert.equal(N.ntfyUrl('ntfy.sh/get_up_946'), 'https://ntfy.sh/get_up_946')
+    assert.equal(N.ntfyUrl(''), null)
+    assert.equal(N.ntfyUrl('two words'), null)
+    assert.equal(N.ntfyUrl('file:///etc/passwd'), null)
+    assert.equal(N.ntfyUrl('https://ntfy.sh/'), null)
+  })
+}
+
 console.log(`\n${passed} checks passed`)

@@ -30,6 +30,7 @@ import {
 import { hideContextMenu, setMenuAccent } from './ui/contextMenu'
 import { choiceDialog, confirmDialog, promptDialog } from './ui/confirm'
 import { showToast } from './ui/toast'
+import { uniqueName } from '../shared/workspaceFile'
 import { checkAppSupport, setRectSource, syncApps } from './ui/externalApps'
 import type { WorkspaceFile } from '../shared/workspaceFile'
 import type { UiActions } from './ui/actions'
@@ -940,28 +941,55 @@ function updateBadge(): void {
 
 // --------------------------------------------------------------------- actions
 
+/** A new workspace's tabs: the preset new workspaces start with, or one terminal. */
+function openFirstTabs(workspaceId: string): void {
+  const preset = store.settings.newWorkspacePreset
+  if (!preset || !store.applyPreset(workspaceId, preset)) store.addTab(workspaceId)
+  void syncMountedTab()
+}
+
 const actions: UiActions = {
   selectWorkspace(workspaceId) {
     void goToWorkspace(workspaceId)
   },
 
-  addWorkspace(parentId) {
-    // No folder prompt — a workspace is just a named group of terminals. It
-    // starts in the folder set under Settings → Behaviour (your home folder if
-    // that is blank); set a different one later from the right-click menu.
-    const taken = new Set(store.workspaces.map((w) => w.name))
-    let n = store.workspaces.length + 1
-    while (taken.has(`Workspace ${n}`)) n++
-
-    const workspace = store.addWorkspace(
-      `Workspace ${n}`,
-      store.settings.newWorkspaceDir.trim() || homeDir
-    )
+  async addWorkspace(parentId) {
+    // A workspace is a folder first: picked here, starting from the folder set
+    // under Settings → Behaviour (your home folder if that is blank), and the
+    // workspace is named after it. F2 renames it.
+    const folder = await backend().pickFolder(store.settings.newWorkspaceDir.trim() || homeDir)
+    if (!folder) return
+    const base = folder.split(/[\\/]/).filter(Boolean).pop() || 'Workspace'
+    const workspace = store.addWorkspace(uniqueName(base, new Set(store.workspaces.map((w) => w.name))), folder)
     if (parentId) store.setWorkspaceParent(workspace.id, parentId)
-    store.addTab(workspace.id)
+    openFirstTabs(workspace.id)
+    void refreshBranch(workspace.id, folder)
+  },
+
+  async savePreset(workspaceId) {
+    const name = await promptDialog({
+      title: 'Save as preset',
+      body:
+        "This workspace's tabs, splits, names and docked tree, with folders and files kept relative " +
+        "to the workspace's folder. Saving under a name that exists replaces it.",
+      placeholder: 'dev',
+      initial: store.settings.newWorkspacePreset || store.presets.at(-1)?.name || '',
+      confirmLabel: 'Save',
+    })
+    if (!name?.trim() || !store.savePreset(workspaceId, name)) return
+    // The first one saved is the one new workspaces start with: that is what
+    // saving a layout you make in every new workspace is for.
+    if (!store.settings.newWorkspacePreset) {
+      store.setNewWorkspacePreset(name.trim())
+      showToast(`Preset "${name.trim()}" saved`, 'New workspaces start with it. Change that under Presets.')
+    } else {
+      showToast(`Preset "${name.trim()}" saved`, '')
+    }
+  },
+
+  loadPreset(workspaceId, name) {
+    if (!store.applyPreset(workspaceId, name)) return
     void syncMountedTab()
-    // Drop straight into rename so naming it is one action, not two.
-    startRename(workspace.id)
   },
 
   /**
@@ -1834,8 +1862,7 @@ function wireAlerts(): void {
     }
     const name = folder.split(/[\\/]/).filter(Boolean).pop() || folder
     const workspace = store.addWorkspace(name, folder)
-    store.addTab(workspace.id)
-    void syncMountedTab()
+    openFirstTabs(workspace.id)
     void refreshBranch(workspace.id, folder)
   })
 
@@ -2187,7 +2214,10 @@ function wireKeyboard(): void {
       }
       if (isNavigation(e) && /^[1-9]$/.test(e.key)) {
         e.preventDefault()
-        const target = store.workspaces[Number(e.key) - 1]
+        // The number is the row's, so sorted it follows the sorted list.
+        const target = store.settings.workspaceOrder !== 'manual'
+          ? store.sidebarRows(true)[Number(e.key) - 1]?.workspace
+          : store.workspaces[Number(e.key) - 1]
         if (target) actions.selectWorkspace(target.id)
         return
       }

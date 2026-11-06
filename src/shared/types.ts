@@ -1,4 +1,6 @@
 import type { KeepAwakeMode } from './powerLock'
+import type { WorkspaceOrder, WorkspaceUsage } from './workspaceUsage'
+import type { WorkspacePreset } from './workspacePreset'
 
 export type { KeepAwakeMode }
 
@@ -130,6 +132,8 @@ export interface Workspace {
    * as a guest — but this is where it lives. See `homeOfWorkspace`.
    */
   windowId?: string
+  /** Its place when sorted by use and its folder size when sorted by size. See `workspaceUsage.ts`. */
+  usage?: WorkspaceUsage
 }
 
 /**
@@ -2223,6 +2227,26 @@ export interface Settings {
   moveSound: boolean
   /** Once a break is owed, the most minutes it waits for a pause in your work. 0: on time. */
   moveWaitMin: number
+  /**
+   * An ntfy topic or address told when a break starts and ends, so a phone —
+   * and a band paired with it — buzzes. Blank: nothing sent. See
+   * `shared/phoneNotify.ts`.
+   */
+  movePhoneNtfy: string
+  /** Where "break over" goes instead, so it can sound different. Blank: the same place. */
+  movePhoneNtfyEnd: string
+  /**
+   * How the workspace list is sorted, nesting kept: the order you dragged, by
+   * name, by folder size, or by how much you work in each. See
+   * `shared/workspaceUsage.ts`.
+   */
+  workspaceOrder: WorkspaceOrder
+  /** Sorted by use, the counted time halves every this many days. */
+  workspaceHalfLifeDays: number
+  /** Tab layouts saved from a workspace, paths relative to its folder. See `shared/workspacePreset.ts`. */
+  workspacePresets: WorkspacePreset[]
+  /** The preset a new workspace starts with, by name; blank for one terminal. */
+  newWorkspacePreset: string
   notifications: NotificationSettings
 }
 
@@ -3243,6 +3267,12 @@ export const DEFAULT_SETTINGS: Settings = {
   moveAvoid: [],
   moveSound: true,
   moveWaitMin: 20,
+  movePhoneNtfy: '',
+  movePhoneNtfyEnd: '',
+  workspaceOrder: 'manual',
+  workspaceHalfLifeDays: 14,
+  workspacePresets: [],
+  newWorkspacePreset: '',
   notifications: DEFAULT_NOTIFICATIONS,
 }
 

@@ -103,12 +103,26 @@ const OSC = /\x1b\](\d+)((?:;[^\x07\x1b]*)?)(\x07|\x1b\\)/g
  * Its real job is the case the filter cannot reach: a ring buffer that wrapped
  * mid-sequence, leaving half a mode set that no regex here recognises and
  * xterm's parser may yet complete against the bytes after it.
+ *
+ * Wrapped in a cursor save and restore (`ESC 7` … `ESC 8`), and that is not
+ * tidiness. Leaving the alternate screen, `?1049l`, *restores the saved
+ * cursor* even when the pane was never on the alternate screen — and nothing
+ * had saved one, so the cursor went to the top-left corner of the restored
+ * screen. Everything after it was then written over the old output instead of
+ * below it: the "restored from last session" line, the padding meant to push
+ * the old screen up out of the way, and finally the new shell's banner and
+ * prompt, which came out on top of the old lines with the old text showing
+ * through around them. Saved just before, the cursor comes back to where the
+ * replay left it.
  */
 export const REPLAY_RESET =
+  '\x1b7' +
   '\x1b[?1l\x1b>' +
   '\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l' +
   '\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1007l\x1b[?1015l\x1b[?1016l' +
-  '\x1b[?1049l\x1b[?2004l\x1b[<u\x1b[?25h\x1b[?7h\x1b[0m'
+  '\x1b[?1049l\x1b[?2004l\x1b[<u' +
+  '\x1b8' +
+  '\x1b[?25h\x1b[?7h\x1b[0m'
 
 /**
  * A saved stream with the conversation taken out of it.

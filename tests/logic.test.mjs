@@ -611,6 +611,16 @@ console.log('Scrollback replay')
     assert.ok(sanitizeReplay('x').endsWith(REPLAY_RESET))
   })
 
+  check('the reset leaves the cursor where the replay put it', () => {
+    // Leaving the alternate screen restores the saved cursor, and with none
+    // saved that is the top-left corner: the new shell then printed over the
+    // restored screen. Saved before, put back after.
+    const save = REPLAY_RESET.indexOf('\x1b7')
+    const leave = REPLAY_RESET.indexOf('\x1b[?1049l')
+    const restore = REPLAY_RESET.lastIndexOf('\x1b8')
+    assert.ok(save !== -1 && save < leave && leave < restore, 'save, leave the alternate screen, restore')
+  })
+
   check('a saved size rides in front of the bytes, and an old file still restores', () => {
     const framed = Buffer.concat([Buffer.from('\0iaw1 120 30\n', 'ascii'), Buffer.from('hello', 'utf8')])
     assert.deepEqual(splitHeader(framed), { body: Buffer.from('hello'), cols: 120, rows: 30 })

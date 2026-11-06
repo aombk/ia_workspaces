@@ -20,7 +20,7 @@ import {
   type BreakSettings,
   type BreakState,
 } from '../shared/moveBreaks'
-import { pickChoices } from '../shared/exercises'
+import { dealChoices, exercise, playedInRound } from '../shared/exercises'
 
 /** How often the idle time is read. A break owed is raised within this of being owed. */
 const TICK_MS = 10_000
@@ -28,14 +28,17 @@ const TICK_MS = 10_000
 const KEEP_DAYS = 14
 
 export class MoveBreaks {
-  private readonly clock = new BreakClock(
-    (posture, settings) =>
-      pickChoices(posture, { equipment: settings.equipment, avoid: settings.avoid }, Math.random, this.records.at(-1)?.exercise),
-    randomUUID
-  )
+  private readonly clock = new BreakClock((posture, settings) => this.deal(posture, settings), randomUUID)
   private timer: ReturnType<typeof setInterval> | null = null
   private records: BreakRecord[] = []
   private readonly file: string
+  /**
+   * What is still to come in this round of exercises, for each posture: every
+   * exercise once, shuffled, before any repeats. Kept on disk so a restart does
+   * not start a fresh round. See `dealChoices`.
+   */
+  private rounds: Record<BreakPosture, string[]> = { standing: [], seated: [] }
+  private readonly roundFile: string
 
   constructor(
     dataDir: string,
@@ -45,6 +48,8 @@ export class MoveBreaks {
   ) {
     this.file = path.join(dataDir, 'move-breaks.json')
     this.records = this.load()
+    this.roundFile = path.join(dataDir, 'move-breaks-round.json')
+    this.rounds = this.loadRounds()
   }
 
   start(): void {
@@ -119,13 +124,53 @@ export class MoveBreaks {
     if (this.clock.away()) this.publish(this.clock.state())
   }
 
+  /** The exercises for a break about to come up, from what is left of the round. */
+  private deal(posture: BreakPosture, settings: BreakSettings): string[] {
+    const { choices, round } = dealChoices(
+      posture,
+      { equipment: settings.equipment, avoid: settings.avoid },
+      this.rounds[posture],
+      Math.random,
+      this.records.at(-1)?.exercise
+    )
+    if (round.join() !== this.rounds[posture].join()) {
+      this.rounds[posture] = round
+      this.saveRounds()
+    }
+    return choices
+  }
+
   private remember(record: BreakRecord): void {
+    // The exercise it ended on is done for this round, whichever way it ended.
+    const posture = record.exercise ? exercise(record.exercise)?.posture : undefined
+    if (posture) {
+      this.rounds[posture] = playedInRound(this.rounds[posture], record.exercise)
+      this.saveRounds()
+    }
     const cutoff = Date.now() - KEEP_DAYS * 86_400_000
     this.records = [...this.records.filter((r) => r.at >= cutoff), record]
     try {
       fs.writeFileSync(this.file, JSON.stringify(this.records))
     } catch {
       // A log that cannot be written loses history, not the break.
+    }
+  }
+
+  private saveRounds(): void {
+    try {
+      fs.writeFileSync(this.roundFile, JSON.stringify(this.rounds))
+    } catch {
+      // Lost, the round starts over: a repeat or two, nothing worse.
+    }
+  }
+
+  private loadRounds(): Record<BreakPosture, string[]> {
+    const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.roundFile, 'utf8')) as Record<string, unknown>
+      return { standing: ids(raw?.standing), seated: ids(raw?.seated) }
+    } catch {
+      return { standing: [], seated: [] }
     }
   }
 
