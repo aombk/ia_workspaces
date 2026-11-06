@@ -42,17 +42,22 @@ export interface NtfyMessage {
 export async function sendNtfy(setting: string, message: NtfyMessage): Promise<string | null> {
   const url = ntfyUrl(setting)
   if (!url) return 'Not a topic name or an ntfy address.'
+  // Published as JSON to the server's root rather than with headers to the
+  // topic's address: headers are ASCII only, and a workspace or an agent's
+  // question can be in any language.
+  const at = url.lastIndexOf('/')
   try {
-    const res = await fetch(url, {
+    const res = await fetch(url.slice(0, at) || url, {
       method: 'POST',
-      body: message.body,
-      headers: {
-        // Headers are ASCII only; the body carries anything else.
-        Title: message.title.replace(/[^\x20-\x7e]/g, ''),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic: url.slice(at + 1),
+        title: message.title,
+        message: message.body,
         // High: a heads-up notification, which is what a band buzzes for.
-        Priority: '4',
-        ...(message.tags?.length ? { Tags: message.tags.join(',') } : {}),
-      },
+        priority: 4,
+        ...(message.tags?.length ? { tags: message.tags } : {}),
+      }),
       signal: AbortSignal.timeout(10_000),
     })
     return res.ok ? null : `The server said ${res.status} ${res.statusText}.`

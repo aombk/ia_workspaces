@@ -2779,6 +2779,17 @@ function normalize(raw: unknown): PersistedState {
       : DEFAULT_SETTINGS.workspaceHalfLifeDays
   }
 
+  // Breaks had a topic of their own, and a second one for "break over", before
+  // every phone notification went to one.
+  {
+    const old = settings as { movePhoneNtfy?: unknown; movePhoneNtfyEnd?: unknown }
+    if (!settings.phoneNtfy && typeof old.movePhoneNtfy === 'string') settings.phoneNtfy = old.movePhoneNtfy
+    delete old.movePhoneNtfy
+    delete old.movePhoneNtfyEnd
+    if (typeof settings.phoneNtfy !== 'string') settings.phoneNtfy = ''
+    const away = Number(settings.phoneAwayMin)
+    settings.phoneAwayMin = Number.isFinite(away) ? Math.min(120, Math.max(0, Math.round(away))) : DEFAULT_SETTINGS.phoneAwayMin
+  }
   settings.workspacePresets = readPresets(settings.workspacePresets)
   if (typeof settings.newWorkspacePreset !== 'string' || !settings.workspacePresets.some((p) => p.name === settings.newWorkspacePreset)) {
     settings.newWorkspacePreset = ''

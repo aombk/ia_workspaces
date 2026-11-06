@@ -363,4 +363,48 @@ check('rounds: what no longer suits you drops out of the round', () => {
   })
 }
 
+{
+  const out3 = fs.mkdtempSync(path.join(os.tmpdir(), 'iaw-phone-'))
+  await build({ entryPoints: { phone: 'src/main/phoneNotifier.ts' }, bundle: true, platform: 'node', format: 'esm', outdir: out3 })
+  const PN = await import(`file://${out3}/phone.js`)
+  const sent = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    sent.push(JSON.parse(init.body))
+    return { ok: true }
+  }
+  const settings = { phoneNtfy: 'ntfy.sh/t', phoneAgentAsks: true, phoneAgentDone: true, phoneAwayMin: 2 }
+  let idle = 600
+  const n = new PN.PhoneNotifier(() => settings, () => idle, () => ({ workspace: 'ws', pane: 'claude' }))
+  const agent = (state, extra = {}) => ({ paneId: 'p', state, answeredAt: null, blockedReason: null, ...extra })
+  const flush = () => new Promise((r) => setTimeout(r, 0))
+
+  n.agentUpdate(agent('blocked'))
+  await flush()
+  check('phone: the first state seen for a pane is not news', () => assert.equal(sent.length, 0))
+
+  n.agentUpdate(agent('working'))
+  n.agentUpdate(agent('blocked', { blockedReason: 'Allow rm?' }))
+  await flush()
+  check('phone: a question while away goes to the one topic', () => {
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0].topic, 't')
+    assert.equal(sent[0].title, 'ws · claude is waiting for you')
+    assert.equal(sent[0].message, 'Allow rm?')
+  })
+
+  const m = new PN.PhoneNotifier(() => settings, () => idle, () => null)
+  idle = 10
+  m.agentUpdate(agent('working'))
+  m.agentUpdate(agent('idle'))
+  await flush()
+  check('phone: nothing while you are at the computer', () => assert.equal(sent.length, 1))
+  idle = 600
+  m.agentUpdate(agent('working'))
+  m.agentUpdate(agent('idle'))
+  await flush()
+  check('phone: a finished turn while away', () => assert.equal(sent.at(-1).title, 'An agent finished'))
+  globalThis.fetch = realFetch
+}
+
 console.log(`\n${passed} checks passed`)

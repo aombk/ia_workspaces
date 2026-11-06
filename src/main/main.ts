@@ -5,6 +5,7 @@ import {
   dialog,
   ipcMain,
   Notification,
+  powerMonitor,
   screen,
   shell,
   type IpcMainEvent,
@@ -58,7 +59,7 @@ import { registerDocumentScheme, serveDocuments } from './docProtocol'
 import { registerMediaScheme, serveMedia } from './mediaProtocol'
 import { PowerLock } from './powerLock'
 import { MoveBreaks } from './moveBreaks'
-import { BreakBuzz } from './breakBuzz'
+import { describePane, PhoneNotifier } from './phoneNotifier'
 import { sendNtfy } from '../shared/phoneNotify'
 import { readBreakSettings } from '../shared/moveBreaks'
 import {
@@ -426,6 +427,7 @@ function bootApp(): void {
   let ptys: PtyManager
   let powerLock: PowerLock | undefined
   let moveBreaks: MoveBreaks | undefined
+  let phone: PhoneNotifier | undefined
   let scrollback: ScrollbackStore
   let pidMap: PidMap
   /**
@@ -2199,6 +2201,7 @@ function bootApp(): void {
         },
         onStatus: (s) => {
           windows.broadcast(IPC.onPaneStatus, s)
+          if (s.agent) phone?.agentUpdate(s.agent)
           // An agent starting or finishing is the event the wake lock exists
           // for, so it is answered here rather than left to the next poll. The
           // poll is the safety net for the case with no event at all — an agent
@@ -2265,16 +2268,17 @@ function bootApp(): void {
 
     // Every window covers itself when a break is up; the notification is for
     // when none of them is in front of you, which is most of the time.
-    const setting = (v: unknown) => (typeof v === 'string' ? v : '')
-    const buzz = new BreakBuzz(
-      () => setting(store.settings.movePhoneNtfy),
-      () => setting(store.settings.movePhoneNtfyEnd)
+    const notifier = new PhoneNotifier(
+      () => store.settings,
+      () => powerMonitor.getSystemIdleTime(),
+      (paneId) => describePane(store.state, paneId)
     )
+    phone = notifier
     moveBreaks = new MoveBreaks(
       SHARED_DATA_DIR,
       () => readBreakSettings(store.settings),
       (state) => {
-        buzz.update(state)
+        notifier.breakUpdate(state)
         windows.broadcast(IPC.onBreaks, state)
       },
       () => {

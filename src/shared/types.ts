@@ -2228,13 +2228,19 @@ export interface Settings {
   /** Once a break is owed, the most minutes it waits for a pause in your work. 0: on time. */
   moveWaitMin: number
   /**
-   * An ntfy topic or address told when a break starts and ends, so a phone —
-   * and a band paired with it — buzzes. Blank: nothing sent. See
-   * `shared/phoneNotify.ts`.
+   * One ntfy topic or address that everything below is sent to, so a phone —
+   * and a watch or band paired with it — buzzes. Blank: nothing sent. See
+   * `main/phoneNotifier.ts`.
    */
-  movePhoneNtfy: string
-  /** Where "break over" goes instead, so it can sound different. Blank: the same place. */
-  movePhoneNtfyEnd: string
+  phoneNtfy: string
+  phoneBreakStart: boolean
+  phoneBreakEnd: boolean
+  /** An agent asking you something, while you are away from the computer. */
+  phoneAgentAsks: boolean
+  /** An agent finishing a turn, while you are away from the computer. */
+  phoneAgentDone: boolean
+  /** Minutes without keyboard or mouse that count as away, for the agent ones. */
+  phoneAwayMin: number
   /**
    * How the workspace list is sorted, nesting kept: the order you dragged, by
    * name, by folder size, or by how much you work in each. See
@@ -3267,8 +3273,12 @@ export const DEFAULT_SETTINGS: Settings = {
   moveAvoid: [],
   moveSound: true,
   moveWaitMin: 20,
-  movePhoneNtfy: '',
-  movePhoneNtfyEnd: '',
+  phoneNtfy: '',
+  phoneBreakStart: true,
+  phoneBreakEnd: true,
+  phoneAgentAsks: true,
+  phoneAgentDone: false,
+  phoneAwayMin: 2,
   workspaceOrder: 'manual',
   workspaceHalfLifeDays: 14,
   workspacePresets: [],

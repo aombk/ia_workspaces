@@ -1169,21 +1169,6 @@ async function render(): Promise<void> {
           'The notification sound, at its volume \u2014 set under Notifications.',
           toggle(s.moveSound !== false, (v) => patch({ moveSound: v }))
         ),
-        field(
-          'Notify my phone: get up (ntfy)',
-          'A notification when a break starts and when it ends, so a watch or band that buzzes for ' +
-            "your phone's notifications buzzes too. Install the ntfy app, subscribe to a topic, and " +
-            'put that topic here \u2014 or a whole address, for your own ntfy server. On the public ' +
-            'server anyone who knows a topic can read it, so make it long and random. Allow the ntfy ' +
-            "app's notifications in your band's phone app. Blank sends nothing.",
-          phoneField(s.movePhoneNtfy ?? '', 'ntfy.sh/get_up_\u2026', (v) => patch({ movePhoneNtfy: v.trim() }))
-        ),
-        field(
-          'Notify my phone: break over',
-          'Its own topic, so the phone can give it a different sound or vibration (per subscription, in ' +
-            'the ntfy app). Blank sends it to the one above.',
-          phoneField(s.movePhoneNtfyEnd ?? '', 'ntfy.sh/sit_down_\u2026', (v) => patch({ movePhoneNtfyEnd: v.trim() }))
-        ),
         subheading(
           'Equipment you have',
           'Exercises that need something are only suggested if you have it, and then one minute of ' +
@@ -1212,6 +1197,39 @@ async function render(): Promise<void> {
             )
           )
         )
+      )
+    )
+  )
+
+  body.appendChild(
+    section(
+      'Phone and watch',
+      field(
+        'ntfy topic',
+        'Everything below goes to this one topic, so a phone \u2014 and a watch or band that buzzes ' +
+          "for the phone's notifications \u2014 gets it. Install the ntfy app, subscribe to a topic, " +
+          'and put it here (ntfy.sh/your_topic), or a whole address for your own ntfy server. On the ' +
+          'public server anyone who knows a topic can read it, so make it long and random. Blank ' +
+          'sends nothing.',
+        phoneField(s.phoneNtfy ?? '', 'ntfy.sh/your_long_random_topic', (v) => patch({ phoneNtfy: v.trim() }))
+      ),
+      field('A break starts', '"Time to get up", with the exercise.', toggle(s.phoneBreakStart !== false, (v) => patch({ phoneBreakStart: v }))),
+      field('A break ends', 'When its countdown is over.', toggle(s.phoneBreakEnd !== false, (v) => patch({ phoneBreakEnd: v }))),
+      field(
+        'An agent asks you something',
+        'Only while you are away from the computer \u2014 see below.',
+        toggle(s.phoneAgentAsks !== false, (v) => patch({ phoneAgentAsks: v }))
+      ),
+      field(
+        'An agent finishes',
+        'Only while you are away from the computer. Also when it stops with an error.',
+        toggle(s.phoneAgentDone === true, (v) => patch({ phoneAgentDone: v }))
+      ),
+      field(
+        'Away after',
+        'Minutes without keyboard or mouse, in any program, before agent messages go to the phone. ' +
+          'At the computer the sidebar already tells you. 0 sends them always.',
+        number(s.phoneAwayMin ?? 2, 0, 120, (v) => patch({ phoneAwayMin: v }))
       )
     )
   )
