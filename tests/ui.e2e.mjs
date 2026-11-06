@@ -64,6 +64,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // ----------------------------------------------------------------- harness
 
+/**
+ * Settings every seeded document carries.
+ *
+ * Shells in-process, never through the session host. The sandbox's data folder
+ * is too long a path for a socket, so the host's address falls back to one per
+ * user in the temp folder — the address the real app's session host is
+ * listening on. The test app would connect to that, find no token in its own
+ * empty home, and retry for eight seconds before starting any shell: as long
+ * as the test waits for one. And it must not start a host of its own there
+ * either, which the real app would then connect to.
+ */
+const TEST_SETTINGS = { keepSessionsAlive: false }
+
 /** A sandbox: a home folder and a Chromium profile nobody else uses. */
 function makeSandbox() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iaw-ui-'))
@@ -132,7 +145,10 @@ class App {
     let target
     for (let i = 0; i < 200 && !target; i++) {
       const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-      target = list.find((t) => t.type === 'page' && t.url.endsWith('renderer/index.html'))
+      // By path, not by the whole address: each window loads with a query
+      // naming it (`?window=main&kind=main`), and the test drives the main one.
+      const pages = list.filter((t) => t.type === 'page' && t.url.startsWith('file:') && new URL(t.url).pathname.endsWith('renderer/index.html'))
+      target = pages.find((t) => new URL(t.url).searchParams.get('kind') === 'main') ?? pages[0]
       if (!target) await sleep(100)
     }
     if (!target) throw new Error('the app never opened its window')
@@ -315,6 +331,7 @@ function killSandboxBrokers(sandbox) {
 function seedSplit(sandbox) {
   const doc = {
     version: 4,
+    settings: TEST_SETTINGS,
     activeWorkspaceId: 'w',
     workspaces: [
       {
@@ -738,6 +755,7 @@ try {
     path.join(edge.data, 'workspace.json'),
     JSON.stringify({
       version: 4,
+      settings: TEST_SETTINGS,
       activeWorkspaceId: 'e',
       workspaces: [
         {
