@@ -159,6 +159,7 @@ export function createElectronBackend(): Backend {
     claudeUsage: (retry) => api.claudeUsage(retry),
     claudeTokens: () => api.claudeTokens(),
     claudeTurns: () => api.claudeTurns(),
+    findInConversation: (transcript, query) => api.findInConversation(transcript, query),
     saveNotedImage: (from, bytes) => api.saveNotedImage(from, bytes),
     readImageBytes: (path) => api.readImageBytes(path),
     shareTokens: (dir, entries) => api.shareTokens(dir, entries),

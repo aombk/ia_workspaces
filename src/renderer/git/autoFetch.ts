@@ -19,7 +19,7 @@ import type { FetchNews } from '../../shared/types'
 import { store } from '../state'
 import { refreshRelayNow } from '../ui/relayMonitor'
 import { showToast } from '../ui/toast'
-import { fetchNewsToast } from './common'
+import { fetchNewsToast, incomingSummary } from './common'
 import { invalidateRepo, refreshRepo } from './repoWatch'
 
 /** Long enough that starting the app is not also a burst of network traffic. */
@@ -91,7 +91,9 @@ function announce(root: string, news: FetchNews): void {
       const where = hostLabel(status.remoteUrl ? readRemote(status.remoteUrl) : null)
       const { title, body } = fetchNewsToast(news, where)
       const project = root.split(/[\\/]/).filter(Boolean).pop() ?? root
-      showToast(`${project}: ${title}`, body, { timeout: 15000 })
+      // The one thing worth interrupting for: what arrived touches your work.
+      const clash = incomingSummary(status)?.clash
+      showToast(`${project}: ${title}`, clash ? `\u26a0 ${clash} ${body}` : body, { timeout: clash ? 30000 : 15000 })
     })
     .catch(() => {})
 }

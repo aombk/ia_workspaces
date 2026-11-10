@@ -66,6 +66,7 @@ import type {
   ClipboardImage,
   OpenViewRequest,
 } from '../shared/types'
+import type { ConversationFind } from '../shared/conversationSearch'
 
 /**
  * The single seam between the UI and whatever runtime is hosting it.
@@ -267,6 +268,8 @@ const api = {
   claudeUsage: (retry?: boolean): Promise<UsageReport> => ipcRenderer.invoke(IPC.claudeUsage, retry),
   claudeTokens: (): Promise<TokenReport> => ipcRenderer.invoke(IPC.claudeTokens),
   claudeTurns: (): Promise<TurnIndex> => ipcRenderer.invoke(IPC.claudeTurns),
+  findInConversation: (transcript: string, query: string): Promise<ConversationFind | null> =>
+    ipcRenderer.invoke(IPC.findInConversation, transcript, query),
   saveNotedImage: (from: string, bytes: Uint8Array): Promise<string> =>
     ipcRenderer.invoke(IPC.saveNotedImage, from, bytes),
   readImageBytes: (path: string): Promise<Uint8Array | null> =>

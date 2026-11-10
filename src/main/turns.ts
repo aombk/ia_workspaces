@@ -374,7 +374,7 @@ function edited(entry: FileCache, result: any): void {
  * interruption markers, the notifications the harness writes as if they were
  * user turns.
  */
-function human(row: any): { text: string; images: number } | null {
+export function human(row: any): { text: string; images: number } | null {
   if (row?.isSidechain) return null
 
   const content = row?.message?.content

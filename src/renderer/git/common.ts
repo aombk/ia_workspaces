@@ -8,7 +8,8 @@
  */
 import { backend } from '../../backend'
 import { fallbackCwd } from '../../shared/platform'
-import type { FetchNews } from '../../shared/types'
+import type { FetchNews, RepoStatus } from '../../shared/types'
+import { namedList, type BothChanged } from '../../shared/gitIncoming'
 import { store } from '../state'
 
 /**
@@ -172,4 +173,42 @@ export function fetchNewsToast(news: FetchNews, where: string): { title: string;
       (named ? `${named}${more > 0 ? ` and ${more} more` : ''}. ` : '') +
       'Nothing here has changed yet — they are marked in History until you bring them in.',
   }
+}
+
+/**
+ * What bringing in would do to this checkout, in sentences: the files it
+ * changes, which of them you have changed too, and whether git will even start
+ * — see `shared/gitIncoming.ts`. Empty when nothing is waiting to come in.
+ */
+export function incomingSummary(status: RepoStatus): { files: string; clash: string | null; next: string | null } | null {
+  const incoming = status.incomingFiles
+  if (!status.behind || !incoming) return null
+  const n = incoming.length
+  const files = n
+    ? `Bringing them in changes ${n} file${n === 1 ? '' : 's'}: ${namedList(incoming.map((f) => f.repoPath))}.`
+    : 'Bringing them in changes no files.'
+
+  const both = status.bothChanged ?? []
+  const label = (b: BothChanged) =>
+    `${b.repoPath} (${b.here === 'unsaved' ? 'not saved yet' : b.here === 'unsent' ? 'in a save not sent yet' : 'saved and changed again'})`
+  const clash = both.length
+    ? `${both.length === 1 ? 'One of them is a file' : `${both.length} of them are files`} you changed here too: ${namedList(both.map(label), 3)}.`
+    : null
+
+  let next: string | null
+  // A rebase pull refuses over any tracked file not saved, and over an
+  // untracked one only when an incoming file would land on it.
+  const blocked = status.files.some((f) => !f.untracked) || both.some((b) => b.here !== 'unsent')
+  if (blocked) {
+    next =
+      'Bring in will not start while files here are not saved — git refuses rather than overwrite anything. ' +
+      'Save them first, then bring in.'
+  } else if (both.length) {
+    next =
+      'Bringing in puts their saves first and yours on top. Where you both changed the same lines it stops and ' +
+      'asks which wins; nothing is lost.'
+  } else {
+    next = n ? 'None of them are files you changed, so it goes in cleanly.' : null
+  }
+  return { files, clash, next }
 }

@@ -9,6 +9,7 @@ import type {
   WindowTarget,
 } from '../shared/types'
 import type { PlatformKind } from '../shared/platform'
+import type { ConversationFind } from '../shared/conversationSearch'
 import type { SshHost } from '../shared/ssh'
 import type { WslAction } from '../shared/wsl'
 import type {
@@ -603,6 +604,12 @@ export interface Backend {
    * scans of the same 66 MB could disagree with each other.
    */
   claudeTurns(): Promise<TurnIndex>
+  /**
+   * Searches one Claude conversation's own transcript for what was said in it
+   * — the find bar's answer for a pane whose terminal no longer holds it.
+   * Null when the file is not a transcript or cannot be read.
+   */
+  findInConversation(transcript: string, query: string): Promise<ConversationFind | null>
   /**
    * Writes a marked-up copy of an image beside the app's other screenshots.
    *

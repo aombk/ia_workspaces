@@ -160,10 +160,15 @@
           </div>
 
           <div id="findbar" class="findbar" hidden>
-            <input id="find-input" type="text" placeholder="Find in terminal…" spellcheck="false" />
-            <button id="find-prev" title="Previous (Shift+Enter)">&#8593;</button>
-            <button id="find-next" title="Next (Enter)">&#8595;</button>
-            <button id="find-close" title="Close (Esc)">&#10005;</button>
+            <div class="findbar-row">
+              <input id="find-input" type="text" placeholder="Find in terminal…" spellcheck="false" />
+              <span id="find-count" class="find-count"></span>
+              <button id="find-where" class="find-where" hidden></button>
+              <button id="find-prev" title="Previous (Shift+Enter)">&#8593;</button>
+              <button id="find-next" title="Next (Enter)">&#8595;</button>
+              <button id="find-close" title="Close (Esc)">&#10005;</button>
+            </div>
+            <div id="find-results" class="find-results" hidden></div>
           </div>
 
           <footer id="statusbar" class="statusbar">

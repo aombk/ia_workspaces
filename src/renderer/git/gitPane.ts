@@ -44,7 +44,7 @@ import {
 import { refreshRelayNow, relayLineFor } from '../ui/relayMonitor'
 import { showToast } from '../ui/toast'
 import { ChangesView } from './changesView'
-import { fetchNewsToast, gitRoot, text } from './common'
+import { fetchNewsToast, gitRoot, incomingSummary, text } from './common'
 import { HistoryView } from './historyView'
 import { GitProgressBar } from './progressBar'
 import { showPublish } from './publish'
@@ -618,6 +618,24 @@ export class GitPane implements AuxPane {
         row.appendChild(both)
       }
       parts.push(row)
+
+      // What bringing them in would touch, said before anyone presses it: a
+      // fetch has already told us, and "will this land on my work" is the
+      // question that decides whether to press it now.
+      const coming = incomingSummary(status)
+      if (coming) {
+        const what = document.createElement('div')
+        what.className = coming.clash ? 'history-note' : 'history-note ok'
+        what.append(text(`${coming.files} `))
+        if (coming.clash) {
+          const clash = document.createElement('span')
+          clash.className = 'history-warn'
+          clash.textContent = `\u26a0 ${coming.clash} `
+          what.appendChild(clash)
+        }
+        if (coming.next) what.append(text(coming.next))
+        parts.push(what)
+      }
     } else if (status.upstream) {
       const level = document.createElement('div')
       level.className = 'history-note ok'
@@ -775,12 +793,14 @@ export class GitPane implements AuxPane {
 
   private async bringIn(): Promise<void> {
     const where = hostLabel(this.snapshot?.remote)
+    const coming = this.snapshot?.status ? incomingSummary(this.snapshot.status) : null
     const ok = await confirmDialog({
       title: `Bring ${where}'s saves in?`,
       body:
         `This gets the saves ${where} has and you do not, and puts yours back on the end (git pull --rebase), ` +
         'so the line stays straight. If you both changed the same lines it will stop and ask you which wins — ' +
-        'that is a question, not damage.',
+        'that is a question, not damage.' +
+        (coming ? `\n\n${coming.files}${coming.clash ? ` \u26a0 ${coming.clash}` : ''}${coming.next ? ` ${coming.next}` : ''}` : ''),
       confirmLabel: 'Bring in',
     })
     if (!ok) return

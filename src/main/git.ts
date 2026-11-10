@@ -37,6 +37,7 @@ import path from 'node:path'
 import { toolPath } from './toolPath'
 import { gitArgs } from './gitEnv'
 import { parseGitQuantity } from '../shared/gitSize'
+import { bothChanged, parseNameOnly, parseNameStatus, type BothChanged, type IncomingFile } from '../shared/gitIncoming'
 import type {
   Branch,
   ChangedFile,
@@ -844,9 +845,29 @@ async function statusOf(root: string): Promise<RepoStatus> {
   // only, and asked only when git already says it is behind, so the ordinary
   // poll of a level branch costs nothing more.
   let incoming: string[] = []
+  let incomingFiles: IncomingFile[] | undefined
+  let overlap: BothChanged[] | undefined
   if (parsed.upstream && parsed.behind > 0) {
-    const res = await run(root, ['rev-list', '--max-count=500', 'HEAD..@{upstream}', '--'])
+    // What bringing them in would change, and which of those you changed too —
+    // see `shared/gitIncoming.ts`. Three-dot: what their side changed since the
+    // two lines parted, which is what a pull applies, not every difference.
+    const [res, theirs, mine] = await Promise.all([
+      run(root, ['rev-list', '--max-count=500', 'HEAD..@{upstream}', '--']),
+      run(root, ['diff', '--name-status', '-z', '--no-renames', 'HEAD...@{upstream}', '--']),
+      parsed.ahead > 0
+        ? run(root, ['diff', '--name-only', '-z', '--no-renames', '@{upstream}...HEAD', '--'])
+        : Promise.resolve(null),
+    ])
     if (res.ok) incoming = res.out.split('\n').map((l) => l.trim()).filter(Boolean)
+    if (theirs.ok) {
+      incomingFiles = parseNameStatus(theirs.out)
+      overlap = bothChanged(
+        incomingFiles,
+        parsed.files.map((f) => f.repoPath),
+        mine?.ok ? parseNameOnly(mine.out) : [],
+        process.platform === 'win32' || process.platform === 'darwin'
+      )
+    }
   }
 
   return {
@@ -854,6 +875,8 @@ async function statusOf(root: string): Promise<RepoStatus> {
     ...parsed,
     unsent,
     incoming,
+    incomingFiles,
+    bothChanged: overlap,
     lastSave: await lastSave(root, parsed.headFull),
     hasRemote: remoteUrl.length > 0,
     remoteUrl: remoteUrl || undefined,
@@ -1436,7 +1459,7 @@ export async function unpick(cwd: string, paths: string[]): Promise<GitResult> {
 export async function save(cwd: string, message: string): Promise<GitResult> {
   const text = message.trim()
   if (!text) return { ok: false, error: 'a message is required', hint: 'A save needs a line saying what it is, so the list of saves is readable later.' }
-  const root = await afterBackgroundFetch(cwd, 'save')
+  const root = await localRoot(cwd)
   return asResult(await run(root, ['commit', '-m', text]))
 }
 
@@ -1567,7 +1590,17 @@ const FETCH_BACKOFF_MS = 30 * 60 * 1000
 const BACKGROUND_FETCH_TIMEOUT_MS = 45_000
 const FETCH_LANES = 2
 const lastFetch = new Map<string, { at: number; failed: boolean }>()
-const fetching = new Map<string, Promise<BackgroundFetch>>()
+/**
+ * A background fetch asked for in a checkout. `started` is false while it
+ * waits in the queue for a lane, when it has not touched the repository yet
+ * and `drop` can still call it off.
+ */
+interface FetchJob {
+  promise: Promise<BackgroundFetch>
+  started: boolean
+  drop: () => void
+}
+const fetching = new Map<string, FetchJob>()
 let fetchLanes = 0
 const fetchQueue: (() => void)[] = []
 
@@ -1576,19 +1609,33 @@ export function backgroundFetch(cwd: string, minAgeMs: number): Promise<Backgrou
     const root = await checkoutRoot(cwd)
     if (!root) return { status: 'skipped' as const }
     const running = fetching.get(root)
-    if (running) return running
+    if (running) return running.promise
     const last = lastFetch.get(root)
     const wait = last?.failed ? Math.max(minAgeMs, FETCH_BACKOFF_MS) : minAgeMs
     if (last && Date.now() - last.at < wait) return { status: 'skipped' as const, root }
     if (!(await originUrl(root))) return { status: 'skipped' as const, root }
 
+    const entry: FetchJob = { promise: Promise.resolve({ status: 'skipped', root }), started: false, drop: () => {} }
     const job = (async (): Promise<BackgroundFetch> => {
-      await new Promise<void>((go) => {
+      const go = await new Promise<boolean>((resolve) => {
         if (fetchLanes < FETCH_LANES) {
           fetchLanes++
-          go()
-        } else fetchQueue.push(go)
+          resolve(true)
+          return
+        }
+        const ticket = () => resolve(true)
+        fetchQueue.push(ticket)
+        entry.drop = () => {
+          const at = fetchQueue.indexOf(ticket)
+          if (at < 0) return
+          fetchQueue.splice(at, 1)
+          resolve(false)
+        }
       })
+      // Called off before it began: the lane was never taken, and the next
+      // sweep tries again since nothing is recorded.
+      if (!go) return { status: 'skipped', root }
+      entry.started = true
       try {
         const before = await upstreamTip(root)
         const res = await runQuiet(root, ['fetch', '--quiet'])
@@ -1602,7 +1649,8 @@ export function backgroundFetch(cwd: string, minAgeMs: number): Promise<Backgrou
         else fetchLanes--
       }
     })()
-    fetching.set(root, job)
+    entry.promise = job
+    fetching.set(root, entry)
     try {
       return await job
     } finally {
@@ -1612,27 +1660,39 @@ export function backgroundFetch(cwd: string, minAgeMs: number): Promise<Backgrou
 }
 
 /**
- * The checkout root, once any background fetch running in it has finished.
+ * The checkout root, once no background fetch is in the way.
  *
- * Every operation that writes to a repository — a save, a send, a bring-in,
- * moving between branches — waits here first. A fetch writes the remote's
- * branches into the repository too, and two writers at once is how git ends
- * up saying "cannot lock ref" about something nobody did wrong. It is also
- * what makes a send or a bring-in act on the remote as it now is rather than
- * as it was a moment before the fetch landed.
+ * For what touches the same things a fetch does: the remote's branches (a
+ * send, a bring-in, a peek, changing where the copy online is) and the object
+ * store (compacting, trimming history). Two writers there at once is how git
+ * ends up saying "cannot lock ref" about something nobody did wrong. Local
+ * work — saves, branches, undo — does not wait: a fetch writes only
+ * `refs/remotes` and new objects, which none of those touch.
  *
- * The wait is bounded by the background fetch's own timeout, which is short
- * for this reason, and the progress bar says what it is waiting for so a
- * button that seems to do nothing is explained.
+ * A fetch still queued for a lane has not started, so it is called off and
+ * this goes first — the person pressing a button outranks a sweep nobody
+ * asked for, and a peek or bring-in fetches anyway. Only one already running
+ * is waited for, bounded by its own short timeout, and the progress bar says
+ * so only if the wait is long enough to notice.
  */
 export async function afterBackgroundFetch(cwd: string, op: string): Promise<string> {
   const root = (await checkoutRoot(cwd)) ?? cwd
-  const running = fetching.get(root)
-  if (running) {
-    report({ cwd, op, phase: 'waiting', plain: 'Waiting for a background fetch to finish' })
-    await running
+  const job = fetching.get(root)
+  if (job && !job.started) job.drop()
+  else if (job) {
+    const say = setTimeout(() => report({ cwd, op, phase: 'waiting', plain: 'Waiting for a background fetch to finish' }), 600)
+    try {
+      await job.promise
+    } finally {
+      clearTimeout(say)
+    }
   }
   return root
+}
+
+/** The checkout root, for local work that never waits on a fetch. */
+async function localRoot(cwd: string): Promise<string> {
+  return (await checkoutRoot(cwd)) ?? cwd
 }
 
 /**
@@ -1699,7 +1759,7 @@ export async function bringIn(cwd: string): Promise<GitResult> {
  * them up, which is what someone clicking `origin/thing` in a list means.
  */
 export async function goTo(cwd: string, name: string): Promise<GitResult> {
-  const root = await afterBackgroundFetch(cwd, 'go-to')
+  const root = await localRoot(cwd)
   const remotes = await remoteNames(root)
   const prefix = remotes.find((r) => name.startsWith(`${r}/`))
   const local = prefix ? name.slice(prefix.length + 1) : name
@@ -1710,7 +1770,7 @@ export async function goTo(cwd: string, name: string): Promise<GitResult> {
 export async function startBranch(cwd: string, name: string): Promise<GitResult> {
   const clean = name.trim()
   if (!clean) return { ok: false, error: 'a name is required' }
-  const root = await afterBackgroundFetch(cwd, 'start-branch')
+  const root = await localRoot(cwd)
   return asResult(await run(root, ['switch', '--create', clean]))
 }
 
@@ -1753,7 +1813,7 @@ export async function applyLines(cwd: string, patch: string, direction: 'pick' |
  * exactly the class of operation this pane leaves to the terminal.
  */
 export async function undoLastSave(cwd: string): Promise<GitResult> {
-  const root = await afterBackgroundFetch(cwd, 'undo')
+  const root = await localRoot(cwd)
   const status = await statusOf(root)
   if (!status.lastSave) {
     return { ok: false, error: 'no saves yet', hint: 'There is no save to undo — this project has not had one made yet.' }
@@ -1783,7 +1843,7 @@ export async function undoLastSave(cwd: string): Promise<GitResult> {
  * alone and a rewrite once it is not.
  */
 export async function amend(cwd: string, message: string): Promise<GitResult> {
-  const root = await afterBackgroundFetch(cwd, 'amend')
+  const root = await localRoot(cwd)
   const status = await statusOf(root)
   if (!status.lastSave) {
     return { ok: false, error: 'no saves yet', hint: 'There is no save to add to yet. Make the first one.' }
@@ -1811,7 +1871,7 @@ export async function amend(cwd: string, message: string): Promise<GitResult> {
  */
 export async function revertSave(cwd: string, sha: string): Promise<GitResult> {
   if (!sha.trim()) return { ok: false, error: 'no save given' }
-  const root = await afterBackgroundFetch(cwd, 'revert')
+  const root = await localRoot(cwd)
   // A merge has two sides, and reverting one needs to be told which to keep.
   // `-m 1` means "keep the line you were on", the only answer a button can
   // give honestly — and git refuses outright without it.
@@ -1827,7 +1887,7 @@ export async function revertSave(cwd: string, sha: string): Promise<GitResult> {
 export async function addTag(cwd: string, sha: string, name: string): Promise<GitResult> {
   const clean = name.trim()
   if (!clean) return { ok: false, error: 'a name is required' }
-  const root = await afterBackgroundFetch(cwd, 'tag')
+  const root = await localRoot(cwd)
   // Not `--force`: a name that already points at another save is a question,
   // and moving it silently is how a release tag comes to mean something else.
   return asResult(await run(root, ['tag', clean, sha || 'HEAD']))

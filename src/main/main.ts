@@ -22,6 +22,7 @@ import { ExternalApps, type AppSyncRequest } from './externalApps'
 import { forgetKeychainRefusal, readClaudeUsage } from './usage'
 import { readTokenUsage } from './tokenUsage'
 import { readTurnIndex } from './turns'
+import { searchConversation } from './conversationSearch'
 import { prepareFileDrag, startFileDrag } from './fileDrag'
 import { snapToTop } from './snapToTop'
 import { readClipboardFiles, writeClipboardFiles } from './fileClipboard'
@@ -1580,6 +1581,8 @@ function bootApp(): void {
     // The same transcripts, read for what was said. Its own offsets, beside the
     // token counter's, so neither can hold the other's scan up.
     handle(IPC.claudeTurns, () => readTurnIndex(SHARED_DATA_DIR))
+    // One pane's conversation, for its find bar.
+    handle(IPC.findInConversation, (_e, transcript: string, query: string) => searchConversation(transcript, query))
     // Publishes this machine's per-project totals into the user's shared folder
     // and hands back every machine's. Off — and instant — while no folder is set.
     handle(IPC.shareTokens, (_e, dir: string, entries: PublishEntry[]) =>

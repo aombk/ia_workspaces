@@ -311,6 +311,10 @@ export class TerminalManager {
     const search = new SearchAddon()
     term.loadAddon(fit)
     term.loadAddon(search)
+    // The find bar's count. Only the pane it is searching speaks to it.
+    search.onDidChangeResults((r) => {
+      if (this.activeInstance()?.search === search) this.findResults?.(r.resultIndex, r.resultCount)
+    })
     term.loadAddon(new WebLinksAddon((_e, uri) => void backend().openExternal(uri)))
 
     // Unicode 11 widths, and emoji presentation sequences counted the way the
@@ -2391,16 +2395,46 @@ export class TerminalManager {
     return paneId ? (this.instances.get(paneId) ?? null) : null
   }
 
-  findNext(query: string): void {
-    this.activeInstance()?.search.findNext(query, { incremental: false })
+  /** Told where the find bar's current match is, and how many there are. */
+  findResults: ((index: number, count: number) => void) | null = null
+
+  /**
+   * Every match marked and the current one stronger, and the overview ruler
+   * marked too, so a match off screen is visible as a tick beside the
+   * scrollbar. Colours must be #RRGGBB for xterm: the same amber as every other
+   * match in the app, which reads on any theme.
+   */
+  private static readonly FIND_LOOK = {
+    matchBackground: '#5c4614',
+    matchBorder: '#8a6a1e',
+    matchOverviewRuler: '#d29922',
+    activeMatchBackground: '#d29922',
+    activeMatchBorder: '#ffd56a',
+    activeMatchColorOverviewRuler: '#ffd56a',
   }
 
-  findPrevious(query: string): void {
-    this.activeInstance()?.search.findPrevious(query)
+  /**
+   * `typing` keeps the match it is on while the query grows, the way a find
+   * box does; Enter moves on.
+   */
+  findNext(query: string, typing = false): boolean {
+    return this.activeInstance()?.search.findNext(query, { incremental: typing, decorations: TerminalManager.FIND_LOOK }) ?? false
+  }
+
+  findPrevious(query: string): boolean {
+    return this.activeInstance()?.search.findPrevious(query, { decorations: TerminalManager.FIND_LOOK }) ?? false
   }
 
   clearSearch(): void {
     this.activeInstance()?.search.clearDecorations()
+  }
+
+  /**
+   * Whether the focused pane runs a full-screen program. Its buffer is then one
+   * screenful with nothing above it — the program keeps its own scrolling.
+   */
+  activeIsFullScreen(): boolean {
+    return this.activeInstance()?.term.buffer.active.type === 'alternate'
   }
 
   clearScrollback(): void {

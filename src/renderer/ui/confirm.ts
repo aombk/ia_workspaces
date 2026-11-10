@@ -35,6 +35,8 @@ export function promptDialog(opts: {
     p.style.fontSize = '13px'
     p.style.lineHeight = '1.5'
     p.style.color = 'var(--text-dim)'
+    // A blank line in the body is a paragraph break.
+    p.style.whiteSpace = 'pre-line'
     p.textContent = opts.body
     body.appendChild(p)
 
@@ -119,6 +121,8 @@ export function confirmDialog(opts: {
     p.style.fontSize = '13px'
     p.style.lineHeight = '1.5'
     p.style.color = 'var(--text-dim)'
+    // A blank line in the body is a paragraph break.
+    p.style.whiteSpace = 'pre-line'
     p.textContent = opts.body
     body.appendChild(p)
 

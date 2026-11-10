@@ -101,6 +101,7 @@ export const IPC = {
   claudeUsage: 'app:claudeUsage',
   claudeTokens: 'app:claudeTokens',
   claudeTurns: 'app:claudeTurns',
+  findInConversation: 'app:findInConversation',
   shareTokens: 'app:shareTokens',
   relay: 'app:relay',
   startFileDrag: 'drag:startFile',

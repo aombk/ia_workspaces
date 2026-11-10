@@ -143,20 +143,50 @@ await checkAsync('a remote that wants credentials fails instead of asking', asyn
   assert.ok(Date.now() - started < 30_000, 'it gave up rather than waiting')
 })
 
-await checkAsync('a save, send or tag waits for a background fetch to finish first', async () => {
-  const slow = path.join(out, 'slow')
-  git(out, 'clone', '-q', bare, slow)
-  // A remote that takes a second and a half to answer, so the fetch is
-  // certainly still running when the tag is asked for. `ext::` runs a command
-  // as the transport; it is off unless a repository allows it.
-  git(slow, 'config', 'protocol.ext.allow', 'always')
-  git(slow, 'remote', 'set-url', 'origin', `ext::sh -c sleep% 1.5;% git-upload-pack% '${bare}'`)
+/** A clone whose remote takes a second and a half to answer, so a fetch is certainly still running. */
+const slowClone = (name) => {
+  const dir = path.join(out, name)
+  git(out, 'clone', '-q', bare, dir)
+  // `ext::` runs a command as the transport; it is off unless a repository allows it.
+  git(dir, 'config', 'protocol.ext.allow', 'always')
+  git(dir, 'remote', 'set-url', 'origin', `ext::sh -c sleep% 1.5;% git-upload-pack% '${bare}'`)
+  return dir
+}
+
+await checkAsync('local work does not wait for a background fetch', async () => {
+  const slow = slowClone('slow-local')
   const order = []
   const fetched = G.backgroundFetch(slow, 0).then((res) => order.push(`fetch:${res.status}`))
   await new Promise((r) => setTimeout(r, 200))
-  const tagged = G.addTag(slow, 'HEAD', 'waited').then((res) => order.push(`tag:${res.ok}`))
+  const tagged = G.addTag(slow, 'HEAD', 'not-waiting').then((res) => order.push(`tag:${res.ok}`))
   await Promise.all([fetched, tagged])
-  assert.deepEqual(order, ['fetch:fetched', 'tag:true'], 'the tag was made after the fetch, not during it')
+  assert.deepEqual(order, ['tag:true', 'fetch:fetched'], 'a tag touches nothing a fetch writes')
+})
+
+await checkAsync('a peek waits for a fetch already running in the same checkout', async () => {
+  const slow = slowClone('slow-peek')
+  const order = []
+  const fetched = G.backgroundFetch(slow, 0).then((res) => order.push(`fetch:${res.status}`))
+  await new Promise((r) => setTimeout(r, 200))
+  const peeked = G.peek(slow).then((res) => order.push(`peek:${res.ok}`))
+  await Promise.all([fetched, peeked])
+  assert.deepEqual(order, ['fetch:fetched', 'peek:true'], 'two fetches never write the same refs at once')
+})
+
+await checkAsync('a fetch still waiting for its turn is called off when you press a button', async () => {
+  // Both lanes busy with slow fetches elsewhere, so this one queues.
+  const busy = [slowClone('slow-lane-1'), slowClone('slow-lane-2')].map((dir) => G.backgroundFetch(dir, 0))
+  const mine = path.join(out, 'queued')
+  git(out, 'clone', '-q', bare, mine)
+  await new Promise((r) => setTimeout(r, 200))
+  const queued = G.backgroundFetch(mine, 0)
+  await new Promise((r) => setTimeout(r, 400))
+  const started = Date.now()
+  const peeked = await G.peek(mine)
+  assert.ok(peeked.ok, peeked.error)
+  assert.ok(Date.now() - started < 1200, 'the peek did not wait behind the other projects')
+  assert.equal((await queued).status, 'skipped', 'the queued fetch never ran')
+  await Promise.all(busy)
 })
 
 fs.rmSync(out, { recursive: true, force: true })

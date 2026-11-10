@@ -71,6 +71,7 @@ import { initBreaks } from './ui/breakScreen'
 import { initTokenMonitor } from './ui/tokenMonitor'
 import { initTurnMonitor } from './ui/turnMonitor'
 import { typeIntoPane } from './ui/paneInput'
+import { closeTerminalFind, initTerminalFind, openTerminalFind } from './ui/terminalFind'
 import { initSystemStrip, syncSystemStrip } from './ui/systemStrip'
 import { initAwakeStrip } from './ui/awakeStrip'
 import { initInbox, renderInbox, toggleInbox, closeInbox } from './ui/inboxPanel'
@@ -314,7 +315,7 @@ export async function start(): Promise<void> {
   wireContextMenuFallback()
   wireKeyboard()
   wireDockedTree()
-  wireFindbar()
+  initTerminalFind(terminals)
   wireStatusbar()
   wireWindowControls()
   wireAlerts()
@@ -2101,7 +2102,7 @@ function wireKeyboard(): void {
       if (e.key === 'Escape') {
         hideContextMenu()
         if (!(document.getElementById('findbar') as HTMLElement).hidden) {
-          closeFindbar()
+          closeTerminalFind()
           e.preventDefault()
           return
         }
@@ -2231,7 +2232,7 @@ function wireKeyboard(): void {
         // on down to the pane, which is the whole point of standing aside.
         if ((document.activeElement as HTMLElement | null)?.closest('[data-own-find]')) return
         e.preventDefault()
-        openFindbar()
+        openTerminalFind()
         return
       }
       if (ctrl && !e.shiftKey && key === 'k') {
@@ -2427,43 +2428,6 @@ function cycleTab(direction: 1 | -1): void {
   const current = tabs.findIndex((t) => t.id === workspace.activeTabId)
   const next = (current + direction + tabs.length) % tabs.length
   actions.selectTab(workspace.id, tabs[next].id)
-}
-
-// ----------------------------------------------------------------------- findbar
-
-function openFindbar(): void {
-  ;(document.getElementById('findbar') as HTMLElement).hidden = false
-  const input = document.getElementById('find-input') as HTMLInputElement
-  input.focus()
-  input.select()
-}
-
-function closeFindbar(): void {
-  ;(document.getElementById('findbar') as HTMLElement).hidden = true
-  terminals.clearSearch()
-  terminals.focusActive()
-}
-
-function wireFindbar(): void {
-  const input = document.getElementById('find-input') as HTMLInputElement
-
-  input.addEventListener('keydown', (e) => {
-    e.stopPropagation()
-    if (e.key === 'Enter') {
-      if (e.shiftKey) terminals.findPrevious(input.value)
-      else terminals.findNext(input.value)
-    } else if (e.key === 'Escape') {
-      closeFindbar()
-    }
-  })
-  input.addEventListener('input', () => {
-    if (input.value) terminals.findNext(input.value)
-    else terminals.clearSearch()
-  })
-
-  document.getElementById('find-next')!.addEventListener('click', () => terminals.findNext(input.value))
-  document.getElementById('find-prev')!.addEventListener('click', () => terminals.findPrevious(input.value))
-  document.getElementById('find-close')!.addEventListener('click', closeFindbar)
 }
 
 // --------------------------------------------------------------------- statusbar

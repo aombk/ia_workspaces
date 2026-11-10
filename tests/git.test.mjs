@@ -1388,5 +1388,56 @@ await checkAsync('after a stopped push the last save can be taken back, files ke
   assert.equal(status.files.find((f) => f.repoPath === 'wrong.txt').picked, '')
 })
 
+// ---------------------------------------------------- what bringing in would do
+
+await checkAsync('before bringing in, the files it changes and the ones you changed too are named', async () => {
+  const origin = path.join(out, 'incoming-origin.git')
+  const run = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim()
+  execFileSync('git', ['init', '--bare', '--initial-branch=main', origin], { encoding: 'utf8', windowsHide: true })
+  const clone = (name) => {
+    const dir = path.join(out, name)
+    execFileSync('git', ['clone', '-q', '-c', 'core.autocrlf=false', origin, dir], { encoding: 'utf8', windowsHide: true })
+    run(dir, 'config', 'user.email', 'test@example.com')
+    run(dir, 'config', 'user.name', 'Test Person')
+    run(dir, 'config', 'commit.gpgsign', 'false')
+    return dir
+  }
+  const here = clone('incoming-here')
+  run(here, 'checkout', '-q', '-b', 'main')
+  for (const f of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) fs.writeFileSync(path.join(here, f), `${f}\n`)
+  run(here, 'add', '.')
+  run(here, 'commit', '-q', '-m', 'start')
+  run(here, 'push', '-q', '-u', 'origin', 'main')
+
+  // The other machine changes three files and sends them.
+  const there = clone('incoming-there')
+  for (const f of ['a.txt', 'b.txt', 'c.txt']) fs.writeFileSync(path.join(there, f), `${f} from there\n`)
+  run(there, 'commit', '-q', '-am', 'there')
+  run(there, 'push', '-q', 'origin', 'main')
+
+  // Here: b.txt in a save not sent yet, a.txt changed and not saved, d.txt untouched by them.
+  fs.writeFileSync(path.join(here, 'b.txt'), 'b here\n')
+  run(here, 'commit', '-q', '-am', 'here')
+  fs.writeFileSync(path.join(here, 'a.txt'), 'a here\n')
+  fs.writeFileSync(path.join(here, 'd.txt'), 'd here\n')
+  run(here, 'fetch', '-q')
+
+  const status = await G.repoStatus(here)
+  assert.equal(status.behind, 1)
+  assert.deepEqual(status.incomingFiles.map((f) => `${f.change} ${f.repoPath}`).sort(), ['M a.txt', 'M b.txt', 'M c.txt'])
+  assert.deepEqual(
+    status.bothChanged.map((b) => `${b.repoPath}:${b.here}`).sort(),
+    ['a.txt:unsaved', 'b.txt:unsent'],
+    'only what both sides touched, and where it is here'
+  )
+
+  // Level again: nothing is said.
+  run(here, 'checkout', '-q', '--', 'a.txt', 'd.txt')
+  run(here, 'pull', '-q', '--rebase', '-X', 'theirs')
+  const level = await G.repoStatus(here)
+  assert.equal(level.behind, 0)
+  assert.equal(level.incomingFiles, undefined)
+})
+
 removeOut()
 console.log(`\n${passed} checks passed`)

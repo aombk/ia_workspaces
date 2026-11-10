@@ -1,6 +1,7 @@
 import type { KeepAwakeMode } from './powerLock'
 import type { WorkspaceOrder, WorkspaceUsage } from './workspaceUsage'
 import type { WorkspacePreset } from './workspacePreset'
+import type { BothChanged, IncomingFile } from './gitIncoming'
 
 export type { KeepAwakeMode }
 
@@ -2780,6 +2781,13 @@ export interface RepoStatus {
    * Empty unless the branch is paired with one online and behind it.
    */
   incoming: string[]
+  /**
+   * The files bringing `incoming` in would change, with git's letter. Unset
+   * unless behind — see `shared/gitIncoming.ts`.
+   */
+  incomingFiles?: IncomingFile[]
+  /** Of `incomingFiles`, the ones changed here too, unsaved or in a save not sent yet. */
+  bothChanged?: BothChanged[]
   /**
    * A rebase, merge or cherry-pick that stopped part-way and is waiting.
    *
