@@ -18,6 +18,11 @@
   - inherit on the child: a shell we spawn, and everything it spawns after that,
     must not inherit our sandbox restrictions. A terminal that could not run
     `git` would be pointless.
+
+  - device.audio-input: without it the hardened runtime blocks the microphone
+    for us and for every program run in our terminals, silently: macOS never
+    asks, and adding the app under Privacy & Security > Microphone does nothing.
+    (NSMicrophoneUsageDescription in Info.plist is needed too, and is there.)
 -->
 <plist version="1.0">
 <dict>
@@ -28,6 +33,8 @@
   <key>com.apple.security.cs.allow-dyld-environment-variables</key>
   <true/>
   <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.device.audio-input</key>
   <true/>
 </dict>
 </plist>
