@@ -27,6 +27,24 @@ release. It turned out to solve problems other people have too, so here it is.
 
   What each row shows is on the sidebar's own right-click, under *Sidebar
   shows*: git branch, tab count, tokens spent.
+
+  **A new workspace starts ready to work.** `+` asks for its folder first and
+  names the workspace after it. What it opens with is a **preset**: right-click
+  a workspace → *Presets* → *Save tabs as preset…* records its tabs, splits,
+  pane names and whether the file tree is docked, with every folder stored
+  relative to the workspace's own — so a "dev: build above, claude below" layout
+  lands in whichever project you load it into. Pick one under *New workspaces
+  start with* and every new workspace opens that way; the first preset you save
+  becomes that default.
+
+  **Order** is yours to drag by default. Settings → Behaviour → *Workspace
+  order* also sorts by name, by size on disk, or by how much you actually work
+  in each one — the hours the time log has recorded, halved every two weeks
+  (*Halve the counted time every*) so a project you stop using sinks and a new
+  one can climb. Sorting only happens at startup and after half a day away, so
+  nothing jumps while you work. In any order, right-click → *Send to top* /
+  *Send to bottom* pins a workspace there until you choose *Let it sort again*,
+  and dragging still works.
 - **Tabs and split panes.** Split any tab left/right or up/down, drag the
   dividers to resize, `Alt`+arrows to move between panes. Each pane is its own
   shell. Drag a tab onto a pane's edge to fold it in as a split — it brings
@@ -431,7 +449,36 @@ release. It turned out to solve problems other people have too, so here it is.
 - **Tells you when a terminal needs you** — desktop notification when the window
   is in the background, in-app toast when it isn't, a chime, a ring around the
   pane, a dot on the tab and workspace, and a notification panel (`Ctrl+I`) with
-  unread tracking.
+  unread tracking. A workspace left waiting gets harder to miss: its dot fades
+  slowly at first, after two minutes it blinks twice every few seconds, and
+  after ten the whole row blinks with it.
+
+- **Reminds you to get up** (Settings → *Breaks and exercise*). After 25
+  minutes at the machine the window is covered by a short break with one
+  exercise, standing or seated — counted down on screen, with a sound when it
+  is over. "At the machine" means keyboard or mouse in any program, not this
+  window having focus; walking away for as long as a break lasts counts as one,
+  and the count starts again. A break that is due waits for a pause — twenty
+  seconds without typing, switching workspace — so it does not land
+  mid-thought, and comes anyway after *Wait for a pause, up to*.
+
+  Exercises are dealt like a shuffled deck: none repeats until every one has
+  come up, then the deck is shuffled again. Tick the equipment you have (a
+  band, weights, a mat, a step…) and one minute of each break uses it; tick
+  what to *Go easy on* — knees, lower back, wrists, balance, impact and so on —
+  and nothing that works it is ever suggested. Skipping means typing a
+  sentence; there is no button for it.
+
+- **On your phone and watch** (Settings → *Phone and watch*). Through
+  [ntfy](https://ntfy.sh), a free push service: install its app, subscribe to
+  one long random topic, and put the same topic here. Then a break starting, a
+  break ending, an agent asking you something and (off by default) an agent
+  finishing all arrive as one notification each — and a band or watch that
+  buzzes for phone notifications buzzes too. Agent messages are sent only when
+  you are away: no keyboard or mouse for *Away after* minutes, 2 by default,
+  since at the desk the sidebar already tells you. *Send test* checks the topic.
+  On the public server anyone who knows a topic can read it, so make it long and
+  random; what is sent is a workspace name, a pane name and the agent's question.
 
 ## Running it
 
@@ -865,6 +912,30 @@ standing on is just as absent, and the count in the headline would never mention
 it. "Have I actually sent this" is the thing people get wrong about git more
 than anything else, and no client answers it out loud.
 
+### Before you bring anything in
+
+A fetch — *peek*, or the one the app does in the background at startup and when
+a git pane is shown — only downloads saves; nothing you can see changes until
+you bring them in. So that is the moment the useful question can still be
+answered calmly, and the band at the top of the git pane answers it under "GitHub has N saves you
+have not got":
+
+- **which files bringing them in would change**;
+- **⚠ which of those you have changed here too**, and where — *not saved yet*,
+  or *in a save not sent yet*;
+- **whether it will go in cleanly**: none of yours touched; git will refuse to
+  start until your unsaved files are saved (it never overwrites them); or it
+  will put their saves first and yours on top, and stop to ask wherever you both
+  changed the same lines.
+
+The *Bring in* confirmation repeats it, and a background fetch that brings in
+something touching your files says so in its notification.
+
+A background fetch never holds up local work. Saving, switching branch, undo
+and tags go straight through; a fetch still queued behind other projects is
+called off when you press a button; only a send, a bring-in or a peek waits for
+one already running in the same project, since both write the same refs.
+
 ### When git says no
 
 The plain sentence and git's own message, together, never one instead of the
@@ -1219,6 +1290,23 @@ it on the prompt without sending it** — the same rule the runbook and the
 history box follow, and for the same reason: a prompt from six weeks ago may
 have been *delete the staging bucket*.
 
+### Finding something said in this conversation
+
+`Ctrl+F` in a terminal marks every match, takes you to each in turn and says
+"3 of 12". In a pane running Claude Code it can search the **conversation**
+instead of the screen — and opens that way when Claude Code is drawing full
+screen, because then the terminal holds one screenful and nothing above it.
+The conversation is read from Claude Code's own transcript: your prompts,
+Claude's replies and the summary left when a conversation is compacted, newest
+first, with the count of matches and messages. `Enter` and `Shift+Enter` walk
+the list; the message you are on opens whole, scrolled to the match, ready to
+select and copy. A button on the bar switches between *Terminal* and
+*Conversation*.
+
+It cannot scroll Claude Code's own view to the match — that scrolling belongs
+to Claude Code — which is why the message is shown in the bar. The bar reads
+only Claude Code's transcripts, never any other file.
+
 ### The files it has open
 
 The palette's Go-to box lists the files the agent in the pane you came from has
@@ -1454,7 +1542,7 @@ different things can still lose one.
 | `Ctrl` `Alt` `V` | transcripts of panes you have closed |
 | `Ctrl` `I` | notification panel |
 | `Ctrl` `Shift` `U` | jump to oldest unread |
-| `Ctrl` `F` | find — in the terminal, the editor, or the canvas you are on |
+| `Ctrl` `F` | find — in the terminal (in a Claude pane, the whole conversation), the editor, or the canvas you are on |
 | `Ctrl` `K` | clear scrollback |
 | `Ctrl` `B` | collapse sidebar |
 | `Ctrl` `,` | settings |

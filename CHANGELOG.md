@@ -2,6 +2,46 @@
 
 All notable changes to this project.
 
+## [Unreleased]
+
+### Added
+
+- **Reminders to get up.** After a stretch at the machine (25 minutes by
+  default, counted from keyboard and mouse in any program) a short break with
+  one exercise, standing or seated, covers the window. It waits for a pause
+  before it comes, and walking away for a break's length counts as one.
+  Equipment you have and parts to go easy on are settings; exercises are dealt
+  like a shuffled deck, so none repeats until all have come up.
+- **Phone and watch notifications through ntfy.** One topic for everything: a
+  break starting and ending, an agent asking you something, and (optional) an
+  agent finishing — the agent ones only while you are away from the computer.
+  A band or watch that buzzes for the phone buzzes too.
+- **Workspace presets.** Save a workspace's tabs, splits, pane names and docked
+  file tree as a preset, with folders relative to the workspace, and load it
+  into any other — or have every new workspace start with it.
+- **New workspaces ask for their folder** and are named after it.
+- **Workspace order** by name, size on disk, or how much you work in each
+  (time-log hours with a half-life), beside manual. *Send to top* / *Send to
+  bottom* pin a workspace in any order.
+- **Find in a Claude conversation.** `Ctrl+F` in a Claude Code pane searches
+  the whole conversation from its transcript — prompts, replies, compaction
+  summaries — and shows each matching message in full. In any terminal, find
+  now marks every match and counts them.
+- **What bringing in would change.** After a fetch the git pane names the files
+  the incoming saves change, warns about any you have changed too (unsaved or
+  unsent), and says whether bringing in will go cleanly. The confirmation and
+  the background fetch notification say the same.
+
+### Changed
+
+- **A waiting workspace gets more insistent**: a slow fade at first, then a
+  double blink after two minutes, and the whole row after ten.
+- **Background fetches no longer hold up local work.** Saves, branch changes,
+  undo and tags never wait; a fetch still queued is called off when you press a
+  button; only send, bring in and peek wait for one already running.
+- **Terminal and transcript restore** no longer overlap the previous screen when
+  a full-screen program exits.
+
 ## [1.3.0] — 2026-10-29
 
 ### Added
