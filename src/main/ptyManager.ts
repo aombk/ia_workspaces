@@ -5,6 +5,8 @@ import { OscScanner } from './oscScanner'
 import { resolveShell } from './shells'
 import { ActivityMonitor } from './activityMonitor'
 import { AgentStateRegistry, encodeKey, type AgentReport } from './agentState'
+import { JobRegistry } from './jobs'
+import type { JobReport } from '../shared/jobs'
 import { isPhantomExit, isPidAlive, reapPhantom } from './phantomExit'
 import type { ScrollbackStore } from './scrollback'
 import type { PidMap } from './pidMap'
@@ -243,6 +245,8 @@ export class PtyManager {
   private static readonly SLEEP_REAP_AFTER_MS = 2_000
   private readonly activity: ActivityMonitor
   readonly agents: AgentStateRegistry
+  /** Long-running jobs started from each pane. See `jobs.ts`. */
+  readonly jobs: JobRegistry
   private backend: PtyBackend | null = null
   private starting: Promise<PtyBackend> | null = null
 
@@ -259,6 +263,7 @@ export class PtyManager {
       () => this.getSettings().notifications.idleSeconds * 1000
     )
     this.agents = new AgentStateRegistry((agent) => this.handleAgentState(agent))
+    this.jobs = new JobRegistry((paneId, jobs) => this.hooks.onStatus({ paneId, jobs }))
   }
 
   /**
@@ -715,6 +720,10 @@ export class PtyManager {
     // — all for a process that no longer exists. `kill` and `sleep` already
     // did this; an exit nobody asked for is the same ending.
     this.agents.release(session.id)
+    // Its jobs too: whatever was reporting from that shell went with it, and a
+    // strip still counting down under a dead prompt is the frozen bar this
+    // feature promises not to show.
+    this.jobs.release(session.id)
     this.deps.pidMap.unregister(session.pid)
     // The pane outlives its shell — keep the screen so a restart still has it.
     void this.deps.scrollback.flush(session.id)
@@ -896,6 +905,7 @@ export class PtyManager {
     if (starting) starting.cancelled = true
     this.activity.stop(paneId)
     this.agents.release(paneId)
+    this.jobs.release(paneId)
     // The last moment the transcript exists. `drop` below is right for the
     // *buffer* — it exists to restore a pane, and this pane is not coming back
     // — but the content is a different thing, and throwing it away was the one
@@ -955,6 +965,7 @@ export class PtyManager {
     if (!s) return
     this.activity.stop(paneId)
     this.agents.release(paneId)
+    this.jobs.release(paneId)
     // Deliberately *not* `scrollback.drop`: the screen is the pane's, and the
     // pane is still here. Flushed instead, so a restart restores what it said.
     void this.deps.scrollback.flush(paneId)
@@ -1099,6 +1110,12 @@ export class PtyManager {
   reportAgent(paneId: string, report: AgentReport): boolean {
     if (!this.sessions.has(paneId)) return false
     return this.agents.report(paneId, report)
+  }
+
+  /** A job started from a pane saying how far it has got. Null when accepted. */
+  reportJob(paneId: string, report: JobReport): string | null {
+    if (!this.sessions.has(paneId)) return 'unknown pane'
+    return this.jobs.report(paneId, report)
   }
 
   /**
@@ -1308,6 +1325,7 @@ export class PtyManager {
         activity: this.activity.isActive(session.id) ? 'active' : 'idle',
         agent: agents.get(session.id),
         command: session.commandShown,
+        jobs: this.jobs.snapshot(session.id),
       })
     }
     return out

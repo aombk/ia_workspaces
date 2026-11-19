@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { PaneSummary, TreeSnapshot } from './controlSurface'
 import type { AgentChoice, PaneAgentState } from '../shared/types'
+import type { JobReport } from '../shared/jobs'
 import type { EventPage } from './events'
 import { ipcAddress, ipcRuntimeDir, isPipeAddress, platformKind } from '../shared/platform'
 
@@ -53,6 +54,7 @@ export type Method =
   | 'read-screen'
   | 'events'
   | 'open'
+  | 'job'
 
 export interface ControlRequest {
   method: Method
@@ -112,6 +114,14 @@ export interface ControlRequest {
   edit?: boolean
   /** `open`: the target is a web address. */
   url?: boolean
+  /**
+   * `job`: one report about a long-running job started from this pane.
+   *
+   * Nested rather than spread across the fields above, because half of its
+   * words — `title`, `ttl` — already mean something to another verb, and a
+   * TTL in seconds here beside one in milliseconds there is a bug waiting.
+   */
+  job?: JobReport
 }
 
 export interface ControlResponse {

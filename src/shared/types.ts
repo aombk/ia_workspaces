@@ -1,6 +1,7 @@
 import type { KeepAwakeMode } from './powerLock'
 import type { WorkspaceOrder, WorkspaceUsage } from './workspaceUsage'
 import type { WorkspacePreset } from './workspacePreset'
+import type { PaneJob } from './jobs'
 import type { BothChanged, IncomingFile } from './gitIncoming'
 
 export type { KeepAwakeMode }
@@ -3179,7 +3180,12 @@ export interface PaneStatus {
    * been running for a couple of seconds (true), or has ended (false). From
    * shell integration's 133;C/D, so a shell without it never reports one.
    */
-  command?: boolean
+  command?: boolean  /**
+   * The long-running jobs started from this pane, as `iaw job` declared them.
+   * Always the whole list, so an empty array is news too: the last one went.
+   * See `shared/jobs.ts`.
+   */
+  jobs?: PaneJob[]
 }
 
 export const DEFAULT_NOTIFICATIONS: NotificationSettings = {

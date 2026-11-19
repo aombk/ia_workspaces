@@ -1835,20 +1835,22 @@ function wireAlerts(): void {
   backend().on.alert(handleAlert)
   backend().on.controlApproval((request) => void askCrossPane(request))
 
-  backend().on.paneStatus(({ paneId, activity, agent, command }) => {
+  backend().on.paneStatus(({ paneId, activity, agent, command, jobs }) => {
     if (activity) store.setPaneActivity(paneId, activity)
     if (agent) store.setPaneAgent(paneId, agent)
     if (command !== undefined) store.setPaneCommand(paneId, command)
+    if (jobs) store.setPaneJobs(paneId, jobs)
   })
   // Statuses are sent as they change, so a window opened after an agent
   // started — any window but the first — has to ask what it missed.
   void backend()
     .windows?.statuses()
     .then((all) => {
-      for (const { paneId, activity, agent, command } of all) {
+      for (const { paneId, activity, agent, command, jobs } of all) {
         if (activity) store.setPaneActivity(paneId, activity)
         if (agent) store.setPaneAgent(paneId, agent)
         if (command !== undefined) store.setPaneCommand(paneId, command)
+        if (jobs) store.setPaneJobs(paneId, jobs)
       }
     })
 

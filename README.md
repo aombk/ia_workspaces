@@ -1237,6 +1237,59 @@ pane you close like any other.
 Whether the file turns out to be readable is the pane's business to report, in
 the pane, exactly as it would for a file you opened yourself.
 
+## How far along a long job is
+
+An agent starts a render, a batch upload or a test matrix, and then it either
+sits there or goes on to something else — and the only way to know how the job
+is doing is to ask it, or to go and read a log. The job itself knows exactly
+how far it has got. It just had nowhere to say so.
+
+```bash
+iaw job start  --id render --title "render v2 portrait" --total 500
+iaw job update --id render --done 340 --detail "frame 340"
+iaw job update --id upload --pct 68             # when a percentage is all it has
+iaw job done   --id render
+iaw job fail   --id upload --reason "S3 returned 403"
+```
+
+A strip appears along the bottom of the pane the job was started from: the
+title, a bar, a percentage and roughly how long is left, with `+1 more` when
+there is more than one. Click it for a row per job — bar, percentage,
+done/total, elapsed, time left and the job's own detail line — and again to
+fold it back. Which way each pane is folded is remembered until the app quits.
+A pane with no jobs has no strip.
+
+**The bar is declared; the time left is not.** Every number on the strip came
+from the job, except one: the time left is worked out here, from how fast the
+job's own reports say it is going, and is marked `~` because that is all it
+is. It is measured from the first update rather than from `start`, so a job
+that spent half a minute loading before doing anything is not predicted to take
+forever. And it is not shown until there are two updates a few seconds apart —
+one report is a position, not a speed.
+
+**Silence is said out loud.** A job that has not reported for longer than its
+`--ttl` (thirty seconds unless it says otherwise) stops showing a time left,
+fades its bar and says *no update for 45 s*. A bar frozen at 60% looks exactly
+like one that is about to move, and only one of them is telling the truth.
+After half an hour of nothing the job is taken to be gone — a script killed
+with Ctrl+C never gets to say `fail`.
+
+**Finishing is shown, then cleared.** Done turns green and goes after ten
+seconds. A failure turns red with its reason and stays until the next job
+starts on that pane or two minutes pass, because it is the one outcome somebody
+may have to do something about and they may not have been looking.
+
+It sits below the blocked bar when both are up — the question is the thing
+holding work up, so it stays nearest the prompt — and like that bar it takes
+rows from the terminal rather than covering them.
+
+Two things make it safe to call from anywhere. `--quiet` turns "there is no app
+here" into silence and a zero exit, so a script can report unconditionally and
+still run unchanged outside this terminal. And updates are cheap at the far
+end: call `update` as often as you like, and the pane redraws a few times a
+second at most. The cost that remains is the call itself — each one is a
+process start — so once a second is plenty for anything a person is watching.
+
 ## What the agent has been doing
 
 Claude Code writes every conversation to `~/.claude/projects` as it happens —

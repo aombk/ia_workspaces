@@ -56,6 +56,7 @@ import {
   type WorkspaceFile,
 } from '../shared/workspaceFile'
 import type { ExternalApp } from '../shared/types'
+import type { PaneJob } from '../shared/jobs'
 import type { InterfaceTheme, TerminalTheme } from '../shared/themes'
 
 /**
@@ -217,6 +218,9 @@ class WorkspaceState {
   /** Panes running a command that is not an agent. See `PaneStatus.command`. */
   private readonly commands = new Set<string>()
   private readonly runEndedListeners = new Set<(paneId: string) => void>()
+  /** Jobs each pane has declared over `iaw job`. See `shared/jobs.ts`. */
+  private readonly jobs = new Map<string, PaneJob[]>()
+  private readonly jobListeners = new Set<(paneId: string) => void>()
 
   async load(): Promise<void> {
     const windows = backend().windows
@@ -752,6 +756,19 @@ class WorkspaceState {
   onAgentRunEnded(cb: (paneId: string) => void): () => void {
     this.runEndedListeners.add(cb)
     return () => this.runEndedListeners.delete(cb)
+  }
+
+  /**
+   * A pane's jobs changed. Its own channel, not `emit`.
+   *
+   * A job may report several times a second, and `emit` repaints the sidebar,
+   * the tab strip, the inbox and every pane — all to move one bar along one
+   * strip. Nothing else in the window depends on a job's progress, so the one
+   * thing that draws it is the one thing told.
+   */
+  onPaneJobs(cb: (paneId: string) => void): () => void {
+    this.jobListeners.add(cb)
+    return () => this.jobListeners.delete(cb)
   }
 
   private emit(): void {
@@ -2132,6 +2149,16 @@ class WorkspaceState {
 
   paneAgent(paneId: string): PaneAgentState | null {
     return this.agents.get(paneId) ?? null
+  }
+
+  setPaneJobs(paneId: string, jobs: PaneJob[]): void {
+    if (jobs.length) this.jobs.set(paneId, jobs)
+    else if (!this.jobs.delete(paneId)) return
+    for (const cb of this.jobListeners) cb(paneId)
+  }
+
+  paneJobs(paneId: string): readonly PaneJob[] {
+    return this.jobs.get(paneId) ?? []
   }
 
   /**

@@ -2088,6 +2088,11 @@ function bootApp(): void {
         }
         case 'agent-state':
           return { ok: true, data: ptys.agentState(req.paneId) }
+        case 'job': {
+          if (!req.job) return { ok: false, error: 'no job report' }
+          const error = ptys.reportJob(req.paneId!, req.job)
+          return error ? { ok: false, error } : { ok: true }
+        }
 
         case 'tree':
           return { ok: true, data: buildTree(hub.doc, (id) => ptys.has(id)) }

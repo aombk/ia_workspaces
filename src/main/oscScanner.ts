@@ -152,7 +152,11 @@ export class OscScanner {
           const cwd = stripQuotes(raw)
           if (cwd) this.events.onCwd(stripTrailingSlash(cwd))
         } else if (subId === '4') {
-          // progress reports — ignored
+          // progress reports — ignored. They are declared, not scraped (a
+          // program emits them on purpose), so they could feed the same strip
+          // `iaw job` draws — see `shared/jobs.ts` — as one job per pane. Not
+          // done yet: nothing here has been tested against the programs that
+          // send them.
         } else if (rest) {
           this.events.onNotify('Terminal', rest)
         }

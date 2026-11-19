@@ -26,6 +26,7 @@ import { PromptsPane } from './promptsPane'
 import { SpacePane, type SpacePaneHooks } from './spacePane'
 import { lastTurn, watchTurns } from './ui/turnMonitor'
 import { describeTurn } from './ui/turnFacts'
+import { jobRows, type JobRow } from '../shared/jobs'
 import { addImageNotes } from './ui/imageNotes'
 import { showToast } from './ui/toast'
 import { syncApps } from './ui/externalApps'
@@ -109,6 +110,9 @@ interface Instance {
   /** How far through the work the agent says it is, along the top. */
   progressBar: HTMLDivElement
   progressSignature: string
+  /** Long-running jobs started from this pane, along the bottom. */
+  jobsBar: HTMLDivElement
+  jobsSignature: string
   spawned: boolean
   disposed: boolean
   /** Last size sent to the PTY, to avoid redundant resize round-trips. */
@@ -205,6 +209,13 @@ export class TerminalManager {
    * shell that exited, must not re-enter the conversation behind your back.
    */
   private readonly startedOnce = new Set<string>()
+  /**
+   * Panes whose jobs strip is open to one row per job. For the session only:
+   * it is a way of looking at work that will itself be gone by the next run.
+   */
+  private readonly jobsExpanded = new Set<string>()
+  /** Ticks while any pane shows a job, so elapsed and time left keep moving. */
+  private jobsTimer: number | null = null
 
   constructor(host: HTMLElement) {
     this.host = host
@@ -230,6 +241,13 @@ export class TerminalManager {
     // signature changes, so asking for the whole pass costs a handful of string
     // comparisons.
     watchTurns(() => this.applyPaneStatus())
+
+    // Jobs arrive on their own channel — see `onPaneJobs` — so a script
+    // updating several times a second repaints one strip, not the window.
+    store.onPaneJobs((paneId) => {
+      const inst = this.instances.get(paneId)
+      if (inst && !inst.disposed) this.renderJobs(inst)
+    })
 
     // Minimised or fully covered: the whole window is drawing nothing, so no
     // pane needs a graphics context. Chromium does not take them back on its
@@ -480,6 +498,26 @@ export class TerminalManager {
     blockedBar.hidden = true
     element.appendChild(blockedBar)
 
+    // Underneath the blocked bar, in the same padding. Jobs are the quieter of
+    // the two — a question holds everything up, a render just runs — so the
+    // question sits nearer the prompt it is about and this takes the very
+    // bottom edge, where a status line is expected.
+    const jobsBar = document.createElement('div')
+    jobsBar.className = 'pane-jobs'
+    jobsBar.hidden = true
+    jobsBar.setAttribute('role', 'button')
+    // Keeps focus in the terminal: the strip is something you glance at and
+    // occasionally open, not somewhere typing should go.
+    jobsBar.addEventListener('mousedown', (e) => e.preventDefault())
+    jobsBar.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (this.jobsExpanded.has(paneId)) this.jobsExpanded.delete(paneId)
+      else this.jobsExpanded.add(paneId)
+      const self = this.instances.get(paneId)
+      if (self) this.renderJobs(self)
+    })
+    element.appendChild(jobsBar)
+
     // The opposite corner from the blocked bar, and the top-right one because
     // it is the part of a terminal that is reliably empty — see `.pane-turn`.
     // Absolute, like everything else that floats here: a strip that took part
@@ -523,6 +561,8 @@ export class TerminalManager {
       turnSignature: '',
       progressBar,
       progressSignature: '',
+      jobsBar,
+      jobsSignature: '',
       spawned: false,
       disposed: false,
       lastCols: 0,
@@ -1762,6 +1802,7 @@ export class TerminalManager {
       if (this.syncBlockedInset(inst)) this.fit(inst)
       this.renderTurnBar(inst)
       this.renderProgress(inst)
+      this.renderJobs(inst)
     }
     // Panes that draw from store state rather than from a PTY. Each decides for
     // itself whether anything actually changed — and only the ones on screen
@@ -1844,7 +1885,12 @@ export class TerminalManager {
    * bar wraps on a narrow pane.
    */
   private syncBlockedInset(inst: Instance): boolean {
-    const next = inst.blockedBar.hidden ? '' : `${inst.blockedBar.offsetHeight}px`
+    // The jobs strip shares the padding, below the blocked bar, by the same
+    // reasoning: a strip covering the last rows covers the prompt.
+    const jobs = inst.jobsBar.hidden ? 0 : inst.jobsBar.offsetHeight
+    const blocked = inst.blockedBar.hidden ? 0 : inst.blockedBar.offsetHeight
+    inst.blockedBar.style.bottom = jobs ? `${jobs}px` : ''
+    const next = jobs + blocked ? `${jobs + blocked}px` : ''
     if (inst.element.style.paddingBottom === next) return false
     inst.element.style.paddingBottom = next
     return true
@@ -1876,6 +1922,68 @@ export class TerminalManager {
     if (!show) return
     inst.progressBar.style.width = `${Math.max(0, Math.min(100, pct))}%`
     inst.progressBar.title = `The agent says it is ${Math.round(pct)}% through this turn.`
+  }
+
+  /**
+   * The jobs started from this pane, along its bottom edge.
+   *
+   * Everything a row says is decided in `shared/jobs.ts` — which jobs are still
+   * worth showing, whether one has gone stale, whether there is enough history
+   * for a time left — so this only draws. A pane with no jobs has no strip at
+   * all, not an empty one.
+   *
+   * Collapsed it is one line about the job most worth reading, with a count of
+   * the rest; a click opens it to a row per job. Redrawn only when what it
+   * would say has changed, which with a clock in it is about once a second.
+   */
+  private renderJobs(inst: Instance): void {
+    const rows = jobRows(store.paneJobs(inst.paneId), Date.now())
+    const expanded = this.jobsExpanded.has(inst.paneId)
+    if (rows.length) this.startJobsTimer()
+
+    const signature = rows.length
+      ? `${expanded ? 'open' : 'shut'}|` + rows.map((r) => jobSignature(r)).join('\n')
+      : ''
+    if (signature === inst.jobsSignature) return
+    inst.jobsSignature = signature
+
+    inst.jobsBar.replaceChildren()
+    inst.jobsBar.hidden = !rows.length
+    if (rows.length) {
+      inst.jobsBar.classList.toggle('expanded', expanded)
+      inst.jobsBar.setAttribute('aria-expanded', String(expanded))
+      inst.jobsBar.title = expanded ? 'Click to show one line' : 'Click to show every job'
+      if (expanded) {
+        rows.forEach((row, i) => inst.jobsBar.appendChild(jobRowElement(row, i === 0 ? '\u25be' : '')))
+      } else {
+        inst.jobsBar.appendChild(jobSummaryElement(rows))
+      }
+    }
+    // Appearing, going, or opening changes how much room the strip needs.
+    if (this.syncBlockedInset(inst)) this.fit(inst)
+  }
+
+  /**
+   * One clock for every strip. It stops itself once nothing shows a job, so a
+   * window with no jobs pays nothing for the feature existing.
+   */
+  private startJobsTimer(): void {
+    if (this.jobsTimer !== null) return
+    this.jobsTimer = window.setInterval(() => {
+      let any = false
+      for (const inst of this.instances.values()) {
+        if (inst.disposed || !store.paneJobs(inst.paneId).length) {
+          if (!inst.disposed && inst.jobsSignature) this.renderJobs(inst)
+          continue
+        }
+        any = true
+        this.renderJobs(inst)
+      }
+      if (!any && this.jobsTimer !== null) {
+        window.clearInterval(this.jobsTimer)
+        this.jobsTimer = null
+      }
+    }, 1000)
   }
 
   /**
@@ -2567,4 +2675,98 @@ export function attachZoomWheel(element: HTMLElement, zoom: PaneZoom): void {
     },
     { passive: false, capture: true }
   )
+}
+
+// ------------------------------------------------------------------ job strip
+
+/** What a row would draw, as a string — so an unchanged row is not redrawn. */
+function jobSignature(row: JobRow): string {
+  return [row.id, row.title, row.state, barWidth(row), pctText(row), row.count, row.elapsed, row.eta, row.note].join('|')
+}
+
+/** The bar's fill to a tenth of a percent: finer than a pixel, coarser than noise. */
+function barWidth(row: JobRow): string {
+  return row.pct === undefined ? '' : `${Math.max(0, Math.min(100, row.pct)).toFixed(1)}%`
+}
+
+/**
+ * Rounded down while running, so a job at 99.6% does not read "100%" while it
+ * is still going — the one number on the strip a person acts on.
+ */
+function pctText(row: JobRow): string {
+  if (row.pct === undefined) return ''
+  return `${row.state === 'done' ? Math.round(row.pct) : Math.floor(row.pct)}%`
+}
+
+function cell(className: string, text: string, title?: string): HTMLSpanElement {
+  const el = document.createElement('span')
+  el.className = className
+  el.textContent = text
+  if (title) el.title = title
+  return el
+}
+
+/**
+ * The bar itself. A job that counts without a total has no fraction, and gets
+ * an empty track rather than a fill the app made up.
+ */
+function jobBar(row: JobRow): HTMLSpanElement {
+  const track = cell('pane-jobs__bar', '')
+  const fill = cell('pane-jobs__fill', '')
+  fill.style.width = barWidth(row) || '0%'
+  track.appendChild(fill)
+  return track
+}
+
+/** What sits after the numbers: the time left, or why there is none. */
+function jobOutcome(row: JobRow): string {
+  if (row.state === 'failed') return `failed: ${row.note ?? ''}`.replace(/: $/, '')
+  if (row.state === 'done') return `done in ${row.elapsed}`
+  if (row.state === 'stale') return row.note ?? ''
+  return row.eta ?? ''
+}
+
+/** The collapsed strip: the first row, and how many more there are. */
+function jobSummaryElement(rows: JobRow[]): HTMLDivElement {
+  const row = rows[0]
+  const line = document.createElement('div')
+  line.className = 'pane-jobs__line'
+  line.dataset.state = row.state
+  line.appendChild(cell('pane-jobs__title', row.title, row.note))
+  line.appendChild(jobBar(row))
+  line.appendChild(cell('pane-jobs__pct', pctText(row) || row.count || ''))
+  line.appendChild(cell('pane-jobs__outcome', jobOutcome(row)))
+  if (rows.length > 1) {
+    // Coloured by the worst of the rest, so a failure behind a running job is
+    // not hidden by the line choosing to talk about something else.
+    const rest = rows.slice(1)
+    const more = cell('pane-jobs__more', `+${rest.length} more`)
+    const worst = rest.find((r) => r.state === 'failed') ?? rest.find((r) => r.state === 'stale')
+    if (worst) more.dataset.state = worst.state
+    line.appendChild(more)
+  }
+  line.appendChild(cell('pane-jobs__toggle', '\u25b8'))
+  return line
+}
+
+/** One row of the open strip. Cells line up across rows through the parent grid. */
+function jobRowElement(row: JobRow, toggle: string): HTMLDivElement {
+  const el = document.createElement('div')
+  el.className = 'pane-jobs__row'
+  el.dataset.state = row.state
+  el.appendChild(cell('pane-jobs__title', row.title, row.title))
+  el.appendChild(jobBar(row))
+  el.appendChild(cell('pane-jobs__pct', pctText(row)))
+  el.appendChild(cell('pane-jobs__count', row.count ?? ''))
+  el.appendChild(cell('pane-jobs__elapsed', row.elapsed, 'Elapsed'))
+  el.appendChild(
+    cell(
+      'pane-jobs__outcome',
+      row.state === 'running' ? (row.eta ?? '') : row.state === 'done' ? 'done' : row.state === 'failed' ? 'failed' : 'stale',
+      row.state === 'running' && row.eta ? 'Estimated from how fast it has been going' : undefined
+    )
+  )
+  el.appendChild(cell('pane-jobs__note', row.note ?? '', row.note))
+  el.appendChild(cell('pane-jobs__toggle', toggle))
+  return el
 }

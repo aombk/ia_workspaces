@@ -4,6 +4,7 @@ import path from 'node:path'
 import { resolveByAncestry, type PaneIdentity } from './pidMap'
 import type { ControlRequest, ControlResponse, Method } from './controlServer'
 import type { AgentChoice, PaneAgentState } from '../shared/types'
+import type { JobReport } from '../shared/jobs'
 import { hostPaths } from '../host/paths'
 import {
   FRAME_JSON,
@@ -31,6 +32,8 @@ const USAGE = `iaw — talk to the ia_workspaces pane you are running in
                                         resume it. With no --id the id is read
                                         from the hook JSON on stdin.
   iaw report-agent [options]            declare what this agent is doing
+  iaw job <start|update|done|fail> ...  show a long job's progress under this
+                                        pane (see "long-running jobs" below)
   iaw ask --question Q --choices C      ask, and wait here for the answer
   iaw answer-agent [--pane ID] --choice C   answer a blocked pane
   iaw agent-state [--pane ID]           print declared state as JSON
@@ -61,6 +64,24 @@ showing something
   For an agent this is the difference between telling you where it put a chart
   and showing it to you. Nothing is closed and nothing is replaced: it opens
   beside what you are looking at, and you close it like any other pane.
+
+long-running jobs
+  iaw job start  --id ID --title T [--total N] [--ttl SECONDS]
+  iaw job update --id ID (--done N | --pct P) [--detail TEXT]
+  iaw job done   --id ID [--detail TEXT]
+  iaw job fail   --id ID [--reason TEXT]
+
+  A strip along the bottom of this pane shows each job: a bar, a percentage
+  and, once it has seen two updates a few seconds apart, about how long is
+  left — worked out from how fast the job's own reports say it is going, and
+  marked "~" because that is all it is. --done counts toward --total; --pct is
+  for work that only knows a percentage. Update as often as you like; the
+  strip redraws a few times a second at most.
+
+  A job that goes quiet for longer than --ttl (default 30) says so rather than
+  showing a bar that looks maintained. Done stays for ten seconds, a failure
+  until the next job starts here or two minutes pass. Use --quiet in scripts:
+  the job runs whether or not this app is there to watch it.
 
 the session host
 
@@ -151,6 +172,7 @@ const VERBS: Method[] = [
   'read-screen',
   'events',
   'open',
+  'job',
 ]
 
 /** How long `ask` waits by default, and the most it will ever wait. */
@@ -642,6 +664,12 @@ function buildRequest(method: Method, args: Args, identity: PaneIdentity): Built
       }
     }
 
+    case 'job': {
+      const job = buildJobReport(args)
+      if ('error' in job) return job
+      return { value: { ...base, job: job.value } }
+    }
+
     case 'report-agent': {
       const report: ControlRequest & { token: string } = { ...base }
       if ('blocked' in args) report.blocked = args.blocked === 'true' ? '' : (args.blocked ?? '')
@@ -669,6 +697,62 @@ function buildRequest(method: Method, args: Args, identity: PaneIdentity): Built
       return { value: report }
     }
   }
+}
+
+const JOB_ACTIONS: ReadonlySet<string> = new Set(['start', 'update', 'done', 'fail'])
+
+/**
+ * `iaw job <action> ...` as the report the app applies.
+ *
+ * Checked here as well as there, so a mistyped flag is an error on the line
+ * that made it rather than a strip that silently never moves. The app still
+ * applies its own rules — this is the polite half, not the guard.
+ *
+ * `--ttl` is seconds on the command line, because that is what a person types,
+ * and milliseconds on the wire, because that is what everything else there is.
+ */
+export function buildJobReport(args: Args): { value: JobReport } | { error: string } {
+  const action = args._
+  if (!action || !JOB_ACTIONS.has(action)) {
+    return { error: 'job needs an action: start, update, done or fail' }
+  }
+  const id = args.id && args.id !== 'true' ? args.id : ''
+  if (!id) return { error: `job ${action} needs --id` }
+  const report: JobReport = { action: action as JobReport['action'], id }
+
+  // A flag given with no value parses as 'true', which is not anybody's text.
+  const text = (name: string): string | undefined =>
+    args[name] !== undefined && args[name] !== 'true' ? args[name] : undefined
+  const num = (name: string): number | undefined | null => {
+    if (args[name] === undefined) return undefined
+    const n = Number(args[name])
+    return Number.isFinite(n) ? n : null
+  }
+
+  const total = num('total')
+  if (total === null || (total !== undefined && total <= 0)) return { error: '--total needs a positive number' }
+  const ttl = num('ttl')
+  if (ttl === null || (ttl !== undefined && ttl <= 0)) return { error: '--ttl needs a number of seconds' }
+  const done = num('done')
+  if (done === null || (done !== undefined && done < 0)) return { error: '--done needs a number of at least 0' }
+  const pct = num('pct')
+  if (pct === null) return { error: '--pct needs a number from 0 to 100' }
+
+  if (action === 'start') {
+    report.title = text('title') ?? id
+    if (total !== undefined) report.total = total
+  }
+  if (action === 'update') {
+    if (done === undefined && pct === undefined) return { error: 'job update needs --done N or --pct P' }
+    if (done !== undefined) report.done = done
+    if (pct !== undefined) report.pct = pct
+    if (total !== undefined) report.total = total
+  }
+  if (action === 'fail') report.reason = text('reason')
+  const detail = text('detail')
+  if (detail !== undefined) report.detail = detail
+  if (ttl !== undefined) report.ttl = Math.round(ttl * 1000)
+  return { value: report }
 }
 
 /**

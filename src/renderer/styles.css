@@ -6778,6 +6778,164 @@ thead .csv-cell {
   color: var(--text);
 }
 
+/*
+ * Long-running jobs started from the pane — `iaw job`.
+ *
+ * At the very bottom, in the padding the blocked bar already uses, and taking
+ * rows from the terminal the same way rather than covering them: what sits at
+ * the bottom of a terminal is the prompt, and a strip over the prompt is a
+ * strip over the thing you came to read.
+ *
+ * Quieter than the blocked bar — dimmer type, no buttons — because it never
+ * needs anything from you except, once, a look at a failure.
+ */
+.pane-jobs {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  padding: 3px 10px;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: calc(11px * var(--ui-text, 1));
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pane-jobs:hover {
+  background: var(--bg-hover);
+}
+
+.pane-jobs__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/*
+ * Open, it is one grid rather than a stack of rows, so the bars, numbers and
+ * clocks line up down the strip and two jobs can be compared at a glance.
+ */
+.pane-jobs.expanded {
+  display: grid;
+  grid-template-columns: minmax(4em, max-content) 80px auto auto auto auto minmax(0, 1fr) auto;
+  column-gap: 10px;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.pane-jobs__row {
+  display: contents;
+}
+
+.pane-jobs__title {
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-jobs__line .pane-jobs__title {
+  flex: 0 1 auto;
+}
+
+.pane-jobs__bar {
+  position: relative;
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-active);
+  overflow: hidden;
+}
+
+.pane-jobs__line .pane-jobs__bar {
+  flex: 0 0 90px;
+}
+
+.pane-jobs__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  transition: width 0.25s ease-out;
+}
+
+.pane-jobs__pct,
+.pane-jobs__count,
+.pane-jobs__elapsed {
+  text-align: right;
+}
+
+.pane-jobs__count,
+.pane-jobs__elapsed,
+.pane-jobs__note {
+  color: var(--text-faint);
+}
+
+.pane-jobs__note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-jobs__line .pane-jobs__outcome {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pane-jobs__more {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.pane-jobs__toggle {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-faint);
+}
+
+/* Done: green, briefly, then gone. */
+.pane-jobs [data-state='done'] .pane-jobs__fill {
+  background: var(--ok, #7fb069);
+}
+
+.pane-jobs [data-state='done'] > .pane-jobs__outcome {
+  color: var(--ok, #7fb069);
+}
+
+/* Failed: the red every other failure in the app uses, and the reason in it. */
+.pane-jobs [data-state='failed'] .pane-jobs__fill {
+  background: var(--danger);
+}
+
+.pane-jobs [data-state='failed'] > .pane-jobs__outcome,
+.pane-jobs__row[data-state='failed'] > .pane-jobs__note,
+.pane-jobs__more[data-state='failed'] {
+  color: var(--danger);
+}
+
+/*
+ * Stale: the bar fades rather than freezing at full strength, and the words
+ * say how long it has been quiet. A confident bar nobody is updating is the
+ * thing this state exists to avoid.
+ */
+.pane-jobs [data-state='stale'] .pane-jobs__fill {
+  opacity: 0.35;
+}
+
+.pane-jobs [data-state='stale'] > .pane-jobs__outcome,
+.pane-jobs__row[data-state='stale'] > .pane-jobs__note,
+.pane-jobs__more[data-state='stale'] {
+  color: var(--warn);
+}
+
 /* ---------------------------------------------------------- image-notes editor */
 
 /*

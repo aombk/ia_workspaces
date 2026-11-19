@@ -22,6 +22,7 @@ await build({
     controlServer: 'src/main/controlServer.ts',
     agentState: 'src/main/agentState.ts',
     controlSurface: 'src/main/controlSurface.ts',
+    jobs: 'src/main/jobs.ts',
   },
   bundle: true,
   platform: 'node',
@@ -34,6 +35,7 @@ const { runCli } = await import(`file://${out}/cli.js`)
 const { startControlServer } = await import(`file://${out}/controlServer.js`)
 const { AgentStateRegistry } = await import(`file://${out}/agentState.js`)
 const { buildTree, flattenPanes } = await import(`file://${out}/controlSurface.js`)
+const { JobRegistry } = await import(`file://${out}/jobs.js`)
 
 let passed = 0
 const check = async (name, fn) => {
@@ -47,6 +49,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const PANE = 'pane-1'
 const agents = new AgentStateRegistry(() => {})
+const jobs = new JobRegistry(() => {})
 const written = []
 const state = {
   activeWorkspaceId: 'w1',
@@ -128,6 +131,11 @@ const server = startControlServer('test', (req, ctx) => {
       return { ok: true }
     case 'read-screen':
       return { ok: true, data: { text: 'line one\nline two' } }
+    case 'job': {
+      if (!req.job) return { ok: false, error: 'no job report' }
+      const error = jobs.report(req.paneId, req.job)
+      return error ? { ok: false, error } : { ok: true }
+    }
   }
   return { ok: false, error: 'unknown method' }
 }, async (from, to, method) => {
@@ -371,6 +379,70 @@ await check('typing and keys into another pane are asked about the same way', as
     approvals.map((a) => a.method),
     ['send', 'send-key']
   )
+})
+
+console.log('job')
+
+await check('a job reported from the command line lands on this pane', async () => {
+  let res = await cli('job', 'start', '--id', 'render', '--title', 'render v2 portrait', '--total', '200')
+  assert.equal(res.code, 0, res.stderr)
+  res = await cli('job', 'update', '--id', 'render', '--done', '50', '--detail', 'frame 50')
+  assert.equal(res.code, 0, res.stderr)
+  const [job] = jobs.snapshot(PANE)
+  assert.equal(job.title, 'render v2 portrait')
+  assert.equal(job.fraction, 0.25)
+  assert.equal(job.detail, 'frame 50')
+  assert.equal(res.stdout, '', 'a script calling this in a loop gets nothing on stdout')
+})
+
+await check('done and fail reach it too', async () => {
+  assert.equal((await cli('job', 'done', '--id', 'render')).code, 0)
+  assert.equal(jobs.snapshot(PANE)[0].state, 'done')
+  await cli('job', 'start', '--id', 'upload', '--title', 'upload')
+  assert.equal((await cli('job', 'fail', '--id', 'upload', '--reason', 'network down')).code, 0)
+  const failed = jobs.snapshot(PANE).find((j) => j.id === 'upload')
+  assert.equal(failed.reason, 'network down')
+})
+
+await check('the app refusing an update is an error, and --quiet silences it', async () => {
+  const loud = await cli('job', 'update', '--id', 'upload', '--pct', '10')
+  assert.equal(loud.code, 1)
+  assert.match(loud.stderr, /already finished/)
+  const quiet = await cli('job', 'update', '--id', 'upload', '--pct', '10', '--quiet')
+  assert.equal(quiet.code, 0)
+  assert.equal(quiet.stderr, '')
+})
+
+await check('a malformed job is refused before it is sent', async () => {
+  const res = await cli('job', 'update', '--id', 'render')
+  assert.equal(res.code, 1)
+  assert.match(res.stderr, /--done N or --pct P/)
+})
+
+await check('with no app to talk to, --quiet is silence and a zero exit', async () => {
+  const saved = { ...process.env }
+  delete process.env.IAW_PANE_ID
+  delete process.env.IAW_PIPE
+  delete process.env.IAW_TOKEN
+  try {
+    const quiet = await cli('job', 'update', '--id', 'r', '--pct', '10', '--quiet')
+    assert.equal(quiet.code, 0)
+    assert.equal(quiet.stderr, '')
+    const loud = await cli('job', 'update', '--id', 'r', '--pct', '10')
+    assert.equal(loud.code, 1)
+  } finally {
+    Object.assign(process.env, saved)
+  }
+  // And an app that has gone away, with the environment still pointing at it.
+  const real = process.env.IAW_PIPE
+  process.env.IAW_PIPE = path.join(out, 'nothing-listening-here.sock')
+  try {
+    const gone = await cli('job', 'update', '--id', 'r', '--pct', '10', '--quiet')
+    assert.equal(gone.code, 0)
+    assert.equal(gone.stderr, '')
+  } finally {
+    process.env.IAW_PIPE = real
+  }
 })
 
 server.close()
