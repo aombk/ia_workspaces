@@ -1290,6 +1290,58 @@ end: call `update` as often as you like, and the pane redraws a few times a
 second at most. The cost that remains is the call itself — each one is a
 process start — so once a second is plenty for anything a person is watching.
 
+**In the sidebar, one bar per workspace.** Under the name of every workspace
+with a job in it — on screen or not — runs a two-pixel bar. It is there so a
+render in a workspace you are not looking at can still be seen to be moving,
+and can be seen to have broken. Hover the row for the jobs, one line each.
+
+- The bar is the *average* of the running jobs' own fractions, each counting
+  once. Not their units added up: 340 frames and 2 GB have nothing to add, and
+  the job counting in bigger numbers would decide the bar on its own.
+- If any running job cannot say how far it is — a count with no total, a
+  program that said "indeterminate" — the workspace's position is not known, and
+  the bar shows a band moving along it instead of a fill that would claim one.
+- A job ending pulses the bar green or red for a few seconds, and it stays that
+  colour for as long as the pane's strip keeps the row: ten seconds for done, a
+  failure until the next job starts or two minutes pass. A failure next to work
+  still running tints the track red under the moving fill, so both show.
+- When everything running has gone quiet, the bar fades, as the strip's does.
+- A folded parent's bar includes the workspaces folded under it, the way its dot
+  and spinner do. Unfolded, each child has its own row and its own bar.
+
+**Programs that already report progress get it for free.** Windows Terminal,
+ConEmu and Ghostty read a progress sequence — `ESC ] 9 ; 4 ; state ; percent` —
+that winget, some package managers and build tools emit on their own. A pane
+here turns it into a job named for the command that is running, with no `iaw`
+involved:
+
+| state | means | becomes |
+|---|---|---|
+| `0` | clear | the job goes — marked done only if the bar had reached 100%, failed if it was last in error, otherwise just removed |
+| `1;N` | N% through | the bar, with a time left once there is a rate |
+| `2[;N]` | error | the bar turns red but the job keeps running — programs recover from this and go back to `1` |
+| `3` | working, cannot say how far | a moving band, no percentage, no time left |
+| `4[;N]` | paused | the bar turns amber, no time left |
+
+The job ends when the command does — a program killed with Ctrl+C never gets to
+clear its bar, and the shell's end-of-command marker says it is gone — ending
+the way clearing it would have. Reports are read at most five times a second
+however fast a program sends them; a change of state always goes straight
+through. A paused or indeterminate job does not go stale on silence, because it
+made no claim that silence contradicts.
+
+Read strictly, because `OSC 9` is shared: ConEmu's other `9;n` subcommands and
+iTerm2's notifications are left alone, and a `9;4` this cannot parse exactly is
+dropped rather than guessed at. Agents are left out too: Claude Code reports its
+turns this way, and a turn already has its spinner, its progress line and its
+tab.
+
+Try it in a pane:
+
+```bash
+for p in 0 20 40 60 80 100; do printf '\e]9;4;1;%d\a' $p; sleep 1; done; printf '\e]9;4;0\a'
+```
+
 ## What the agent has been doing
 
 Claude Code writes every conversation to `~/.claude/projects` as it happens —

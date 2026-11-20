@@ -2681,7 +2681,7 @@ export function attachZoomWheel(element: HTMLElement, zoom: PaneZoom): void {
 
 /** What a row would draw, as a string — so an unchanged row is not redrawn. */
 function jobSignature(row: JobRow): string {
-  return [row.id, row.title, row.state, barWidth(row), pctText(row), row.count, row.elapsed, row.eta, row.note].join('|')
+  return [row.id, row.title, row.state, row.indeterminate ? 'ind' : barWidth(row), pctText(row), row.count, row.elapsed, row.eta, row.note].join('|')
 }
 
 /** The bar's fill to a tenth of a percent: finer than a pixel, coarser than noise. */
@@ -2708,21 +2708,34 @@ function cell(className: string, text: string, title?: string): HTMLSpanElement 
 
 /**
  * The bar itself. A job that counts without a total has no fraction, and gets
- * an empty track rather than a fill the app made up.
+ * an empty track rather than a fill the app made up. One that said it cannot
+ * tell how far it is gets a band moving along the track instead: it did say it
+ * is working, which an empty track would not.
  */
 function jobBar(row: JobRow): HTMLSpanElement {
   const track = cell('pane-jobs__bar', '')
+  if (row.indeterminate) {
+    track.classList.add('indeterminate')
+    // Phased off the clock, so a redraw does not restart the sweep.
+    track.style.setProperty('--sweep-delay', `-${Date.now() % SWEEP_MS}ms`)
+    return track
+  }
   const fill = cell('pane-jobs__fill', '')
   fill.style.width = barWidth(row) || '0%'
   track.appendChild(fill)
   return track
 }
 
+/** One pass of the indeterminate band. Must match `job-sweep` in styles.css. */
+const SWEEP_MS = 1400
+
 /** What sits after the numbers: the time left, or why there is none. */
 function jobOutcome(row: JobRow): string {
   if (row.state === 'failed') return `failed: ${row.note ?? ''}`.replace(/: $/, '')
   if (row.state === 'done') return `done in ${row.elapsed}`
   if (row.state === 'stale') return row.note ?? ''
+  if (row.state === 'paused') return 'paused'
+  if (row.state === 'error') return 'error'
   return row.eta ?? ''
 }
 
@@ -2762,7 +2775,7 @@ function jobRowElement(row: JobRow, toggle: string): HTMLDivElement {
   el.appendChild(
     cell(
       'pane-jobs__outcome',
-      row.state === 'running' ? (row.eta ?? '') : row.state === 'done' ? 'done' : row.state === 'failed' ? 'failed' : 'stale',
+      row.state === 'running' ? (row.eta ?? '') : row.state,
       row.state === 'running' && row.eta ? 'Estimated from how fast it has been going' : undefined
     )
   )

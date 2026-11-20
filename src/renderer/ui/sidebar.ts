@@ -18,6 +18,7 @@ import { programsMenu, refreshRunningAppsLazily } from './appsMenu'
 import { spaceSizeOf } from '../spaceSizes'
 import { formatSize } from '../../shared/gitSize'
 import type { UiActions } from './actions'
+import { jobsSummary, type JobRow } from '../../shared/jobs'
 
 let actions: UiActions
 let renaming: string | null = null
@@ -31,6 +32,10 @@ export function initSidebar(a: UiActions): void {
   document.getElementById('collapse-sidebar')!.addEventListener('click', toggleCollapsed)
 
   wireListZoom(document.getElementById('workspace-list')!)
+
+  // Jobs move several times a second and the rest of the row does not, so they
+  // repaint only the bars — see `paintJobBars` — and never rebuild the list.
+  store.onPaneJobs(scheduleJobBars)
 
 
   // The empty space under the list is the obvious place to reach for "new
@@ -506,9 +511,143 @@ ${workspace.cwd}`
     openWorkspaceMenu(e.clientX, e.clientY, workspace.id)
   })
 
+  // What the jobs bar sums up, kept on the row so a repaint between rebuilds
+  // can find it. A folded parent speaks for what is under it, as its dot and
+  // spinner do — except on the rail, where every child has a row of its own.
+  if (workspace.collapsed && hasChildren && !store.state.sidebarCollapsed) el.dataset.jobsSubtree = '1'
+  // The name's column: indent, twisty and dot, plus the elbow when there is one.
+  el.dataset.jobsLeft = String(8 + (depth - (marker ? 1 : 0)) * INDENT + 36 + (marker ? 19 : 0))
+  el.dataset.baseTitle = el.title
+  paintJobBar(el, Date.now())
+
   wireDragAndDrop(el)
   return el
 }
+
+// ------------------------------------------------------------------- jobs bar
+
+/** How long a finished job's bar pulses. Must match `.workspace-jobs.flash`: 600 ms × 5. */
+const JOBS_FLASH_MS = 3000
+/** One pass of the indeterminate band. Must match `job-sweep` in styles.css. */
+const SWEEP_MS = 1400
+
+let jobBarsFrame = 0
+let jobBarsTimer: ReturnType<typeof setInterval> | null = null
+
+/** Several panes reporting in the same frame repaint once. */
+function scheduleJobBars(): void {
+  if (jobBarsFrame) return
+  jobBarsFrame = requestAnimationFrame(() => {
+    jobBarsFrame = 0
+    paintJobBars()
+  })
+}
+
+/**
+ * Every row's bar, against one clock. Each one compares what it would draw
+ * with what it drew and touches nothing when they agree, so a job moving in one
+ * workspace costs the others a lookup and a string compare.
+ */
+function paintJobBars(): void {
+  const now = Date.now()
+  let any = false
+  for (const row of document.querySelectorAll<HTMLElement>('#workspace-list .workspace[data-workspace-id]')) {
+    if (paintJobBar(row, now)) any = true
+  }
+  if (!any && jobBarsTimer !== null) {
+    clearInterval(jobBarsTimer)
+    jobBarsTimer = null
+  }
+}
+
+/**
+ * The bar under one workspace's name, or none. Returns whether one shows.
+ *
+ * A second's tick runs while any bar is up, because a job goes stale, and a
+ * finished one stops pulsing, without anybody saying so — the main process
+ * only speaks when a report arrives or a job is dropped.
+ */
+function paintJobBar(row: HTMLElement, now: number): boolean {
+  const id = row.dataset.workspaceId!
+  const summary = store.hasJobs() ? jobsSummary(store.workspaceJobs(id, row.dataset.jobsSubtree === '1'), now) : null
+  let bar = row.querySelector<HTMLElement>(':scope > .workspace-jobs')
+  if (!summary) {
+    if (bar) {
+      bar.remove()
+      setRowJobsTitle(row, '')
+    }
+    return false
+  }
+  if (jobBarsTimer === null) jobBarsTimer = setInterval(paintJobBars, 1000)
+
+  const flashing = summary.endedAt !== undefined && now - summary.endedAt < JOBS_FLASH_MS
+  const tip = summary.rows.map(describeJob).join('\n')
+  const signature = [summary.state, summary.pct?.toFixed(1), summary.failed, flashing, tip].join('|')
+  if (bar?.dataset.signature === signature) return true
+
+  if (!bar) {
+    bar = document.createElement('span')
+    bar.className = 'workspace-jobs'
+    bar.setAttribute('aria-hidden', 'true')
+    bar.appendChild(document.createElement('span')).className = 'workspace-jobs__fill'
+    row.appendChild(bar)
+  }
+  bar.dataset.signature = signature
+  bar.style.left = `${row.dataset.jobsLeft ?? 8}px`
+  bar.dataset.state = summary.state
+  bar.classList.toggle('has-failure', summary.failed && !['failed', 'error'].includes(summary.state))
+  const indeterminate = summary.pct === undefined
+  bar.classList.toggle('indeterminate', indeterminate)
+  if (indeterminate) bar.style.setProperty('--sweep-delay', `-${now % SWEEP_MS}ms`)
+  bar.classList.toggle('flash', flashing)
+  if (flashing) bar.style.setProperty('--flash-delay', `-${now - summary.endedAt!}ms`)
+  const fill = bar.firstElementChild as HTMLElement
+  fill.style.width = indeterminate ? '0%' : `${Math.max(0, Math.min(100, summary.pct!)).toFixed(1)}%`
+  setRowJobsTitle(row, tip)
+  return true
+}
+
+/**
+ * The jobs, one line each, under the row's name and folder in its tooltip.
+ * The bar is two pixels high — too thin to aim a pointer at — so the row it
+ * sits on is where hovering asks about it.
+ */
+function setRowJobsTitle(row: HTMLElement, tip: string): void {
+  const title = tip ? `${row.dataset.baseTitle ?? ''}\n\n${tip}` : (row.dataset.baseTitle ?? '')
+  // The relay mark blanks the row's tooltip while it is hovered and puts it
+  // back from `rowTitle` after; write there then, or the mark's own would lose.
+  if (row.title === '' && row.dataset.rowTitle !== undefined) row.dataset.rowTitle = title
+  else row.title = title
+}
+
+/** One job as a tooltip line: what it is and how it stands, in the strip's words. */
+function describeJob(row: JobRow): string {
+  const pct = row.pct !== undefined ? `${row.state === 'done' ? Math.round(row.pct) : Math.floor(row.pct)}%` : ''
+  const parts: string[] = []
+  switch (row.state) {
+    case 'done':
+      parts.push(`done in ${row.elapsed}`)
+      break
+    case 'failed':
+      parts.push(row.note ? `failed: ${row.note}` : 'failed')
+      break
+    case 'stale':
+      if (pct) parts.push(pct)
+      parts.push(row.note ?? 'stale')
+      break
+    case 'paused':
+    case 'error':
+      if (pct) parts.push(pct)
+      parts.push(row.state)
+      break
+    default:
+      parts.push(pct || row.count || (row.indeterminate ? 'working' : row.elapsed))
+      if (row.eta) parts.push(row.eta)
+  }
+  return `${row.title} — ${parts.join(' · ')}`
+}
+
+
 
 export function startRename(workspaceId: string): void {
   renaming = workspaceId

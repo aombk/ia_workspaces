@@ -6,6 +6,7 @@ import { resolveShell } from './shells'
 import { ActivityMonitor } from './activityMonitor'
 import { AgentStateRegistry, encodeKey, type AgentReport } from './agentState'
 import { JobRegistry } from './jobs'
+import { OSC_JOB_ID, OscProgressGate, endReport, oscProgressReports, type OscProgress } from './oscProgress'
 import type { JobReport } from '../shared/jobs'
 import { isPhantomExit, isPidAlive, reapPhantom } from './phantomExit'
 import type { ScrollbackStore } from './scrollback'
@@ -124,6 +125,8 @@ interface Session {
   commandIsAgent: boolean
   /** The renderer has been told a command is running here. See `COMMAND_SHOWN_MS`. */
   commandShown: boolean
+  /** Holds back this pane's OSC 9;4 reports to a few a second. See `oscProgress.ts`. */
+  oscProgress: OscProgressGate
   commandShownTimer: NodeJS.Timeout | null
   lastAlertAt: number
   pending: string
@@ -532,6 +535,7 @@ export class PtyManager {
       commandIsAgent: false,
       commandShown: false,
       commandShownTimer: null,
+      oscProgress: null as unknown as OscProgressGate,
       lastAlertAt: 0,
       pending: '',
       flushTimer: null,
@@ -549,6 +553,7 @@ export class PtyManager {
       replaying: false,
     }
 
+    session.oscProgress = new OscProgressGate((progress) => this.applyOscProgress(session, progress))
     session.scanner = new OscScanner({
       onBell: () => this.fireAlert(session, 'bell', 'Terminal needs attention', this.label(session)),
       onTitle: (title) => {
@@ -565,6 +570,7 @@ export class PtyManager {
         }
       },
       onNotify: (title, body) => this.fireAlert(session, 'osc', title, body),
+      onProgress: (progress) => session.oscProgress.push(progress),
       onPromptStart: () => {
         session.running = false
         this.commandStopped(session)
@@ -723,6 +729,7 @@ export class PtyManager {
     // Its jobs too: whatever was reporting from that shell went with it, and a
     // strip still counting down under a dead prompt is the frozen bar this
     // feature promises not to show.
+    session.oscProgress.reset()
     this.jobs.release(session.id)
     this.deps.pidMap.unregister(session.pid)
     // The pane outlives its shell — keep the screen so a restart still has it.
@@ -905,6 +912,7 @@ export class PtyManager {
     if (starting) starting.cancelled = true
     this.activity.stop(paneId)
     this.agents.release(paneId)
+    s?.oscProgress.reset()
     this.jobs.release(paneId)
     // The last moment the transcript exists. `drop` below is right for the
     // *buffer* — it exists to restore a pane, and this pane is not coming back
@@ -965,6 +973,7 @@ export class PtyManager {
     if (!s) return
     this.activity.stop(paneId)
     this.agents.release(paneId)
+    s.oscProgress.reset()
     this.jobs.release(paneId)
     // Deliberately *not* `scrollback.drop`: the screen is the pane's, and the
     // pane is still here. Flushed instead, so a restart restores what it said.
@@ -1561,11 +1570,45 @@ export class PtyManager {
     this.commandStopped(session)
   }
 
+  /**
+   * A program in this pane reported its progress over OSC 9;4.
+   *
+   * Not from an agent. Claude Code reports its own turns this way to terminals
+   * that draw a taskbar bar, and here a turn already has its spinner, its
+   * progress line and its tab — a jobs strip saying "indeterminate" under
+   * every working agent would be the same fact a fourth time, taking a row of
+   * the terminal to say it.
+   */
+  private applyOscProgress(session: Session, progress: OscProgress): void {
+    if (session.exited || this.sessions.get(session.id) !== session) return
+    const agent = this.agents.snapshot(session.id).state
+    if (session.commandIsAgent || agent === 'working' || agent === 'blocked') return
+    const current = this.jobs.snapshot(session.id).find((j) => j.id === OSC_JOB_ID)
+    // Named for what is running, when the shell said: the line typed is the
+    // one thing here that tells this bar from the next one.
+    const title = (session.running && session.lastCommand) || 'terminal progress'
+    for (const report of oscProgressReports(current, progress, title)) this.jobs.report(session.id, report)
+  }
+
+  /**
+   * The command that set a progress bar has ended, so the bar ends too — a
+   * program killed with Ctrl+C never gets to clear it, and a terminal that
+   * kept it would be drawing a job nothing is doing. Ends it the way clearing
+   * it would have: see `endReport`.
+   */
+  private endOscProgress(session: Session): void {
+    session.oscProgress.flush()
+    session.oscProgress.reset()
+    const current = this.jobs.snapshot(session.id).find((j) => j.id === OSC_JOB_ID)
+    if (current?.state === 'running') this.jobs.report(session.id, endReport(current))
+  }
+
   private handleCommandEnd(session: Session, exitCode: number): void {
     const wasRunning = session.running
     const startedAt = session.commandStartedAt
     session.running = false
     this.commandStopped(session)
+    this.endOscProgress(session)
 
     // Recorded first and unconditionally. Everything below this is about
     // whether to *interrupt* somebody, which is a different question with a

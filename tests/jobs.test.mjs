@@ -385,4 +385,142 @@ await check('mistakes are refused on the line that made them', () => {
   assert.match(buildJobReport({ _: 'start', id: 'r', ttl: 'soon' }).error, /--ttl/)
 })
 
+console.log('phases (said by the program, over OSC 9;4)')
+
+await check('an indeterminate job has no percentage and no time left, and draws as moving', () => {
+  const jobs = run([0, start()], [1000, upd({ pct: 40 })], [5000, upd({ pct: 60 })], [6000, upd({ phase: 'indeterminate' })])
+  const row = J.jobRow(jobs[0], T0 + 6000)
+  assert.equal(row.state, 'running')
+  assert.equal(row.indeterminate, true)
+  assert.equal(row.pct, undefined, 'not "still at 60%"')
+  assert.equal(row.eta, undefined)
+})
+
+await check('paused and indeterminate jobs do not go stale on silence; they are still abandoned', () => {
+  const paused = run([0, start()], [1000, upd({ pct: 40, phase: 'paused' })])[0]
+  assert.equal(J.jobRow(paused, T0 + 10 * 60_000).state, 'paused')
+  assert.equal(J.jobStale(paused, T0 + 10 * 60_000), false)
+  assert.equal(J.jobVisible(paused, T0 + 1000 + J.ABANDONED_AFTER_MS + 1), false)
+  const normal = run([0, start()], [1000, upd({ pct: 40 })])[0]
+  assert.equal(J.jobRow(normal, T0 + 10 * 60_000).state, 'stale', 'the ordinary rule still holds')
+})
+
+await check('error is a running job in the failure colour, and can recover', () => {
+  let jobs = run([0, start()], [1000, upd({ pct: 30, phase: 'error' })])
+  assert.equal(jobs[0].state, 'running')
+  assert.equal(J.jobRow(jobs[0], T0 + 1000).state, 'error')
+  assert.equal(J.jobRow(jobs[0], T0 + 1000).pct, 30)
+  const res = J.applyJobReport(jobs, upd({ pct: 35, phase: 'normal' }), T0 + 2000)
+  assert.equal(J.jobRow(res.jobs[0], T0 + 2000).state, 'running')
+  assert.equal(res.jobs[0].phase, undefined)
+})
+
+await check('a change of phase restarts the rate, so a pause is not averaged into it', () => {
+  // 0→50% in 10 s, paused for a minute, then moving again.
+  const jobs = run(
+    [0, start()],
+    [1000, upd({ pct: 0 })],
+    [11_000, upd({ pct: 50 })],
+    [12_000, upd({ phase: 'paused' })],
+    [72_000, upd({ phase: 'normal', pct: 50 })],
+    [77_000, upd({ pct: 75 })]
+  )
+  // 25% in the 5 s since resuming: 25% left is about 5 s, not the minute-long tail.
+  assert.equal(J.jobEtaMs(jobs[0], T0 + 77_000), 5000)
+  assert.equal(J.jobEtaMs(run([0, start()], [1000, upd({ pct: 10, phase: 'paused' })])[0], T0 + 9000), null)
+})
+
+await check('clear removes a job without a verdict, and is harmless for one that is not there', () => {
+  const jobs = run([0, start()], [1000, upd({ pct: 40 })])
+  assert.deepEqual(J.applyJobReport(jobs, { action: 'clear', id: 'r' }, T0 + 2000).jobs, [])
+  assert.equal(J.applyJobReport(jobs, { action: 'clear', id: 'nope' }, T0 + 2000).jobs.length, 1)
+})
+
+console.log('one bar for a workspace')
+
+/** A job as a pane holds it, without going through reports. */
+const job = (id, extra = {}) => ({
+  id,
+  title: id,
+  state: 'running',
+  startedAt: T0,
+  updatedAt: T0,
+  ttlMs: J.DEFAULT_JOB_TTL_MS,
+  samples: 0,
+  ...extra,
+})
+
+await check('no jobs is no bar', () => {
+  assert.equal(J.jobsSummary([], T0), null)
+  assert.equal(J.jobsSummary([job('a', { state: 'done', endedAt: T0 })], T0 + J.DONE_LINGER_MS + 1), null)
+})
+
+await check('the fraction is the average of the jobs, not their units added up', () => {
+  // 10 of 1000 frames and 90% of an upload: half-way, not 1% — the frame
+  // count must not outvote the upload for counting in bigger numbers.
+  const s = J.jobsSummary(
+    [job('frames', { total: 1000, done: 10, fraction: 0.01 }), job('upload', { fraction: 0.9 })],
+    T0 + 1000
+  )
+  assert.equal(s.state, 'running')
+  assert.ok(Math.abs(s.pct - 45.5) < 1e-9)
+  assert.equal(s.rows.length, 2)
+})
+
+await check('one job that cannot say how far it is makes the whole bar not know', () => {
+  const s = J.jobsSummary([job('a', { fraction: 0.5 }), job('b', { done: 12 })], T0 + 1000)
+  assert.equal(s.pct, undefined)
+  const t = J.jobsSummary([job('a', { fraction: 0.5 }), job('b', { phase: 'indeterminate' })], T0 + 1000)
+  assert.equal(t.pct, undefined)
+})
+
+await check('finished work does not count toward the fraction while something still runs', () => {
+  const s = J.jobsSummary(
+    [job('a', { state: 'done', fraction: 1, endedAt: T0 + 500 }), job('b', { fraction: 0.2 })],
+    T0 + 1000
+  )
+  assert.equal(s.state, 'running')
+  assert.ok(Math.abs(s.pct - 20) < 1e-9)
+  assert.equal(s.endedAt, T0 + 500, 'but its ending is known, for the flash')
+})
+
+await check('when nothing runs, the outcome is the bar: green, or red if anything failed', () => {
+  const done = J.jobsSummary([job('a', { state: 'done', endedAt: T0 })], T0 + 1000)
+  assert.equal(done.state, 'done')
+  assert.equal(done.pct, 100)
+  const failed = J.jobsSummary(
+    [job('a', { state: 'done', endedAt: T0 }), job('b', { state: 'failed', endedAt: T0 + 200 })],
+    T0 + 1000
+  )
+  assert.equal(failed.state, 'failed')
+  assert.equal(failed.failed, true)
+})
+
+await check('a failure beside running work is carried, without hiding the running bar', () => {
+  const s = J.jobsSummary([job('a', { state: 'failed', endedAt: T0 }), job('b', { fraction: 0.6 })], T0 + 1000)
+  assert.equal(s.state, 'running')
+  assert.equal(s.failed, true)
+  assert.ok(Math.abs(s.pct - 60) < 1e-9)
+})
+
+await check('stale only when everything running is quiet; one live job keeps the bar live', () => {
+  const quietAt = T0 + J.DEFAULT_JOB_TTL_MS + 1000
+  assert.equal(J.jobsSummary([job('a', { fraction: 0.3 })], quietAt).state, 'stale')
+  assert.equal(
+    J.jobsSummary([job('a', { fraction: 0.3 }), job('b', { fraction: 0.5, updatedAt: quietAt })], quietAt).state,
+    'running'
+  )
+})
+
+await check('paused only when everything awake is paused; error when anything says error', () => {
+  assert.equal(J.jobsSummary([job('a', { phase: 'paused', fraction: 0.1 })], T0).state, 'paused')
+  assert.equal(
+    J.jobsSummary([job('a', { phase: 'paused', fraction: 0.1 }), job('b', { fraction: 0.2 })], T0).state,
+    'running'
+  )
+  const err = J.jobsSummary([job('a', { phase: 'error', fraction: 0.1 }), job('b', { fraction: 0.2 })], T0)
+  assert.equal(err.state, 'error')
+  assert.equal(err.failed, true)
+})
+
 console.log(`\n${passed} checks passed`)

@@ -83,6 +83,13 @@ long-running jobs
   until the next job starts here or two minutes pass. Use --quiet in scripts:
   the job runs whether or not this app is there to watch it.
 
+  The sidebar sums up each workspace's jobs as a thin bar under its name;
+  hover the row for the list.
+
+  A program that reports progress the way Windows Terminal reads it
+  (printf '\\e]9;4;1;42\\a' — OSC 9;4) gets the same strip without calling
+  iaw: one job per pane, named for the command, gone when the command ends.
+
 the session host
 
   iaw host                              is it running, and what is it holding

@@ -2162,6 +2162,27 @@ class WorkspaceState {
   }
 
   /**
+   * Every job in a workspace — all its tabs, all their panes — for the bar
+   * under its name. `includeSubtree` for a folded parent, as everywhere else in
+   * the sidebar: its children have no rows of their own to show their jobs on.
+   */
+  workspaceJobs(workspaceId: string, includeSubtree = false): PaneJob[] {
+    if (!this.jobs.size) return []
+    const ids = includeSubtree ? this.subtreeOf(workspaceId).map((w) => w.id) : [workspaceId]
+    const out: PaneJob[] = []
+    for (const id of ids) {
+      const w = this.data.workspaces.find((x) => x.id === id)
+      for (const t of w?.tabs ?? []) for (const p of t.panes) out.push(...(this.jobs.get(p.id) ?? []))
+    }
+    return out
+  }
+
+  /** Whether any pane anywhere has a job — so a quiet sidebar can skip looking. */
+  hasJobs(): boolean {
+    return this.jobs.size > 0
+  }
+
+  /**
    * What a pane's indicator should say, most urgent first.
    *
    * A declared state always beats an observed one: "blocked" is a fact the

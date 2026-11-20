@@ -19,6 +19,23 @@
 
 export type JobState = 'running' | 'done' | 'failed'
 
+/**
+ * How a running job says it is going, beyond how far.
+ *
+ * Only terminal progress reports (OSC 9;4 — see `main/oscProgress.ts`) set
+ * these; `iaw job` has no way to, and a job that never sets one is `normal`.
+ * They are the program's own words, as declared as the percentage beside them:
+ *
+ * - `indeterminate` — working, and cannot say how far through. No percentage
+ *   and no time left: there is nothing to compute one from.
+ * - `paused` — said it has stopped moving. No time left, because a rate
+ *   measured before the pause says nothing about after it.
+ * - `error` — said something is wrong, and has not said it has stopped. Drawn
+ *   in the failure colour, but still a running job: the program may carry on,
+ *   and only its clearing the report, or its command ending, closes it.
+ */
+export type JobPhase = 'normal' | 'indeterminate' | 'paused' | 'error'
+
 /** One job as the main process holds it and the renderer receives it. */
 export interface PaneJob {
   id: string
@@ -41,6 +58,8 @@ export interface PaneJob {
   endedAt?: number
   /** Silence longer than this makes the job stale. */
   ttlMs: number
+  /** See `JobPhase`. Absent is `normal`. */
+  phase?: JobPhase
   /**
    * The progress reports the current rate is measured over.
    *
@@ -56,9 +75,15 @@ export interface PaneJob {
   lastAt?: number
 }
 
-/** What `iaw job` sends. One shape for all four actions. */
+/**
+ * What `iaw job` sends. One shape for every action.
+ *
+ * `clear` and `phase` are not reachable from the command line: they exist for
+ * terminal progress reports, which can withdraw a bar without saying how the
+ * work went — see `main/oscProgress.ts`.
+ */
 export interface JobReport {
-  action: 'start' | 'update' | 'done' | 'fail'
+  action: 'start' | 'update' | 'done' | 'fail' | 'clear'
   id: string
   title?: string
   total?: number
@@ -69,6 +94,8 @@ export interface JobReport {
   reason?: string
   /** Milliseconds of silence before the job reads as stale. */
   ttl?: number
+  /** `update` only. See `JobPhase`. */
+  phase?: JobPhase
 }
 
 /** How long silence may last before a running job says so. */
@@ -99,10 +126,19 @@ export const ETA_MIN_HISTORY_MS = 3_000
 export interface JobRow {
   id: string
   title: string
-  /** `stale` is a running job that has gone quiet — said, not hidden. */
-  state: 'running' | 'stale' | 'done' | 'failed'
+  /**
+   * `stale` is a running job that has gone quiet — said, not hidden. `paused`
+   * and `error` are running jobs that said so themselves; see `JobPhase`.
+   */
+  state: 'running' | 'stale' | 'paused' | 'error' | 'done' | 'failed'
   /** 0–100 for the bar, or undefined when nothing says how far through it is. */
   pct?: number
+  /**
+   * The job said it cannot tell how far through it is. Drawn as a moving bar
+   * with no fill, which is different from a job that simply never said: that
+   * one gets an empty track, because nothing claims it is moving.
+   */
+  indeterminate?: boolean
   /** "340/500", or "340" when there is no total. */
   count?: string
   elapsed: string
@@ -119,8 +155,17 @@ export function jobVisible(job: PaneJob, now: number): boolean {
   return now - job.updatedAt < ABANDONED_AFTER_MS
 }
 
-/** A running job nobody has heard from within its TTL. */
+/**
+ * A running job nobody has heard from within its TTL.
+ *
+ * Not one that said it is paused or cannot say how far it is: those have made
+ * no claim that silence could contradict. A program sets "indeterminate" once
+ * and then works for ten minutes without another word, and that is the report
+ * being used as intended, not going stale. They are still dropped when they are
+ * abandoned, like everything else — see `jobVisible`.
+ */
 export function jobStale(job: PaneJob, now: number): boolean {
+  if (job.phase === 'paused' || job.phase === 'indeterminate') return false
   return job.state === 'running' && now - job.updatedAt > job.ttlMs
 }
 
@@ -142,6 +187,8 @@ export function jobStale(job: PaneJob, now: number): boolean {
  */
 export function jobEtaMs(job: PaneJob, now: number): number | null {
   if (job.state !== 'running' || jobStale(job, now)) return null
+  // Paused, erroring or not knowing: none of them is a rate to extrapolate.
+  if (job.phase && job.phase !== 'normal') return null
   if (job.fraction === undefined || job.samples < ETA_MIN_SAMPLES) return null
   if (job.firstAt === undefined || job.firstFraction === undefined || job.lastAt === undefined) return null
   const span = job.lastAt - job.firstAt
@@ -186,7 +233,7 @@ export function formatSilence(ms: number): string {
  * Finished work last — it is on its way out.
  */
 function rank(job: PaneJob): number {
-  return job.state === 'failed' ? 0 : job.state === 'running' ? 1 : 2
+  return job.state === 'failed' || job.phase === 'error' ? 0 : job.state === 'running' ? 1 : 2
 }
 
 /** Every job worth drawing at `now`, as rows, in drawing order. */
@@ -199,7 +246,17 @@ export function jobRows(jobs: readonly PaneJob[], now: number): JobRow[] {
 
 export function jobRow(job: PaneJob, now: number): JobRow {
   const stale = jobStale(job, now)
-  const state: JobRow['state'] = stale ? 'stale' : job.state
+  const state: JobRow['state'] =
+    job.state !== 'running'
+      ? job.state
+      : stale
+        ? 'stale'
+        : job.phase === 'paused'
+          ? 'paused'
+          : job.phase === 'error'
+            ? 'error'
+            : 'running'
+  const indeterminate = job.state === 'running' && job.phase === 'indeterminate'
   const end = job.state === 'running' ? now : (job.endedAt ?? job.updatedAt)
   const eta = jobEtaMs(job, now)
 
@@ -217,12 +274,78 @@ export function jobRow(job: PaneJob, now: number): JobRow {
     id: job.id,
     title: job.title,
     state,
-    pct: job.fraction !== undefined ? job.fraction * 100 : undefined,
+    pct: job.fraction !== undefined && !indeterminate ? job.fraction * 100 : undefined,
+    ...(indeterminate ? { indeterminate: true } : {}),
     count,
     elapsed: formatClock(end - job.startedAt),
     eta: eta !== null ? `~${formatClock(eta)} left` : undefined,
     note,
   }
+}
+
+/**
+ * Several panes' jobs as one bar — the sidebar's, under a workspace's name.
+ *
+ * One bar for many jobs has to pick what it is a bar *of*, and the choice is
+ * the plain average of the running jobs' own fractions. Not done over total
+ * summed across them: a render counting frames and an upload counting bytes
+ * share no unit, and adding 340 frames to 2 GB would let whichever job counts
+ * in the bigger numbers decide the bar. Each job saying how far through it is
+ * counts once.
+ *
+ * And only when every one of them says. A running job with no fraction — a
+ * count with no total, a program that reported "indeterminate" — means the
+ * workspace's overall position is not known, and an average of the jobs that
+ * did say would be a confident bar standing in for one that is not there. So
+ * the summary has no percentage then, and the bar moves without filling.
+ *
+ * What is finished does not count towards the fraction, or the bar would jump
+ * forward the moment one job of three ends. It shows when nothing is running
+ * any more: green for done, red for a failure — and a failure next to running
+ * work is carried as `failed` so the bar can say both at once.
+ */
+export interface JobSummary {
+  /**
+   * `stale` only when everything running has gone quiet, and `paused` only
+   * when everything else running is paused: one live job is enough for the bar
+   * to be live. `error` when any running job says something is wrong.
+   */
+  state: 'running' | 'stale' | 'paused' | 'error' | 'done' | 'failed'
+  /** 0–100, or undefined when the overall position cannot honestly be given. */
+  pct?: number
+  /** A failure, finished or still running, sits among the rest. */
+  failed: boolean
+  /** When the latest finished job finished, for how long the outcome flashes. */
+  endedAt?: number
+  /** Every visible job, drawn in strip order — what a tooltip lists. */
+  rows: JobRow[]
+}
+
+export function jobsSummary(jobs: readonly PaneJob[], now: number): JobSummary | null {
+  const visible = jobs.filter((job) => jobVisible(job, now))
+  if (!visible.length) return null
+  const rows = jobRows(visible, now)
+  const live = rows.filter((r) => r.state !== 'done' && r.state !== 'failed')
+  const failed = rows.some((r) => r.state === 'failed' || r.state === 'error')
+  const ended = visible.filter((j) => j.state !== 'running').map((j) => j.endedAt ?? j.updatedAt)
+  const endedAt = ended.length ? Math.max(...ended) : undefined
+
+  if (!live.length) {
+    const state = rows.some((r) => r.state === 'failed') ? 'failed' : 'done'
+    return { state, pct: 100, failed: state === 'failed', endedAt, rows }
+  }
+
+  const known = live.every((r) => r.pct !== undefined && !r.indeterminate)
+  const pct = known ? live.reduce((sum, r) => sum + (r.pct ?? 0), 0) / live.length : undefined
+  const awake = live.filter((r) => r.state !== 'stale')
+  const state: JobSummary['state'] = !awake.length
+    ? 'stale'
+    : awake.some((r) => r.state === 'error')
+      ? 'error'
+      : awake.every((r) => r.state === 'paused')
+        ? 'paused'
+        : 'running'
+  return { state, pct, failed, endedAt, rows }
 }
 
 function fmtCount(n: number): string {
@@ -291,6 +414,19 @@ export function applyJobReport(
       }
       if (report.detail !== undefined) job.detail = clip(report.detail, 200) || undefined
 
+      if (report.phase !== undefined && report.phase !== (job.phase ?? 'normal')) {
+        // A change of phase restarts the rate. Time spent paused, or spent not
+        // knowing, is not time the job was moving at its old speed, and a rate
+        // that averaged it in would predict a tail that is not there.
+        job.firstAt = undefined
+        job.firstFraction = undefined
+        job.samples = 0
+        if (report.phase === 'normal') delete job.phase
+        else job.phase = report.phase
+        // Not knowing how far through is not "still at 40%".
+        if (report.phase === 'indeterminate' && fraction === undefined) delete job.fraction
+      }
+
       if (fraction !== undefined) {
         // Going backwards restarts the measurement. A job that moved on to a
         // second pass, or a counter that was reset, has not got a negative
@@ -309,10 +445,16 @@ export function applyJobReport(
       return { jobs: [...others, job] }
     }
 
+    case 'clear':
+      // Gone without a verdict: the program withdrew its bar and said nothing
+      // about how the work went, so nothing is drawn in its place.
+      return { jobs: existing ? others : [...jobs] }
+
     case 'done':
     case 'fail': {
       const job: PaneJob = existing ? { ...existing } : blankJob(id, id, now, report.ttl)
       job.state = report.action === 'done' ? 'done' : 'failed'
+      delete job.phase
       job.endedAt = now
       job.updatedAt = now
       if (report.detail !== undefined) job.detail = clip(report.detail, 200) || undefined

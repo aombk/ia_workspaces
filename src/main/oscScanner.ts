@@ -9,6 +9,7 @@
  * The scanner only *observes* — the byte stream is forwarded to xterm intact.
  */
 import { isWindows, platformKind } from '../shared/platform'
+import { parseOscProgress, type OscProgress } from './oscProgress'
 
 const PLATFORM = platformKind(process.platform)
 
@@ -21,6 +22,8 @@ export interface OscEvents {
   onCwd(cwd: string): void
   /** OSC 9 (ConEmu) or OSC 777 — an explicit desktop notification request. */
   onNotify(title: string, body: string): void
+  /** OSC 9;4 — a program's own progress report. See `oscProgress.ts`. */
+  onProgress(progress: OscProgress): void
   /** OSC 133;A — a shell prompt is being drawn. */
   onPromptStart(): void
   /** OSC 133;C — a line was submitted, so a command is now running. */
@@ -152,11 +155,12 @@ export class OscScanner {
           const cwd = stripQuotes(raw)
           if (cwd) this.events.onCwd(stripTrailingSlash(cwd))
         } else if (subId === '4') {
-          // progress reports — ignored. They are declared, not scraped (a
-          // program emits them on purpose), so they could feed the same strip
-          // `iaw job` draws — see `shared/jobs.ts` — as one job per pane. Not
-          // done yet: nothing here has been tested against the programs that
-          // send them.
+          // A progress report, read strictly — see `parseOscProgress`. One it
+          // cannot read is dropped, not shown as a notification: `4;` is
+          // ConEmu's progress subcommand, and its malformed cousins are still
+          // not a message for a person.
+          const progress = parseOscProgress(rest)
+          if (progress) this.events.onProgress(progress)
         } else if (rest) {
           this.events.onNotify('Terminal', rest)
         }

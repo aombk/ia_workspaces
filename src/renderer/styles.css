@@ -6936,6 +6936,152 @@ thead .csv-cell {
   color: var(--warn);
 }
 
+/*
+ * Said by the program itself, over OSC 9;4 (see `main/oscProgress.ts`).
+ * Error is red while it is still running — the program may yet recover — and
+ * paused takes the stale colour without the fade: not moving, but on purpose.
+ */
+.pane-jobs [data-state='error'] .pane-jobs__fill {
+  background: var(--danger);
+}
+
+.pane-jobs [data-state='error'] > .pane-jobs__outcome,
+.pane-jobs__more[data-state='error'] {
+  color: var(--danger);
+}
+
+.pane-jobs [data-state='paused'] .pane-jobs__fill {
+  background: var(--warn);
+}
+
+.pane-jobs [data-state='paused'] > .pane-jobs__outcome {
+  color: var(--warn);
+}
+
+/*
+ * Working, and unable to say how far: a band moving along the track rather
+ * than a fill, because a fill is a position and there is not one. Shared with
+ * the sidebar's bar below. `--sweep-delay` is set from the clock so a redraw
+ * carries on the sweep instead of restarting it.
+ */
+.pane-jobs__bar.indeterminate::after,
+.workspace-jobs.indeterminate::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 35%;
+  border-radius: inherit;
+  background: var(--accent);
+  opacity: 0.8;
+  animation: job-sweep 1400ms ease-in-out infinite;
+  animation-delay: var(--sweep-delay, 0ms);
+}
+
+@keyframes job-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(290%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-jobs__bar.indeterminate::after,
+  .workspace-jobs.indeterminate::after {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.35;
+  }
+}
+
+/*
+ * The same jobs, summed up per workspace, along the bottom of its row in the
+ * sidebar — see `jobsSummary` in `shared/jobs.ts` for what the one bar means.
+ *
+ * Two pixels and no words: the sidebar is a list of places, and this only has
+ * to answer "is something in there still going, and has it gone wrong". The
+ * tooltip says the rest. Inset to the name's column so it reads as belonging
+ * to this row and not as a rule between two.
+ */
+.workspace-jobs {
+  position: absolute;
+  right: 8px;
+  bottom: 3px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--bg-active);
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.workspace.active .workspace-jobs {
+  background: color-mix(in srgb, var(--text-faint) 30%, transparent);
+}
+
+.workspace-jobs__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  transition: width 0.25s ease-out;
+}
+
+.workspace-jobs[data-state='error'] .workspace-jobs__fill,
+.workspace-jobs[data-state='failed'] .workspace-jobs__fill {
+  background: var(--danger);
+}
+
+.workspace-jobs[data-state='done'] .workspace-jobs__fill {
+  background: var(--ok, #7fb069);
+}
+
+.workspace-jobs[data-state='paused'] .workspace-jobs__fill {
+  background: var(--warn);
+}
+
+/* Gone quiet: still there, no longer confident. Same as the strip. */
+.workspace-jobs[data-state='stale'] .workspace-jobs__fill,
+.workspace-jobs[data-state='stale'].indeterminate::after {
+  opacity: 0.35;
+}
+
+/* The rail: no name column to line up with, so the width of the dot's cell. */
+.app.sidebar-collapsed .workspace-jobs {
+  left: 10px !important;
+  right: 10px;
+}
+
+/* A failure beside work still running: the track says it, the fill keeps going. */
+.workspace-jobs.has-failure {
+  background: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+/*
+ * The moment a job ends, the bar pulses in its outcome colour for a few
+ * seconds and then holds it, for as long as the strip keeps the row. Phased
+ * off the clock like the workspace spinner, so a rebuild mid-pulse does not
+ * start it again.
+ */
+.workspace-jobs.flash {
+  animation: workspace-jobs-flash 600ms ease-in-out 5;
+  animation-delay: var(--flash-delay, 0ms);
+}
+
+@keyframes workspace-jobs-flash {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-jobs.flash {
+    animation: none;
+  }
+}
+
 /* ---------------------------------------------------------- image-notes editor */
 
 /*
