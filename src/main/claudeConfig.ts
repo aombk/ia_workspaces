@@ -65,7 +65,10 @@ export function hookEvents(iawPath: string): Record<string, string> {
     // Records the conversation id against the pane, so closing the app and
     // reopening it can resume this exact session rather than the newest one in
     // the folder. `iaw session` reads the id from the hook JSON on stdin.
-    SessionStart: `${iaw} session --quiet${hush}`,
+    // …and tells the agent what this pane can do. `agent-context` prints to
+    // stdout, which Claude Code adds to the agent's context on startup, resume,
+    // clear and compact. Outside our panes it prints nothing.
+    SessionStart: `${iaw} session --quiet${hush}; ${iaw} agent-context --quiet${hush}`,
     // The same, on the event that means the conversation is real.
     //
     // `SessionStart` is startup: it hands out an id for a conversation nobody

@@ -297,7 +297,7 @@ export function jobRow(job: PaneJob, now: number): JobRow {
  * count with no total, a program that reported "indeterminate" — means the
  * workspace's overall position is not known, and an average of the jobs that
  * did say would be a confident bar standing in for one that is not there. So
- * the summary has no percentage then, and the bar moves without filling.
+ * such a job is left out of the fraction; if nothing running has one, there is no bar.
  *
  * What is finished does not count towards the fraction, or the bar would jump
  * forward the moment one job of three ends. It shows when nothing is running
@@ -325,18 +325,24 @@ export function jobsSummary(jobs: readonly PaneJob[], now: number): JobSummary |
   const visible = jobs.filter((job) => jobVisible(job, now))
   if (!visible.length) return null
   const rows = jobRows(visible, now)
-  const live = rows.filter((r) => r.state !== 'done' && r.state !== 'failed')
+  // Only work that says how far it is counts. The sidebar bar fills; it never
+  // sweeps. A job with no percentage (an agent's own "busy" OSC 9;4, a job
+  // with no --total) is listed in the tooltip and drawn in the pane's strip,
+  // but it does not get to turn the workspace bar into a moving band.
+  const live = rows.filter((r) => r.state !== 'done' && r.state !== 'failed' && r.pct !== undefined && !r.indeterminate)
+  const running = rows.some((r) => r.state !== 'done' && r.state !== 'failed')
   const failed = rows.some((r) => r.state === 'failed' || r.state === 'error')
   const ended = visible.filter((j) => j.state !== 'running').map((j) => j.endedAt ?? j.updatedAt)
   const endedAt = ended.length ? Math.max(...ended) : undefined
 
   if (!live.length) {
+    // Something is running but none of it can say how far: no bar at all.
+    if (running) return null
     const state = rows.some((r) => r.state === 'failed') ? 'failed' : 'done'
     return { state, pct: 100, failed: state === 'failed', endedAt, rows }
   }
 
-  const known = live.every((r) => r.pct !== undefined && !r.indeterminate)
-  const pct = known ? live.reduce((sum, r) => sum + (r.pct ?? 0), 0) / live.length : undefined
+  const pct = live.reduce((sum, r) => sum + (r.pct ?? 0), 0) / live.length
   const awake = live.filter((r) => r.state !== 'stale')
   const state: JobSummary['state'] = !awake.length
     ? 'stale'

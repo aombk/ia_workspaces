@@ -73,7 +73,7 @@ export function isOurHook(command: unknown): boolean {
 }
 
 /** Every verb our hooks invoke. `isOurHook` is looser; this has to be exact. */
-const VERBS = 'notify|session|report-agent'
+const VERBS = 'notify|session|report-agent|agent-context'
 
 /**
  * A hook command with the shim's path reduced to a placeholder, so two spellings

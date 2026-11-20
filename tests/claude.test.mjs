@@ -97,6 +97,12 @@ check('the conversation id is recorded on startup and on every prompt', () => {
   }
 })
 
+check('session start tells the agent about the job bars', () => {
+  const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+  const commands = config.hooks.SessionStart.flatMap((g) => g.hooks.map((h) => h.command))
+  assert.ok(commands.some((c) => c.includes('/iaw" agent-context --quiet')))
+})
+
 check('installing twice adds nothing further', () => {
   setClaudeIntegration(true, stateDir, IAW)
   const config = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))

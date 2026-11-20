@@ -34,6 +34,8 @@ const USAGE = `iaw — talk to the ia_workspaces pane you are running in
   iaw report-agent [options]            declare what this agent is doing
   iaw job <start|update|done|fail> ...  show a long job's progress under this
                                         pane (see "long-running jobs" below)
+  iaw agent-context                     print what an agent should know about
+                                        this pane (the SessionStart hook runs it)
   iaw ask --question Q --choices C      ask, and wait here for the answer
   iaw answer-agent [--pane ID] --choice C   answer a blocked pane
   iaw agent-state [--pane ID]           print declared state as JSON
@@ -182,6 +184,15 @@ const VERBS: Method[] = [
   'job',
 ]
 
+/** What `iaw agent-context` tells an agent about this terminal. Keep it short: it rides in every session. */
+export const AGENT_CONTEXT = `This terminal is an ia_workspaces pane. It draws progress bars (bar, percentage, time left) under the pane and under the workspace name.
+For anything that takes more than about 30 seconds (renders, encodes, downloads, installs, builds, test suites, batch scripts), report it:
+  iaw job start  --id ID --title "what it is" [--total N] --quiet
+  iaw job update --id ID (--done N | --pct P) [--detail "step 120"] --quiet   # about once a second
+  iaw job done   --id ID --quiet      (or: iaw job fail --id ID --reason "why" --quiet)
+Use a unique id per job, pass --total when the count is known, and always end with done or fail (a silent job goes stale after 30 s). Background shells inherit the pane. For a command that prints its own progress, parse it in a loop and call iaw job update. Programs that emit OSC 9;4 progress are drawn automatically. Show progress in the bars, not as chat messages.
+`
+
 /** How long `ask` waits by default, and the most it will ever wait. */
 const ASK_TIMEOUT_DEFAULT_S = 120
 const ASK_TIMEOUT_MAX_S = 3600
@@ -192,7 +203,7 @@ const ASK_TIMEOUT_MAX_S = 3600
  * Kept apart from `VERBS` because those are typed as control-server methods and
  * these are not: nothing on the far end knows the words `bridge` or `token`.
  */
-const LOCAL_VERBS = ['bridge', 'token', 'host'] as const
+const LOCAL_VERBS = ['bridge', 'token', 'host', 'agent-context'] as const
 
 /** Verbs that act on another pane only with your say-so. Mirrors `CROSS_PANE`. */
 const CROSS_PANE_VERBS: ReadonlySet<string> = new Set(['read-screen', 'send', 'send-key', 'answer-agent'])
@@ -249,6 +260,14 @@ export async function runCli(argv: string[], userDataPath: string): Promise<numb
     return 0
   }
   if ((verb as string) === 'bridge') return runBridge(identity, args)
+  // Printed by the `SessionStart` hook, whose stdout Claude Code adds to the
+  // agent's context: this is how an agent learns the pane can draw job bars.
+  // Only reached inside one of our panes — outside, identity fails above and
+  // `--quiet` makes that silent, so an ordinary terminal's agent hears nothing.
+  if ((verb as string) === 'agent-context') {
+    process.stdout.write(AGENT_CONTEXT)
+    return 0
+  }
 
   const request = buildRequest(verb, args, identity)
   if ('error' in request) {

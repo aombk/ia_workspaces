@@ -467,11 +467,13 @@ await check('the fraction is the average of the jobs, not their units added up',
   assert.equal(s.rows.length, 2)
 })
 
-await check('one job that cannot say how far it is makes the whole bar not know', () => {
+await check('jobs that cannot say how far they are are left out; the bar only fills', () => {
   const s = J.jobsSummary([job('a', { fraction: 0.5 }), job('b', { done: 12 })], T0 + 1000)
-  assert.equal(s.pct, undefined)
+  assert.ok(Math.abs(s.pct - 50) < 1e-9)
   const t = J.jobsSummary([job('a', { fraction: 0.5 }), job('b', { phase: 'indeterminate' })], T0 + 1000)
-  assert.equal(t.pct, undefined)
+  assert.ok(Math.abs(t.pct - 50) < 1e-9)
+  assert.equal(t.rows.length, 2, 'both are still listed')
+  assert.equal(J.jobsSummary([job('b', { phase: 'indeterminate' })], T0 + 1000), null, 'nothing measurable: no bar')
 })
 
 await check('finished work does not count toward the fraction while something still runs', () => {
