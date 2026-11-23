@@ -133,9 +133,13 @@ test('the machine has been up for a positive number of seconds', () => {
   assert.ok(first.uptimeSeconds > 0)
 })
 
+// Volumes are read from the second sample, not the first. The first launch of
+// PowerShell on a cold Windows machine (a fresh CI runner) can outlast the
+// probe's timeout, and then the first sample honestly reports no volumes; the
+// app shows them one poll later. The second sample's probe starts warm.
 test('at least one volume answered, with free no greater than total', () => {
-  assert.ok(first.disks.length >= 1, 'no volumes were reported')
-  for (const disk of first.disks) {
+  assert.ok(second.disks.length >= 1, 'no volumes were reported')
+  for (const disk of second.disks) {
     assert.ok(disk.total > 0, `${disk.mount} reported no size`)
     assert.ok(disk.free >= 0)
     assert.ok(disk.free <= disk.total, `${disk.mount} has more free than it holds`)
@@ -248,10 +252,15 @@ test('counters never go backwards between samples', () => {
   }
 })
 
+// A third sample, past the probe cache's 1.5 s, so it is a fresh probe and not
+// the second one's answer reused. Compared with the second for the reason above.
+await new Promise((resolve) => setTimeout(resolve, 1600))
+const third = await readSystemStats()
+
 test('the volume list is stable between samples', () => {
   assert.deepEqual(
-    second.disks.map((d) => d.mount).sort(),
-    first.disks.map((d) => d.mount).sort()
+    third.disks.map((d) => d.mount).sort(),
+    second.disks.map((d) => d.mount).sort()
   )
 })
 

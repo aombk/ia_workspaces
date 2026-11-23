@@ -11,7 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { build } from 'esbuild'
 
-const out = path.join(fs.realpathSync(os.tmpdir()), 'iaw-autofetch-test')
+const out = path.join(fs.realpathSync.native(os.tmpdir()), 'iaw-autofetch-test')
 fs.rmSync(out, { recursive: true, force: true })
 fs.mkdirSync(out, { recursive: true })
 

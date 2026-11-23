@@ -16,7 +16,7 @@ import { build } from 'esbuild'
 // (/var -> /private/var) and git always reports the path it really is. Testing
 // against the unresolved name compares a symlink to its target and fails there
 // and nowhere else.
-const out = path.join(fs.realpathSync(os.tmpdir()), 'iaw-worktree-test')
+const out = path.join(fs.realpathSync.native(os.tmpdir()), 'iaw-worktree-test')
 fs.rmSync(out, { recursive: true, force: true })
 fs.mkdirSync(out, { recursive: true })
 
