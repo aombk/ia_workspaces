@@ -1,0 +1,63 @@
+# Builds the Windows installer on a GitHub-hosted Windows machine.
+#
+# - Every push to main: typecheck, tests, installer. The installer is kept as a
+#   downloadable "artifact" on the run's page for a week, to try before releasing.
+# - Publishing a release on GitHub: the same build, and ia_workspaces-setup.exe
+#   is attached to that release (replacing one already there with that name).
+# - "Run workflow" button on the Actions tab: the same as a push, on demand.
+#
+# It runs build_windows.bat, the same script used on the Windows PC, so a
+# build that passes here is the build that would have been made there.
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to attach the installer to a release
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The runner image usually has Inno Setup already; this makes sure.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Typecheck, test, package
+        shell: cmd
+        run: call build_windows.bat --yes
+
+      - name: Keep the installer on the run page
+        uses: actions/upload-artifact@v4
+        with:
+          name: ia_workspaces-windows
+          path: build/ia_workspaces-setup.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Attach the installer to the release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" build/ia_workspaces-setup.exe --clobber
