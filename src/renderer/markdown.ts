@@ -768,7 +768,15 @@ function linkElement(href: string, title: string): HTMLElement {
     if (!title) a.title = href
   } else if (href.startsWith('#') && href.length > 1) {
     a.className = 'md-anchor'
-    const slug = decodeURIComponent(href.slice(1)).toLowerCase()
+    // `#50%` is a fine thing to write and a malformed URI, and a throw here
+    // would take the whole document down with it.
+    let slug = href.slice(1)
+    try {
+      slug = decodeURIComponent(slug)
+    } catch {
+      /* kept as written */
+    }
+    slug = slug.toLowerCase()
     a.addEventListener('click', (e) => {
       e.preventDefault()
       const root = a.closest('.markdown') ?? document

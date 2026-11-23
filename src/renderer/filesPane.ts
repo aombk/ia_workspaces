@@ -605,17 +605,23 @@ export class FilesPane {
   }
 
   /**
-   * Git status costs a process spawn, so a folder that turned out not to be a
-   * repository is remembered and not asked about again while we stay there.
+   * Git status costs a process spawn, so a folder that came back with nothing
+   * is not asked about again for a while. Only for a while: nothing is also
+   * what a clean repository says, and what a status that timed out says, and
+   * remembering it for good meant a clean project never showed a marker again
+   * until a restart.
    */
   private async loadStatus(): Promise<GitStatusMap> {
-    if (FilesPane.nonRepos.has(this.cwd)) return {}
+    const quiet = FilesPane.quietFolders.get(this.cwd)
+    if (quiet !== undefined && Date.now() - quiet < FilesPane.QUIET_MS) return {}
     const status = await backend().gitStatus(this.cwd)
-    if (!Object.keys(status).length) FilesPane.nonRepos.add(this.cwd)
+    if (!Object.keys(status).length) FilesPane.quietFolders.set(this.cwd, Date.now())
+    else FilesPane.quietFolders.delete(this.cwd)
     return status
   }
 
-  private static readonly nonRepos = new Set<string>()
+  private static readonly quietFolders = new Map<string, number>()
+  private static readonly QUIET_MS = 30_000
 
   private async toggle(entry: FileEntry): Promise<void> {
     if (this.expanded.has(entry.path)) {

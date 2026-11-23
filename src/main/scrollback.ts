@@ -179,10 +179,15 @@ export class ScrollbackStore {
     return rows.slice(-wanted).join('\n')
   }
 
-  push(paneId: string, data: string): void {
+  /**
+   * The bytes as the shell sent them, by preference: the output path already
+   * has them, and turning its string back into bytes was a second encode of
+   * every chunk on the busiest path in the app.
+   */
+  push(paneId: string, data: string | Buffer): void {
     const ring = this.rings.get(paneId)
     if (!ring) return
-    ring.write(Buffer.from(data, 'utf8'))
+    ring.write(typeof data === 'string' ? Buffer.from(data, 'utf8') : data)
     this.dirty.add(paneId)
   }
 

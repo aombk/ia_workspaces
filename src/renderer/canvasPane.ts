@@ -32,7 +32,7 @@
 import type { AuxPane } from './auxPane'
 import { store } from './state'
 import { backend } from '../backend'
-import { joinPath } from '../shared/platform'
+import { isAbsolutePath, joinPath } from '../shared/platform'
 import { folderOf, renderMarkdown } from './markdown'
 import {
   anchor,
@@ -154,6 +154,12 @@ export class CanvasPane implements AuxPane {
   private nodes: CanvasNode[] = []
   private edges: CanvasEdge[] = []
   private loaded = false
+  /**
+   * The canvas file as this pane last read or wrote it, and which file that
+   * was. Compared before every save, so an edit made elsewhere — an agent,
+   * Obsidian, the editor pane — is not autosaved over 700 ms later.
+   */
+  private stamp: { path: string; mtime: number; size: number } | null = null
 
   /** Where the canvas sits in the viewport, and how big it is drawn. */
   private panX = 0
@@ -393,16 +399,36 @@ export class CanvasPane implements AuxPane {
       const text = file
         ? await backend().readText(file)
         : ((await backend().scratch.read(this.paneId, SCRATCH_EXT)) ?? '')
+      // Text that is there but is not JSON — merge conflict markers, a file
+      // half-written by something else — is not an empty canvas. `readCanvas`
+      // would read it as one, and the first note added would then be saved
+      // over everything in it.
+      if (text.trim()) JSON.parse(text)
       // Everything in the file survives, including what this app has no use
       // for — see `readCanvas`, and the spec it follows.
       const parsed = readCanvas(text)
       this.nodes = parsed.nodes
       this.edges = parsed.edges
+      await this.remember(file)
     } catch {
-      // No canvas yet — the ordinary case for a project nobody has made one
-      // for, and the empty state says so.
       this.nodes = []
       this.edges = []
+      // No canvas yet is the ordinary case for a project nobody has made one
+      // for, and the empty state says so. Anything else — a file that is
+      // there but cannot be read or parsed — stays unloaded, which is what
+      // keeps `save` from writing over it.
+      const missing = !file || (await backend().fileStamp(file).catch(() => null)) === null
+      if (!missing) {
+        if (!this.disposed) {
+          showToast(
+            'Could not read that canvas',
+            `${this.title()} is not a canvas this can read, so nothing will be saved to it. Open it in the editor to see why.`,
+            { kind: 'error' }
+          )
+          this.render()
+        }
+        return
+      }
     }
     this.loaded = true
     if (this.disposed) return
@@ -685,7 +711,10 @@ export class CanvasPane implements AuxPane {
   private fullPath(node: CanvasNode): string {
     const workspace = store.workspaces.find((w) => w.id === this.workspaceId)
     if (!workspace || !node.file) return ''
-    return joinPath(backend().capabilities.platform, workspace.cwd, node.file)
+    const platform = backend().capabilities.platform
+    // A file dropped in from outside the project is stored whole.
+    if (isAbsolutePath(platform, node.file)) return node.file
+    return joinPath(platform, workspace.cwd, node.file)
   }
 
   /**
@@ -697,22 +726,29 @@ export class CanvasPane implements AuxPane {
    * thing.
    */
   private async loadFiles(): Promise<void> {
+    const wanted = new Set<string>()
     for (const node of this.nodes) {
       // A picture is drawn from its path; there is nothing to read. A canvas is
       // read for the same reason a note is — the card draws what is in it.
       if (!this.isNote(node) && !isCode(node.file ?? '') && !isCanvasPath(node.file ?? '')) continue
       const full = this.fullPath(node)
-      if (!full || this.files.has(full)) continue
-      try {
-        const [text, stamp] = await Promise.all([
-          backend().readText(full),
-          backend().fileStamp(full),
-        ])
-        this.files.set(full, { text, mtime: stamp?.mtime ?? 0, size: stamp?.size ?? 0 })
-      } catch {
-        this.files.set(full, { text: '', mtime: -1, size: -1 })
-      }
+      if (full && !this.files.has(full)) wanted.add(full)
     }
+    // All at once rather than one after another: a canvas of a hundred notes
+    // is a hundred round trips, and the cards wait for the last of them.
+    await Promise.all(
+      [...wanted].map(async (full) => {
+        try {
+          const [text, stamp] = await Promise.all([
+            backend().readText(full),
+            backend().fileStamp(full),
+          ])
+          this.files.set(full, { text, mtime: stamp?.mtime ?? 0, size: stamp?.size ?? 0 })
+        } catch {
+          this.files.set(full, { text: '', mtime: -1, size: -1 })
+        }
+      })
+    )
     if (!this.disposed) this.render()
   }
 
@@ -750,6 +786,29 @@ export class CanvasPane implements AuxPane {
     }
   }
 
+  /** Notes the canvas file's stamp as it is now. */
+  private async remember(file: string | null): Promise<void> {
+    if (!file) {
+      this.stamp = null
+      return
+    }
+    const now = await backend().fileStamp(file).catch(() => null)
+    this.stamp = now ? { path: file, mtime: now.mtime, size: now.size } : null
+  }
+
+  /**
+   * Whether the file on disk is no longer the one this pane last read or
+   * wrote. Only for the same file: after a rename or "save as" there is
+   * nothing to compare against yet, and a file that has gone is written anew.
+   */
+  private async changedElsewhere(file: string): Promise<boolean> {
+    const held = this.stamp
+    if (!held || held.path !== file || held.mtime <= 0) return false
+    const now = await backend().fileStamp(file).catch(() => null)
+    if (!now) return false
+    return now.mtime !== held.mtime || now.size !== held.size
+  }
+
   private queueSave(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => void this.save(), 700)
@@ -775,8 +834,23 @@ export class CanvasPane implements AuxPane {
     const text = JSON.stringify({ nodes: this.nodes, edges: this.edges }, null, 2)
     const file = this.file()
     try {
-      if (file) await backend().files.writeText(file, text)
-      else await backend().scratch.write(this.paneId, SCRATCH_EXT, text)
+      if (file && (await this.changedElsewhere(file))) {
+        // The version on disk wins, as it does for a note card: it is the one
+        // somebody deliberately wrote, and this pane's last move is the
+        // smaller thing to lose. Read back in so the two agree again.
+        showToast(
+          'The canvas changed elsewhere',
+          `${this.title()} was edited outside this pane, so it was not overwritten. It has been read again; the last change made here was not kept.`,
+          { kind: 'warn', timeout: 15000 }
+        )
+        this.loaded = false
+        void this.load()
+        return false
+      }
+      if (file) {
+        await backend().files.writeText(file, text)
+        await this.remember(file)
+      } else await backend().scratch.write(this.paneId, SCRATCH_EXT, text)
       return true
     } catch {
       showToast(

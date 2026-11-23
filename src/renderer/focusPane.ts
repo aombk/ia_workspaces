@@ -24,6 +24,7 @@ import { Redraw } from './redraw'
 import { store } from './state'
 import { backend } from '../backend'
 import { joinPath } from '../shared/platform'
+import { toggleTaskLine } from './markdown'
 import type { BreakRecord, BreakState } from '../shared/moveBreaks'
 import {
   byDay,
@@ -251,7 +252,9 @@ export class FocusPane implements AuxPane {
     if (!file) return
     try {
       const text = await backend().readText(file)
-      this.lines = text.split('\n')
+      // Either line ending: a TODO.md written on Windows is CRLF, and a `\r`
+      // left on each line is a line `TASK` will not match.
+      this.lines = text.split(/\r?\n/)
       this.taskError = ''
     } catch {
       // No TODO.md yet is the ordinary case for a project nobody has written
@@ -320,21 +323,32 @@ export class FocusPane implements AuxPane {
   private async toggle(task: Task): Promise<void> {
     const file = this.todoPath()
     if (!file) return
-    const line = this.lines[task.line]
-    const match = line?.match(TASK)
-    if (!match) {
-      // The file changed underneath us — edited in the editor pane, or by an
-      // agent. Re-read rather than write over what is now somewhere else.
+    // Read again now, not from what was read when the pane opened: an agent or
+    // the editor may have added to the file since, and writing back the old
+    // copy would wipe that.
+    let current: string
+    try {
+      current = await backend().readText(file)
+    } catch {
+      await this.loadTasks()
+      return
+    }
+    const match = current.split(/\r?\n/)[task.line]?.match(TASK)
+    const patched =
+      match && match[4].trim() === task.text ? toggleTaskLine(current, task.line, !task.done) : null
+    if (patched === null) {
+      // The file changed underneath us — that line is now something else.
+      // Re-read rather than write over it.
       await this.loadTasks()
       return
     }
 
-    this.lines[task.line] = `${match[1]}${match[2]} [${task.done ? ' ' : 'x'}] ${match[4]}`
+    this.lines = patched.split(/\r?\n/)
     this.tasks = readTasks(this.lines)
     this.render()
 
     try {
-      await backend().files.writeText(file, this.lines.join('\n'))
+      await backend().files.writeText(file, patched)
     } catch {
       this.taskError = 'That could not be saved to TODO.md.'
       await this.loadTasks()

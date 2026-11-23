@@ -67,7 +67,9 @@ export function promptDialog(opts: {
     panel.append(head, body)
     document.body.appendChild(panel)
 
+    openDialogs++
     const finish = (result: string | null) => {
+      openDialogs--
       window.removeEventListener('keydown', onKey, true)
       panel.remove()
       overlay.hidden = wasOverlayHidden
@@ -80,7 +82,9 @@ export function promptDialog(opts: {
         finish(null)
       } else if (e.key === 'Enter') {
         e.stopPropagation()
-        finish(input.value.trim() || null)
+        e.preventDefault()
+        // Enter on a Tabbed-to Cancel is a cancel, not whatever is typed.
+        finish(document.activeElement === cancel ? null : input.value.trim() || null)
       }
     }
 
@@ -89,6 +93,17 @@ export function promptDialog(opts: {
     window.addEventListener('keydown', onKey, true)
     queueMicrotask(() => input.focus())
   })
+}
+
+/**
+ * How many of these dialogs are up. The app's shortcuts listen on the window
+ * in the capture phase, ahead of a dialog's own listener, so they ask this
+ * first — Ctrl+T behind a "close this tab?" must not open a tab.
+ */
+let openDialogs = 0
+
+export function dialogIsOpen(): boolean {
+  return openDialogs > 0
 }
 
 /** Minimal promise-based confirm, styled like the rest of the app. */
@@ -148,7 +163,9 @@ export function confirmDialog(opts: {
     panel.append(head, body)
     document.body.appendChild(panel)
 
+    openDialogs++
     const finish = (result: boolean) => {
+      openDialogs--
       window.removeEventListener('keydown', onKey, true)
       panel.remove()
       overlay.hidden = wasOverlayHidden
@@ -161,7 +178,11 @@ export function confirmDialog(opts: {
         finish(false)
       } else if (e.key === 'Enter') {
         e.stopPropagation()
-        finish(true)
+        e.preventDefault()
+        // Enter presses the button that has focus. Someone who Tabbed to
+        // Cancel and pressed Enter on a "delete this?" meant Cancel; this
+        // listener runs before the button's own, so it has to look.
+        finish(document.activeElement !== cancel)
       }
     }
 
@@ -222,7 +243,9 @@ export function choiceDialog<T extends string>(opts: {
     row.style.gap = '8px'
 
     const escapeValue = (opts.choices.find((c) => c.escape) ?? opts.choices[0]).value
+    openDialogs++
     const finish = (value: T) => {
+      openDialogs--
       window.removeEventListener('keydown', onKey, true)
       panel.remove()
       overlay.hidden = wasOverlayHidden

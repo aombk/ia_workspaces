@@ -627,7 +627,20 @@ export class EditorPane implements AuxPane {
   /** Points this pane at a file, remembering it and re-reading from scratch. */
   async openFile(file: string): Promise<void> {
     if (!file || file === this.path) return
-    await this.flush()
+    // A save can decline — autosave off, a conflict waiting for an answer, a
+    // write already running — and then the edits exist nowhere but here.
+    // Loading another file over them is the one thing that must ask first.
+    const written = await this.flush()
+    if (!written && this.path && this.dirty) {
+      const name = this.path.split(/[\\/]/).pop() ?? this.path
+      const discard = await confirmDialog({
+        title: 'Discard unsaved changes?',
+        body: `${name} has changes that are not saved. Opening ${file.split(/[\\/]/).pop() ?? file} in this tab throws them away.`,
+        confirmLabel: 'Discard',
+        danger: true,
+      })
+      if (!discard) return
+    }
     this.path = file
     store.setPaneFile(this.paneId, file)
     this.blocked = null

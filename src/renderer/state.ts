@@ -159,6 +159,19 @@ export type Demand = 'blocked' | 'notice' | 'none'
 
 const DEMAND_RANK: Record<Demand, number> = { blocked: 2, notice: 1, none: 0 }
 
+/** The longest a change waits to be written while more keep arriving. */
+const SAVE_MAX_WAIT_MS = 2000
+
+/**
+ * Whether two reports from the same pane would draw the same thing: equal in
+ * everything but the two clocks every report moves on.
+ */
+function sameAgentShown(a: PaneAgentState, b: PaneAgentState): boolean {
+  const { updatedAt: _a, lastOutputAt: _b, ...left } = a
+  const { updatedAt: _c, lastOutputAt: _d, ...right } = b
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 /** The louder of two demands, for folding panes into tabs into workspaces. */
 export function louder(a: Demand, b: Demand): Demand {
   return DEMAND_RANK[a] >= DEMAND_RANK[b] ? a : b
@@ -168,6 +181,8 @@ class WorkspaceState {
   private data: PersistedState = structuredClone(EMPTY)
   private listeners = new Set<Listener>()
   private saveTimer: number | null = null
+  /** When the pending save must go, however many changes follow it. */
+  private saveDueBy = 0
 
   /**
    * Which window this store is drawing, and what kind of window that is.
@@ -785,11 +800,20 @@ class WorkspaceState {
   save(): void {
     // The overview reads the document and never writes it.
     if (this.isOverview) return
-    if (this.saveTimer !== null) window.clearTimeout(this.saveTimer)
-    this.saveTimer = window.setTimeout(() => {
-      this.saveTimer = null
-      this.send(false)
-    }, 250)
+    // Debounced, but not forever. A Claude Code pane animates its title
+    // several times a second while it works, and each frame is a change; with
+    // a plain debounce the write waited until every agent went quiet, and a
+    // new tab made meanwhile was only on disk if nothing crashed first.
+    const now = Date.now()
+    if (this.saveTimer === null) this.saveDueBy = now + SAVE_MAX_WAIT_MS
+    else window.clearTimeout(this.saveTimer)
+    this.saveTimer = window.setTimeout(
+      () => {
+        this.saveTimer = null
+        this.send(false)
+      },
+      Math.max(0, Math.min(250, this.saveDueBy - now))
+    )
   }
 
   /** Sends a save now rather than at the end of the debounce. */
@@ -2101,7 +2125,8 @@ class WorkspaceState {
     // one has not been seen however thoroughly the last was. Re-armed here
     // rather than when the old one clears, because the pane can go from one
     // question straight to the next without ever passing through unblocked.
-    const was = this.agents.get(paneId)?.state
+    const before = this.agents.get(paneId)
+    const was = before?.state
     if (agent.state === 'blocked' && was !== 'blocked') {
       this.seenInput.delete(paneId)
       const workspace = this.workspaceOfPane(paneId)
@@ -2128,6 +2153,10 @@ class WorkspaceState {
 
     // Whatever just arrived, it cannot be news in the pane you are sitting in.
     this.settleAttended()
+    // A report that changes nothing on screen — the same state again, only
+    // its clocks moved on — is stored (the wake lock reads those clocks) but
+    // does not redraw the whole app. Agents repeat themselves a lot.
+    if (before && sameAgentShown(before, agent)) return
     this.emit()
   }
 

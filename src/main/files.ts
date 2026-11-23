@@ -272,6 +272,10 @@ export async function searchWorkspace(
   if (!query.trim()) return []
 
   const args = [
+    // Names as they are: git otherwise quotes a non-ASCII path in octal
+    // escapes, and a hit in `résumé.md` would point at a file that does not exist.
+    '-c',
+    'core.quotePath=false',
     'grep',
     '--fixed-strings',
     '--line-number',
@@ -713,38 +717,52 @@ function isWindowsHidden(info: Record<string, unknown>): boolean {
  * reimplement. It runs only on tree refresh, and failure is silent — no repo
  * simply means no markers.
  */
-export function gitStatus(cwd: string): Promise<GitStatusMap> {
-  return new Promise((resolve) => {
-    execFile(
-      'git',
-      gitArgs(['status', '--porcelain', '--untracked-files=normal']),
-      { cwd, timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: gitEnv() },
-      (error, stdout) => {
-        if (error) {
-          resolve({})
-          return
-        }
-        resolve(parsePorcelain(stdout, cwd))
-      }
-    )
-  })
+export async function gitStatus(cwd: string): Promise<GitStatusMap> {
+  const git = (args: string[]) =>
+    new Promise<string | null>((resolve) => {
+      execFile(
+        'git',
+        gitArgs(args),
+        { cwd, timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: gitEnv() },
+        (error, stdout) => resolve(error ? null : stdout)
+      )
+    })
+  // Status paths are relative to the repository's top, not to the folder
+  // asked about — a tree opened at `repo/src` would otherwise look for
+  // `repo/src/src/a.ts` and mark nothing.
+  const [top, stdout] = await Promise.all([
+    git(['rev-parse', '--show-toplevel']),
+    git(['status', '--porcelain', '-z', '--untracked-files=normal']),
+  ])
+  if (top === null || stdout === null) return {}
+  return parsePorcelain(stdout, path.normalize(top.trim()), cwd)
 }
 
-/** Shared with the other runtimes' ports; keep the precedence rule in step. */
-function parsePorcelain(stdout: string, cwd: string): GitStatusMap {
+/**
+ * Shared with the other runtimes' ports; keep the precedence rule in step.
+ *
+ * `-z` records: `XY path`, NUL-separated, paths verbatim — no quoting of
+ * non-ASCII names and no trimming of a name's own spaces. A rename is followed
+ * by one extra record, the old path, which is not on disk and is skipped.
+ */
+function parsePorcelain(stdout: string, root: string, cwd: string): GitStatusMap {
   const out: GitStatusMap = {}
 
-  for (const line of stdout.split('\n')) {
-    if (line.length < 4) continue
-    const code = line.slice(0, 2).trim()
-    let file = line.slice(3).trim()
-    // Renames read "old -> new"; the new path is the one on disk.
-    const arrow = file.indexOf(' -> ')
-    if (arrow !== -1) file = file.slice(arrow + 4)
-    if (file.startsWith('"') && file.endsWith('"')) file = file.slice(1, -1)
+  const records = stdout.split('\0')
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i]
+    if (record.length < 4) continue
+    const code = record.slice(0, 2)
+    const file = record.slice(3)
+    if (code[0] === 'R' || code[0] === 'C') i++
 
-    const letter = code.includes('?') ? '?' : code[0] || 'M'
-    const full = path.resolve(cwd, file.replace(/\//g, path.sep))
+    const letter = code.includes('?') ? '?' : code.trim()[0] || 'M'
+    // Outside the folder the tree is showing: nothing there to mark. Keyed in
+    // the tree's own spelling of its folder, which on Windows may differ in
+    // case from the one git prints.
+    const inside = path.relative(cwd, path.resolve(root, file.replace(/\//g, path.sep)))
+    if (inside === '..' || inside.startsWith('..' + path.sep) || path.isAbsolute(inside)) continue
+    const full = path.join(cwd, inside)
     out[full] = letter
 
     // Mark every ancestor up to the repo root so collapsed folders still show

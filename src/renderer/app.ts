@@ -28,7 +28,7 @@ import {
   jumpToOldestUnread,
 } from './ui/notificationPanel'
 import { hideContextMenu, setMenuAccent } from './ui/contextMenu'
-import { choiceDialog, confirmDialog, promptDialog } from './ui/confirm'
+import { choiceDialog, confirmDialog, dialogIsOpen, promptDialog } from './ui/confirm'
 import { showToast } from './ui/toast'
 import { uniqueName } from '../shared/workspaceFile'
 import { checkAppSupport, setRectSource, syncApps } from './ui/externalApps'
@@ -258,8 +258,8 @@ export async function start(): Promise<void> {
     () => applyTheme()
   )
   initSettingsPanel(() => {
+    // `applyTheme` already hands the settings to every terminal.
     applyTheme()
-    terminals.applySettings(store.settings)
     render()
   })
 
@@ -2100,6 +2100,10 @@ function wireKeyboard(): void {
         }
         return
       }
+
+      // Likewise a confirm or prompt: its own listener, registered after this
+      // one, handles Enter and Escape, and nothing else may reach the app.
+      if (dialogIsOpen()) return
 
       if (e.key === 'Escape') {
         hideContextMenu()

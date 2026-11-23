@@ -889,9 +889,19 @@ function send(
     socket.setTimeout(timeoutMs, () => done({ ok: false, error: 'timed out' }))
     socket.on('error', (err) => done({ ok: false, error: err.message }))
     socket.on('connect', () => socket.write(JSON.stringify(request) + '\n'))
-    socket.on('data', (chunk) => {
+    // A reply is one line, but a long one — a screen of 2000 lines, 500
+    // events — arrives in several chunks, and a character can be split
+    // between two. Bytes are kept until the newline and decoded once.
+    const parts: Buffer[] = []
+    socket.on('data', (chunk: Buffer) => {
+      const end = chunk.indexOf(0x0a)
+      if (end < 0) {
+        parts.push(chunk)
+        return
+      }
+      parts.push(chunk.subarray(0, end))
       try {
-        done(JSON.parse(chunk.toString('utf8').split('\n')[0]) as ControlResponse)
+        done(JSON.parse(Buffer.concat(parts).toString('utf8')) as ControlResponse)
       } catch {
         done({ ok: false, error: 'bad response' })
       }

@@ -291,22 +291,31 @@ export class PtyManager {
       return Promise.resolve(this.backend)
     }
 
-    this.starting = connectPtyHost({
+    const starting = connectPtyHost({
       execPath: this.deps.execPath,
       hostScript: this.deps.hostScript,
       hooks: this.hostHooks(),
     }).then((backend) => {
-      this.backend = backend
-      return backend
+      // Only if this is still the connect in charge. One a lost host made
+      // obsolete would otherwise land on top of its successor, and the panes
+      // spawned on the other would be talking into a table nobody reads.
+      if (this.starting === starting) this.backend = backend
+      else if (this.backend !== backend) backend.release()
+      return this.backend ?? backend
     })
-    return this.starting
+    this.starting = starting
+    return starting
   }
 
   private hostHooks(): PtyBackendHooks {
     return {
       onData: (id, data, backlog) => this.handleData(id, data, backlog),
       onExit: (id, exit) => this.handleExit(id, exit),
-      onLost: () => this.handleHostLost(),
+      onLost: (backend) => {
+        // A connection that was never the one in use — a probe let go, a
+        // duplicate released — has nothing of ours to detach.
+        if (backend === this.backend) this.handleHostLost()
+      },
     }
   }
 
@@ -324,9 +333,10 @@ export class PtyManager {
    * see — without starting a broker to answer the question.
    */
   async hostSnapshot(): Promise<SessionHostInfo> {
-    const host = this.backend ?? (await this.adoptExistingHost())
+    const borrowed = this.backend ? null : await this.adoptExistingHost()
+    const host = this.backend ?? borrowed?.host
     if (!host) return { kind: this.backend?.kind ?? 'connecting', sessions: [] }
-    const sessions = await host.list()
+    const sessions = await host.list().finally(() => borrowed?.done())
     return {
       kind: host.kind,
       sessions: sessions.map((s) => ({
@@ -364,12 +374,17 @@ export class PtyManager {
    *   would be a far worse bug than the leak this fixes.
    */
   async reapOrphans(live: ReadonlySet<string>): Promise<number> {
-    const host = this.backend ?? (await this.adoptExistingHost())
+    const borrowed = this.backend ? null : await this.adoptExistingHost()
+    const host = this.backend ?? borrowed?.host
     if (!host) return 0
 
-    const doomed = selectOrphans(await host.list(), live, Date.now())
-    for (const session of doomed) host.kill(session.id)
-    return doomed.length
+    try {
+      const doomed = selectOrphans(await host.list(), live, Date.now())
+      for (const session of doomed) host.kill(session.id)
+      return doomed.length
+    } finally {
+      borrowed?.done()
+    }
   }
 
   /**
@@ -380,7 +395,14 @@ export class PtyManager {
    * a broker to go looking, or every launch would spawn one to find nothing.
    * A connection made this way is a real one and is kept.
    */
-  private async adoptExistingHost(): Promise<PtyBackend | null> {
+  private async adoptExistingHost(): Promise<{ host: PtyBackend; done: () => void } | null> {
+    const kept = () => ({ host: this.backend!, done: () => {} })
+    // A connect already under way is the answer; a second one beside it was
+    // a second socket, and whichever finished last replaced the other.
+    if (this.starting) {
+      await this.starting.catch(() => null)
+      return this.backend ? kept() : null
+    }
     const backend = await connectPtyHost({
       execPath: this.deps.execPath,
       hostScript: this.deps.hostScript,
@@ -389,9 +411,23 @@ export class PtyManager {
     })
     // No broker running means no orphans to find. The local backend it fell
     // back to holds nothing, so dropping it costs nothing.
-    if (backend.kind !== 'broker') return null
+    if (backend.kind !== 'broker') {
+      backend.release()
+      return null
+    }
+    // Something needed a shell while this connected, and has its own.
+    if (this.backend || this.starting) {
+      backend.release()
+      // Re-read: the narrowing above predates the await, and this may have been set since.
+      const pending = this.starting as Promise<PtyBackend> | null
+      if (pending) await pending.catch(() => null)
+      return this.backend ? kept() : null
+    }
+    // With shells not to be kept, this connection is for looking only: kept
+    // as the backend, every later shell would run in the broker after all.
+    if (!this.getSettings().keepSessionsAlive) return { host: backend, done: () => backend.release() }
     this.backend = backend
-    return backend
+    return kept()
   }
 
   async spawn(req: SpawnRequest): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -679,7 +715,7 @@ export class PtyManager {
     session.replaying = false
 
     if (!backlog) this.activity.feed(session.id, data.length)
-    this.deps.scrollback.push(session.id, data)
+    this.deps.scrollback.push(session.id, bytes)
     session.pending += data
     if (session.pending.length >= FLUSH_BYTES) this.flush(session)
     else if (!session.flushTimer) {

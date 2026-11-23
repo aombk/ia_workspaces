@@ -577,7 +577,7 @@ export class ExternalApps {
 
 /** The executable's own file name, which is what a process is listed under. */
 export function executableOf(command: string): string {
-  return command.split(/[\/]/).pop() ?? command
+  return command.split(/[\\/]/).pop() ?? command
 }
 
 /**

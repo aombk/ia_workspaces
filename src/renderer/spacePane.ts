@@ -100,6 +100,9 @@ export class SpacePane implements AuxPane {
   private async refresh(): Promise<void> {
     const cwd = this.workspace?.cwd
     if (!cwd) return
+    // Another folder's git facts must not outlive the move: "remove history"
+    // decides whether to back up first from them.
+    if (cwd !== this.shownCwd) this.git = null
     this.shownCwd = cwd
     this.report = spaceSizeOf(cwd) ?? null
     this.busy = 'measuring…'
@@ -112,8 +115,12 @@ export class SpacePane implements AuxPane {
     } catch (err) {
       showToast('Could not measure this folder', (err as Error).message)
     } finally {
-      this.busy = null
-      this.render()
+      // A measure of a folder the pane has since left must not re-enable the
+      // buttons while the new folder is still being measured.
+      if (cwd === this.shownCwd) {
+        this.busy = null
+        this.render()
+      }
     }
   }
 

@@ -821,7 +821,22 @@ async function statusOf(root: string): Promise<RepoStatus> {
     inProgress(root),
   ])
 
-  const parsed = parseStatus(status.ok ? status.out : '', root)
+  // A failed status is not a clean one. Parsing nothing would draw "No
+  // changes" and send would say "not on a branch" — both confidently wrong.
+  if (!status.ok) {
+    return {
+      ...parseStatus('', root),
+      root,
+      unsent: [],
+      incoming: [],
+      hasRemote: remoteUrl.length > 0,
+      remoteUrl: remoteUrl || undefined,
+      inProgress: stopped,
+      unreadable: status.err || 'git status failed',
+    }
+  }
+
+  const parsed = parseStatus(status.out, root)
   await fillSizes(root, parsed.files)
 
   // Every save on any line here that is on no line GitHub has.
@@ -863,7 +878,9 @@ async function statusOf(root: string): Promise<RepoStatus> {
       incomingFiles = parseNameStatus(theirs.out)
       overlap = bothChanged(
         incomingFiles,
-        parsed.files.map((f) => f.repoPath),
+        // A rename's old path too: a change coming in to the file under its
+        // old name meets the rename here.
+        parsed.files.flatMap((f) => (f.from ? [f.repoPath, f.from] : [f.repoPath])),
         mine?.ok ? parseNameOnly(mine.out) : [],
         process.platform === 'win32' || process.platform === 'darwin'
       )
@@ -881,6 +898,15 @@ async function statusOf(root: string): Promise<RepoStatus> {
     hasRemote: remoteUrl.length > 0,
     remoteUrl: remoteUrl || undefined,
     inProgress: stopped,
+  }
+}
+
+/** The refusal for an operation that needs a status git would not give. */
+function unreadableResult(err: string): GitResult {
+  return {
+    ok: false,
+    error: err,
+    hint: 'Git could not say what has changed here just now, so nothing was done — acting on a guess is how work gets lost. Try again in a moment, or run git status in the terminal beside this pane to see why.',
   }
 }
 
@@ -973,7 +999,9 @@ async function pickedSizes(root: string, repoPaths: string[]): Promise<Map<strin
   const sizes = new Map<string, number>()
   if (!repoPaths.length) return sizes
 
-  const named = repoPaths.length <= 500
+  // Short enough to name, by count and by length: Windows refuses a command
+  // line past 32,767 characters, which 500 long monorepo paths can pass.
+  const named = repoPaths.length <= 500 && repoPaths.reduce((n, p) => n + p.length + 3, 0) < 24_000
   const args = [
     // Paths are paths, not patterns: a file called `[draft].md` is one file.
     '--literal-pathspecs',
@@ -1423,7 +1451,11 @@ export async function commitFiles(cwd: string, sha: string): Promise<ChangedFile
  */
 export async function pick(cwd: string, paths: string[]): Promise<GitResult> {
   const root = (await checkoutRoot(cwd)) ?? cwd
-  const args = paths.length ? ['add', '--verbose', '--', ...paths] : ['add', '--verbose', '--all']
+  // Paths are paths, not patterns: ticking `app/[id]/page.tsx` must not also
+  // pick a changed `app/i/page.tsx`.
+  const args = paths.length
+    ? ['--literal-pathspecs', 'add', '--verbose', '--', ...paths]
+    : ['add', '--verbose', '--all']
   let count = 0
   return asResult(
     await runProgress(root, args, {
@@ -1451,7 +1483,7 @@ export async function pick(cwd: string, paths: string[]): Promise<GitResult> {
  */
 export async function unpick(cwd: string, paths: string[]): Promise<GitResult> {
   const root = (await checkoutRoot(cwd)) ?? cwd
-  const args = paths.length ? ['reset', '--quiet', '--', ...paths] : ['reset', '--quiet']
+  const args = paths.length ? ['--literal-pathspecs', 'reset', '--quiet', '--', ...paths] : ['reset', '--quiet']
   return asResult(await run(root, args))
 }
 
@@ -1475,6 +1507,7 @@ export async function save(cwd: string, message: string): Promise<GitResult> {
 export async function send(cwd: string): Promise<GitResult> {
   const root = await afterBackgroundFetch(cwd, 'send')
   const status = await repoStatus(root)
+  if (status.unreadable) return unreadableResult(status.unreadable)
   if (status.detached || !status.branch) {
     return {
       ok: false,
@@ -1613,10 +1646,21 @@ export function backgroundFetch(cwd: string, minAgeMs: number): Promise<Backgrou
     const last = lastFetch.get(root)
     const wait = last?.failed ? Math.max(minAgeMs, FETCH_BACKOFF_MS) : minAgeMs
     if (last && Date.now() - last.at < wait) return { status: 'skipped' as const, root }
-    if (!(await originUrl(root))) return { status: 'skipped' as const, root }
 
-    const entry: FetchJob = { promise: Promise.resolve({ status: 'skipped', root }), started: false, drop: () => {} }
+    // Registered before anything else is awaited, so a second caller for the
+    // same checkout (two workspaces in one repo, a sweep and a shown git pane)
+    // joins this fetch instead of starting another beside it.
+    let dropped = false
+    const entry: FetchJob = {
+      promise: Promise.resolve({ status: 'skipped', root }),
+      started: false,
+      drop: () => {
+        dropped = true
+      },
+    }
     const job = (async (): Promise<BackgroundFetch> => {
+      if (!(await originUrl(root))) return { status: 'skipped', root }
+      if (dropped) return { status: 'skipped', root }
       const go = await new Promise<boolean>((resolve) => {
         if (fetchLanes < FETCH_LANES) {
           fetchLanes++
@@ -1654,7 +1698,7 @@ export function backgroundFetch(cwd: string, minAgeMs: number): Promise<Backgrou
     try {
       return await job
     } finally {
-      fetching.delete(root)
+      if (fetching.get(root) === entry) fetching.delete(root)
     }
   })()
 }
@@ -1815,6 +1859,7 @@ export async function applyLines(cwd: string, patch: string, direction: 'pick' |
 export async function undoLastSave(cwd: string): Promise<GitResult> {
   const root = await localRoot(cwd)
   const status = await statusOf(root)
+  if (status.unreadable) return unreadableResult(status.unreadable)
   if (!status.lastSave) {
     return { ok: false, error: 'no saves yet', hint: 'There is no save to undo — this project has not had one made yet.' }
   }
@@ -1845,6 +1890,7 @@ export async function undoLastSave(cwd: string): Promise<GitResult> {
 export async function amend(cwd: string, message: string): Promise<GitResult> {
   const root = await localRoot(cwd)
   const status = await statusOf(root)
+  if (status.unreadable) return unreadableResult(status.unreadable)
   if (!status.lastSave) {
     return { ok: false, error: 'no saves yet', hint: 'There is no save to add to yet. Make the first one.' }
   }
@@ -1976,9 +2022,20 @@ export async function reconnect(cwd: string, url: string): Promise<GitResult> {
   if (already) {
     return { ok: false, error: 'already tracked', hint: `This folder is already part of a project git is watching (${already}).` }
   }
+  // `checkoutRoot` also comes back empty when git cannot answer about a real
+  // repository — "dubious ownership", git missing, a timeout. A `.git` already
+  // here is somebody's history, and the undo below deletes `.git`, so nothing
+  // starts unless this call is the one that makes it.
+  if (existsSync(path.join(cwd, '.git'))) {
+    return {
+      ok: false,
+      error: 'already has .git',
+      hint: 'This folder already has a .git, but git would not read it — try `git status` in a terminal here to see why. Nothing was changed.',
+    }
+  }
 
   const undo = async (res: GitRun | GitResult, hint?: string): Promise<GitResult> => {
-    // Only ever the `.git` made above: `checkoutRoot` said there was none.
+    // Only ever the `.git` made below: there was none when this began.
     await rm(path.join(cwd, '.git'), { recursive: true, force: true }).catch(() => {})
     shapeCache.clear()
     const result = 'out' in res ? asResult(res) : res

@@ -36,7 +36,7 @@ import {
 } from './sharePassphrase'
 import { publishRelay, type RelayEntry } from './relay'
 import { shareTokens, type PublishEntry } from './tokenShare'
-import { readSystemStats } from './systemStats'
+import { disposeSystemStats, readSystemStats } from './systemStats'
 import { readWeather } from './weather'
 import { readCrypto } from './crypto'
 import { randomUUID } from 'node:crypto'
@@ -2404,6 +2404,7 @@ function bootApp(): void {
       // machine will not sleep, and there is no longer an app to release it.
       powerLock?.dispose()
       moveBreaks?.dispose()
+      disposeSystemStats()
       scrollback?.shutdownSync()
       scrollback?.dispose()
       ptys?.release()

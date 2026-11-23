@@ -78,6 +78,8 @@ export class HistoryView implements GitView {
   private awake = false
   /** What the last fetch was for, so an unchanged one is not repeated. */
   private fetchedFor = ''
+  /** Which fetch is the latest; an older one finishing late is dropped. */
+  private fetchToken = 0
   private detailToken = 0
   private searchTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -247,13 +249,16 @@ export class HistoryView implements GitView {
       return
     }
     this.fetchedFor = key
+    const token = ++this.fetchToken
 
     try {
       const [commits, branches] = await Promise.all([
         backend().git.history(this.ctx.root(), this.limit, this.hasFilter() ? this.filter : undefined),
         backend().git.branches(this.ctx.root()),
       ])
-      if (this.disposed) return
+      // A slow content search for "fo" can land after the one for "foo", and
+      // the list from a project the pane has since left can land at all.
+      if (this.disposed || token !== this.fetchToken) return
       this.commits = commits
       this.branches = branches
       // A filtered list is a handful of saves plucked out of the middle of the
@@ -261,7 +266,9 @@ export class HistoryView implements GitView {
       // only laid out when it would be telling the truth.
       this.rows = this.isNarrowed() ? [] : layoutGraph(commits)
     } catch {
-      /* leave the last good picture up rather than blanking it */
+      // Leave the last good picture up rather than blanking it, but forget the
+      // key, so the next look asks again instead of trusting a list it never got.
+      if (token === this.fetchToken) this.fetchedFor = ''
       return
     }
     this.render()

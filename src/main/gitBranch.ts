@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, statSync } from 'node:fs'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 
 /**
@@ -7,13 +7,18 @@ import path from 'node:path'
  * Spawning `git` per workspace on a timer is a lot of process churn for one
  * string, and on Windows process creation is expensive enough to notice. HEAD
  * is a single small file and its format is stable.
+ *
+ * Asynchronous, because it runs on the main process every few seconds for
+ * every workspace: a workspace on a network drive that has gone away makes
+ * each file check wait for the network's timeout, and a synchronous one would
+ * hold every terminal's output and every click for that long.
  */
-export function currentBranch(startDir: string): string | undefined {
-  const gitDir = findGitDir(startDir)
+export async function currentBranch(startDir: string): Promise<string | undefined> {
+  const gitDir = await findGitDir(startDir)
   if (!gitDir) return undefined
 
   try {
-    const head = readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim()
+    const head = (await readFile(path.join(gitDir, 'HEAD'), 'utf8')).trim()
     const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head)
     if (ref) return ref[1]
     // Detached HEAD: show the short sha instead of nothing.
@@ -25,15 +30,16 @@ export function currentBranch(startDir: string): string | undefined {
 }
 
 /** Walks up until it finds `.git`, honouring the worktree `gitdir:` pointer. */
-function findGitDir(startDir: string): string | null {
+async function findGitDir(startDir: string): Promise<string | null> {
   let dir = startDir
   for (let depth = 0; depth < 64; depth++) {
     const candidate = path.join(dir, '.git')
-    if (existsSync(candidate)) {
+    const info = await stat(candidate).catch(() => null)
+    if (info) {
       try {
-        if (statSync(candidate).isDirectory()) return candidate
+        if (info.isDirectory()) return candidate
         // A worktree or submodule: `.git` is a file pointing elsewhere.
-        const pointer = readFileSync(candidate, 'utf8').trim()
+        const pointer = (await readFile(candidate, 'utf8')).trim()
         const match = /^gitdir:\s*(.+)$/.exec(pointer)
         if (match) {
           const target = match[1]

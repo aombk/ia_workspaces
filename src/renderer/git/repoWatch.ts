@@ -167,6 +167,7 @@ function signatureOf(status: RepoStatus): string {
     status.ahead,
     status.behind,
     status.inProgress,
+    status.unreadable,
     status.hasRemote,
     status.remoteUrl,
     status.unsent.length,

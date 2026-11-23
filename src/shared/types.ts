@@ -2798,6 +2798,13 @@ export interface RepoStatus {
    */
   inProgress?: 'rebase' | 'merge' | 'cherry-pick' | 'revert' | 'bisect'
   /**
+   * Set when `git status` itself failed — a timeout on a very large project,
+   * more output than fits, a repository git refuses to read — with what git
+   * said. Everything else is then empty because nothing is known, not because
+   * nothing changed, and the operations that act on the status refuse.
+   */
+  unreadable?: string
+  /**
    * The save you are standing on, named.
    *
    * Here so the two operations that act on it can say which one they mean —

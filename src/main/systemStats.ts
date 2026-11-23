@@ -44,7 +44,7 @@
  * plain .NET types, which are already in the runtime, measure 315ms. That is
  * the difference between a monitor you can poll and one you cannot.
  */
-import { execFile } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { readFile, readdir, statfs } from 'node:fs/promises'
 import os from 'node:os'
@@ -76,6 +76,8 @@ import type {
  */
 const PROBE_TTL_MS = 1500
 const GPU_TTL_MS = 1500
+/** How long a failed `nvidia-smi` is believed. */
+const GPU_ABSENT_MS = 120_000
 /** Long enough that a hung `df` or a sleeping USB disk cannot wedge the poll. */
 const PROBE_TIMEOUT_MS = 4000
 
@@ -195,12 +197,7 @@ $p = [System.Windows.Forms.SystemInformation]::PowerStatus
 "B $($p.BatteryLifePercent) $($p.PowerLineStatus) $($p.BatteryLifeRemaining)"`
 
 async function windowsProbe(): Promise<PlatformProbe> {
-  const stdout = await runCommand('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    WINDOWS_PROBE,
-  ])
+  const stdout = await powershell.run(WINDOWS_PROBE)
 
   const disks: DiskStats[] = []
   const networks: Array<{ name: string; rx: number; tx: number }> = []
@@ -611,7 +608,7 @@ async function windowsSlow(): Promise<SlowProbe> {
   // Side by side: the counters cost a process and the sensors cost a socket,
   // and neither waits on the other.
   const [stdout, lhm] = await Promise.all([
-    runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_SLOW]),
+    powershell.run(WINDOWS_SLOW),
     readLhm(),
   ])
   const probe = parseWindowsSlow(stdout)
@@ -1536,7 +1533,11 @@ export function parseIoreg(raw: string): SlowProbe['io'] {
 
 // -------------------------------------------------------------- disk rates
 
-let previousIo: { at: number; byName: Map<string, { read: number; write: number; idle: number | null; stamp: number | null }> } | null = null
+let previousIo: {
+  at: number
+  byName: Map<string, { read: number; write: number; idle: number | null; stamp: number | null }>
+  out: DiskIoStats[]
+} | null = null
 
 /**
  * Cumulative counters into rates, with the busy figure each platform can give.
@@ -1550,6 +1551,11 @@ let previousIo: { at: number; byName: Map<string, { read: number; write: number;
  */
 function diskRates(counters: SlowProbe['io'], at: number): DiskIoStats[] {
   const previous = previousIo
+  // `at` is when the slow probe took these counters, not when the panel asked:
+  // the probe refreshes every 15 s and the panel polls every 2, so dividing by
+  // the poll interval read 0, 0, 0… and then fifteen seconds of bytes over two.
+  // The same sample again is the same answer again.
+  if (previous && previous.at === at) return previous.out
   const byName = new Map(counters.map((c) => [c.name, { read: c.read, write: c.write, idle: c.idle, stamp: c.stamp }]))
   const seconds = previous ? (at - previous.at) / 1000 : 0
 
@@ -1583,7 +1589,7 @@ function diskRates(counters: SlowProbe['io'], at: number): DiskIoStats[] {
     }
   })
 
-  previousIo = { at, byName }
+  previousIo = { at, byName, out }
   return out
 }
 
@@ -1621,7 +1627,9 @@ async function readGpus(): Promise<{ gpus: GpuStats[]; source: string | null }> 
       '--format=csv,noheader,nounits',
     ])
   } catch {
-    gpuCache = { at: now, value: [], source: null }
+    // No NVIDIA tool on this machine, most often: asked again in two minutes
+    // rather than with every poll, since each failed spawn is still a spawn.
+    gpuCache = { at: now + GPU_ABSENT_MS - GPU_TTL_MS, value: [], source: null }
     return { gpus: [], source: null }
   }
 
@@ -2026,7 +2034,7 @@ export async function readSystemStats(opts: { drives?: boolean } = {}): Promise<
     uptimeSeconds: os.uptime(),
     app: footprint(),
     disks: probe.disks,
-    diskIo: diskRates(slow.io, at),
+    diskIo: diskRates(slow.io, slowCache?.at ?? at),
     health: slow.health,
     temperatures,
     networks: rates(probe.networks, at),
@@ -2055,6 +2063,204 @@ export async function readSystemStats(opts: { drives?: boolean } = {}): Promise<
       temperatureNote: temperatures.length ? null : slow.sources.temperatureNote,
     },
   }
+}
+
+// ------------------------------------------------- Windows: one PowerShell
+
+/**
+ * One PowerShell kept running for every probe, instead of one per probe.
+ *
+ * Starting `powershell.exe` is the expensive part of asking Windows anything —
+ * a few hundred milliseconds of CPU and a pass through the virus scanner each
+ * time — and the platform probe asked every two seconds for as long as the
+ * monitor was open. Kept alive, a probe costs only the script it runs.
+ *
+ * A script goes in as one line of base64 (so nothing in it can end the line
+ * early), runs as a script block — `exit` in it would only leave the block —
+ * and its output comes back followed by a marker that is random per process,
+ * so no output can forge it. One script at a time, each with the probe's own
+ * timeout; one that overruns, or a process that dies, is killed and replaced on
+ * the next request. A host that keeps failing is left alone for a while and
+ * the old one-process-per-probe route used meanwhile, so a broken PowerShell
+ * costs what it always did rather than a spawn loop.
+ *
+ * Unreferenced, so it never keeps a process alive on its own: when the app
+ * ends its standard input closes, and the loop below ends with it.
+ */
+class PowerShellHost {
+  private child: ChildProcess | null = null
+  private marker = ''
+  private buffer = ''
+  private current: { resolve: (out: string) => void; reject: (err: Error) => void; timer: NodeJS.Timeout } | null =
+    null
+  private queue: Array<{ script: string; resolve: (out: string) => void; reject: (err: Error) => void }> = []
+  private failures = 0
+  private restUntil = 0
+  private disposed = false
+  /**
+   * Ends the process once nothing has asked for a while. It is only worth its
+   * memory while something is polling — the monitor open, the sidebar showing
+   * stats — and the first probe after a pause pays one start, as every probe
+   * used to.
+   */
+  private idle: NodeJS.Timeout | null = null
+
+  run(script: string): Promise<string> {
+    if (this.idle) {
+      clearTimeout(this.idle)
+      this.idle = null
+    }
+    if (this.disposed || Date.now() < this.restUntil) {
+      return runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script])
+    }
+    return new Promise((resolve, reject) => {
+      this.queue.push({ script, resolve, reject })
+      this.next()
+    })
+  }
+
+  dispose(): void {
+    this.disposed = true
+    if (this.idle) clearTimeout(this.idle)
+    this.stop(new Error('PowerShell host closed'))
+    for (const job of this.queue.splice(0)) job.reject(new Error('PowerShell host closed'))
+  }
+
+  private next(): void {
+    if (this.current) return
+    if (!this.queue.length) {
+      if (this.child && !this.idle && !this.disposed) {
+        this.idle = setTimeout(() => {
+          this.idle = null
+          if (!this.current && !this.queue.length) this.stop(new Error('idle'))
+        }, 60_000)
+        this.idle.unref()
+      }
+      return
+    }
+    const job = this.queue.shift()!
+    const child = this.child ?? this.start()
+    if (!child?.stdin) {
+      job.reject(new Error('PowerShell did not start'))
+      this.next()
+      return
+    }
+    const timer = setTimeout(() => {
+      this.fail()
+      this.stop(new Error('timed out'))
+    }, PROBE_TIMEOUT_MS)
+    this.current = { resolve: job.resolve, reject: job.reject, timer }
+    child.stdin.write(Buffer.from(job.script, 'utf8').toString('base64') + '\n')
+  }
+
+  private start(): ChildProcess | null {
+    this.marker = `--iaw-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}--`
+    const loop = [
+      "$ErrorActionPreference='SilentlyContinue'",
+      '[Console]::OutputEncoding=New-Object Text.UTF8Encoding $false',
+      '$in=[Console]::In',
+      '$out=[Console]::Out',
+      'while ($true) {',
+      '  $line=$in.ReadLine()',
+      '  if ($line -eq $null) { break }',
+      '  try {',
+      '    $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line))',
+      '    & ([ScriptBlock]::Create($code)) 2>$null | ForEach-Object { $out.WriteLine("$_") }',
+      '  } catch {}',
+      `  $out.WriteLine('${this.marker}')`,
+      '  $out.Flush()',
+      '}',
+    ].join('\n')
+    let child: ChildProcess
+    try {
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-NoLogo', '-Command', loop], {
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+    } catch {
+      this.fail()
+      return null
+    }
+    this.child = child
+    this.buffer = ''
+    child.stdout!.setEncoding('utf8')
+    child.stdout!.on('data', (text: string) => this.read(child, text))
+    // Never read, but drained: a full pipe would stop PowerShell mid-write.
+    child.stderr!.resume()
+    child.stdin!.on('error', () => {})
+    child.on('error', () => {
+      if (this.child === child) {
+        this.fail()
+        this.stop(new Error('PowerShell failed'))
+      }
+    })
+    child.on('exit', () => {
+      if (this.child === child) {
+        this.fail()
+        this.stop(new Error('PowerShell exited'))
+      }
+    })
+    child.unref()
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      ;(stream as unknown as { unref?: () => void } | null)?.unref?.()
+    }
+    return child
+  }
+
+  private read(child: ChildProcess, text: string): void {
+    if (this.child !== child) return
+    // A byte-order mark, if .NET writes one on the first output, is not output.
+    this.buffer += this.buffer ? text : text.replace(/^\uFEFF/, '')
+    const at = this.buffer.indexOf(this.marker)
+    if (at < 0) return
+    const out = this.buffer.slice(0, at)
+    this.buffer = this.buffer.slice(at + this.marker.length).replace(/^\r?\n/, '')
+    const current = this.current
+    this.current = null
+    if (current) {
+      clearTimeout(current.timer)
+      this.failures = 0
+      current.resolve(out)
+    }
+    this.next()
+  }
+
+  /** Counts a failure, and after a few in a row rests for a minute. */
+  private fail(): void {
+    this.failures++
+    if (this.failures >= 3) {
+      this.failures = 0
+      this.restUntil = Date.now() + 60_000
+    }
+  }
+
+  /** Ends the process and the script in it; queued scripts go to the next one. */
+  private stop(err: Error): void {
+    const child = this.child
+    this.child = null
+    this.buffer = ''
+    if (child) {
+      try {
+        child.kill()
+      } catch {
+        /* already gone */
+      }
+    }
+    const current = this.current
+    this.current = null
+    if (current) {
+      clearTimeout(current.timer)
+      current.reject(err)
+    }
+    if (!this.disposed) setTimeout(() => this.next(), 0)
+  }
+}
+
+const powershell = new PowerShellHost()
+
+/** Ends the kept PowerShell. Called when the app shuts down. */
+export function disposeSystemStats(): void {
+  powershell.dispose()
 }
 
 function runCommand(command: string, args: string[]): Promise<string> {

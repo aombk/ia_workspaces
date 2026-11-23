@@ -55,10 +55,14 @@ export function bothChanged(
   const key = (p: string) => (caseless ? p.toLowerCase() : p)
   const notSaved = new Set(unsaved.map(key))
   const notSent = new Set(unsent.map(key))
+  // An untracked folder is listed once, as `dir/`, not file by file — and a
+  // save coming in that adds a file inside it is exactly what git refuses to
+  // bring in over.
+  const folders = unsaved.filter((p) => p.endsWith('/')).map(key)
   const out: BothChanged[] = []
   for (const file of incoming) {
     const k = key(file.repoPath)
-    const a = notSaved.has(k)
+    const a = notSaved.has(k) || folders.some((dir) => k.startsWith(dir))
     const b = notSent.has(k)
     if (a || b) out.push({ repoPath: file.repoPath, here: a && b ? 'both' : a ? 'unsaved' : 'unsent' })
   }

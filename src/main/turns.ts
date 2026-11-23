@@ -143,8 +143,16 @@ async function scan(dataDir: string): Promise<TurnIndex> {
 
   if (touched) void saveCache()
 
-  return build(files)
+  // Nothing read and nothing gone: the index is the one already built. Asked
+  // for every minute and after every turn in every window, and the build
+  // copies and sorts every turn of every conversation each time.
+  if (!touched && lastBuilt) return { ...lastBuilt, scannedAt: Date.now() }
+  lastBuilt = build(files)
+  return lastBuilt
 }
+
+/** The index the last scan built, handed out again while nothing changes. Only ever crosses IPC, which copies it. */
+let lastBuilt: TurnIndex | null = null
 
 /** A transcript nothing has been read from yet. */
 function blank(): FileCache {

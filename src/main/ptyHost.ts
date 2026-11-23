@@ -51,8 +51,12 @@ export interface PtyBackendHooks {
    */
   onData(id: string, data: Buffer, backlog: boolean): void
   onExit(id: string, exit: { exitCode: number; signal?: number }): void
-  /** The broker went away mid-session. Panes are live but unreachable. */
-  onLost?(): void
+  /**
+   * The broker went away mid-session. Panes are live but unreachable. Says
+   * which connection, so a caller holding a newer one can ignore an old one's
+   * goodbye.
+   */
+  onLost?(backend: PtyBackend): void
 }
 
 export interface PtyBackend {
@@ -79,6 +83,12 @@ class BrokerBackend implements PtyBackend {
   private ref = 0
   private readonly waiting = new Map<number, (m: HostMessage) => void>()
   private closed = false
+  /**
+   * Set once the broker has accepted the hello. A connection refused at the
+   * door — wrong token, a broker from another build — was never a session
+   * host to lose, and reporting it as lost tore down a connect still under way.
+   */
+  private greeted = false
 
   constructor(
     private readonly socket: net.Socket,
@@ -120,7 +130,7 @@ class BrokerBackend implements PtyBackend {
     }
     this.waiting.clear()
     this.socket.destroy()
-    this.hooks.onLost?.()
+    if (this.greeted) this.hooks.onLost?.(this)
   }
 
   private send(message: Omit<ClientMessage, 'ref'>): Promise<HostMessage> {
@@ -137,7 +147,11 @@ class BrokerBackend implements PtyBackend {
   static async greet(socket: net.Socket, token: string, hooks: PtyBackendHooks): Promise<BrokerBackend> {
     const backend = new BrokerBackend(socket, hooks)
     const res = await backend.send({ t: 'hello', token, protocol: PROTOCOL_VERSION } as ClientMessage)
-    if (res.t !== 'hello') throw new Error(res.t === 'error' ? res.message : 'unexpected greeting')
+    if (res.t !== 'hello') {
+      backend.closed = true
+      throw new GreetingRefused(res.t === 'error' ? res.message : 'unexpected greeting')
+    }
+    backend.greeted = true
     return backend
   }
 
@@ -189,10 +203,17 @@ class BrokerBackend implements PtyBackend {
   release(): void {
     // Just hang up. The broker detaches us and keeps every shell running —
     // which is the entire reason this class exists.
+    //
+    // `end` rather than `destroy`: anything still queued on the socket — the
+    // kills `release` in the manager sends when shells are not to be kept —
+    // goes out ahead of the hang-up instead of being thrown away with it.
     this.closed = true
-    this.socket.destroy()
+    this.socket.end()
   }
 }
+
+/** The broker answered and said no. Retrying the same hello gets the same no. */
+class GreetingRefused extends Error {}
 
 // -------------------------------------------------------------------- local
 
@@ -342,6 +363,14 @@ export async function connectPtyHost(opts: HostLaunchOptions): Promise<PtyBacken
         return await BrokerBackend.greet(socket, token, opts.hooks)
       } catch (err) {
         socket.destroy()
+        // A broker from another build speaks another protocol, and will until
+        // its own shells are gone and it exits. Waiting out the retry budget
+        // cannot change that; it only made every launch after an upgrade
+        // take eight seconds before the first terminal opened.
+        if (err instanceof GreetingRefused && /protocol/i.test(err.message)) {
+          console.error('[ptyhost] the session host running is from another version', err.message)
+          break
+        }
         // A broker that is up but unreadable is worse than none: it holds the
         // address, so retrying forever would never succeed. One launch attempt
         // has already been made by now; fall through to the local backend.

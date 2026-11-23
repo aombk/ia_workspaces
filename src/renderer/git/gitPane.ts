@@ -363,9 +363,11 @@ export class GitPane implements AuxPane {
     if (this.view === 'changes') {
       const files = status.files
       const picked = files.filter((f) => f.picked && !f.conflicted).length
-      this.titleEl.textContent = files.length
-        ? `${files.length} changed file${files.length === 1 ? '' : 's'}${picked ? `, ${picked} picked (staged)` : ''}`
-        : 'No changes'
+      this.titleEl.textContent = status.unreadable
+        ? 'git could not read the changes'
+        : files.length
+          ? `${files.length} changed file${files.length === 1 ? '' : 's'}${picked ? `, ${picked} picked (staged)` : ''}`
+          : 'No changes'
     } else {
       this.titleEl.textContent = 'the saves in this project'
     }
@@ -556,6 +558,15 @@ export class GitPane implements AuxPane {
       this.bandEl.replaceChildren(...parts)
       this.bandEl.hidden = false
       return
+    }
+
+    if (status.unreadable) {
+      const failed = document.createElement('div')
+      failed.className = 'history-note warn'
+      failed.textContent =
+        `Git could not say what has changed here, so this pane is showing nothing rather than guessing. It said: ${status.unreadable}. ` +
+        'It tries again on its own; run git status in the terminal beside this pane to see more.'
+      parts.push(failed)
     }
 
     if (status.inProgress) {

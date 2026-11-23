@@ -26,6 +26,8 @@ const KEEP = 6
 interface Entry {
   scanned?: Scanned
   messages: ConversationMessage[]
+  /** The read under way, which a search arriving meanwhile waits on rather than repeats. */
+  reading?: Promise<boolean>
 }
 
 const cache = new Map<string, Entry>()
@@ -44,7 +46,24 @@ function isTranscript(file: string): boolean {
 export async function searchConversation(file: string, query: string): Promise<ConversationFind | null> {
   if (typeof file !== 'string' || typeof query !== 'string' || !isTranscript(file)) return null
   const key = path.resolve(file)
-  const entry = cache.get(key) ?? { messages: [] }
+  const entry: Entry = cache.get(key) ?? { messages: [] }
+  // Most recently asked last, so the oldest is the one let go. In the cache
+  // before the read, so a keystroke arriving during it finds this entry.
+  cache.delete(key)
+  cache.set(key, entry)
+  while (cache.size > KEEP) cache.delete(cache.keys().next().value!)
+
+  // One read at a time per file. Two overlapping reads would both start from
+  // the same offset and append the same messages twice; and on a first read
+  // of a long conversation, every keystroke would start another full parse.
+  entry.reading ??= refresh(key, entry).finally(() => {
+    entry.reading = undefined
+  })
+  if (!(await entry.reading)) return null
+  return findInConversation(entry.messages, query, LIMIT)
+}
+
+async function refresh(key: string, entry: Entry): Promise<boolean> {
   try {
     const read = await readAppended(
       key,
@@ -64,12 +83,8 @@ export async function searchConversation(file: string, query: string): Promise<C
       }
     )
     if (read) entry.scanned = read.scanned
+    return true
   } catch {
-    return null
+    return false
   }
-  // Most recently asked last, so the oldest is the one let go.
-  cache.delete(key)
-  cache.set(key, entry)
-  while (cache.size > KEEP) cache.delete(cache.keys().next().value!)
-  return findInConversation(entry.messages, query, LIMIT)
 }

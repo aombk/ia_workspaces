@@ -118,7 +118,12 @@ export async function worktreeAt(cwd: string): Promise<Worktree | null> {
   for (const wt of all) {
     if (wt.main) continue
     const root = path.resolve(wt.path)
-    if (here === root || here.startsWith(root + path.sep)) {
+    // Git prints `C:/…`, a shell often reports `c:\…`: on a filesystem that
+    // ignores case, so does the comparison.
+    const caseless = process.platform === 'win32' || process.platform === 'darwin'
+    const a = caseless ? here.toLowerCase() : here
+    const b = caseless ? root.toLowerCase() : root
+    if (a === b || a.startsWith(b + path.sep)) {
       if (!best || root.length > path.resolve(best.path).length) best = wt
     }
   }

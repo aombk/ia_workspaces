@@ -1585,6 +1585,10 @@ export class TerminalManager {
       const afterGrow = Number(after.style.flexGrow) || 1
       const totalGrow = beforeGrow + afterGrow
 
+      // One refit per frame, not per mouse event: each is a resize of every
+      // visible terminal and of its pty, and a full-screen program redraws on
+      // every one of those.
+      let frame = 0
       const onMove = (move: MouseEvent) => {
         const delta = (horizontal ? move.clientX : move.clientY) - startPos
         // Keep both panes usable rather than letting one collapse to nothing.
@@ -1592,13 +1596,21 @@ export class TerminalManager {
         const ratio = nextBefore / total
         before.style.flexGrow = String(totalGrow * ratio)
         after.style.flexGrow = String(totalGrow * (1 - ratio))
-        this.fitAll()
+        if (!frame) {
+          frame = requestAnimationFrame(() => {
+            frame = 0
+            this.fitAll()
+          })
+        }
       }
 
       const onUp = () => {
         divider.classList.remove('dragging')
         window.removeEventListener('mousemove', onMove)
         window.removeEventListener('mouseup', onUp)
+        if (frame) cancelAnimationFrame(frame)
+        frame = 0
+        this.fitAll()
         const sizes = slots.map((s) => Number(s.style.flexGrow) || 1)
         const sum = sizes.reduce((a, b) => a + b, 0) || 1
         store.setSplitSizes(tab.id, path, sizes.map((s) => s / sum))
@@ -1641,6 +1653,8 @@ export class TerminalManager {
           : {}),
       })
       this.startedOnce.add(pane.id)
+      // Closed while its shell was starting: there is no terminal to tell.
+      if (inst.disposed) continue
       if (!res.ok) {
         inst.spawned = false
         inst.term.write(`\r\n\x1b[31mFailed to start shell: ${res.error ?? 'unknown error'}\x1b[0m\r\n`)
@@ -2102,7 +2116,14 @@ export class TerminalManager {
     if (inst.element.clientHeight === 0 || inst.element.clientWidth === 0) return
     this.syncBlockedInset(inst)
     try {
-      inst.fit.fit()
+      const size = paneGrid(inst)
+      if (!size) return
+      if (size.cols !== inst.term.cols || size.rows !== inst.term.rows) {
+        // What the fit addon does before resizing: a full redraw, so no
+        // half-painted row is left behind at the old size.
+        ;(inst.term as any)._core._renderService.clear()
+        inst.term.resize(size.cols, size.rows)
+      }
     } catch {
       return
     }
@@ -2369,6 +2390,9 @@ export class TerminalManager {
     // So the next spawn counts as the first again and types the resume line.
     this.startedOnce.delete(inst.paneId)
     await backend().pty.sleep(inst.paneId)
+    // Closed meanwhile, or a key already woke it: the note would land on a
+    // dead terminal, or after "[resuming…]" saying the opposite.
+    if (inst.disposed || !inst.hibernated) return
     this.write(
       inst,
       `\r\n\x1b[38;5;244m[shell released after ${store.settings.idleAgentRelease} min idle` +
@@ -2526,15 +2550,34 @@ export class TerminalManager {
    * box does; Enter moves on.
    */
   findNext(query: string, typing = false): boolean {
-    return this.activeInstance()?.search.findNext(query, { incremental: typing, decorations: TerminalManager.FIND_LOOK }) ?? false
+    const inst = this.searchedInstance()
+    return inst?.search.findNext(query, { incremental: typing, decorations: TerminalManager.FIND_LOOK }) ?? false
   }
 
   findPrevious(query: string): boolean {
-    return this.activeInstance()?.search.findPrevious(query, { decorations: TerminalManager.FIND_LOOK }) ?? false
+    return this.searchedInstance()?.search.findPrevious(query, { decorations: TerminalManager.FIND_LOOK }) ?? false
   }
 
+  /**
+   * Clears the marks wherever they were drawn. Not only the active pane: the
+   * find bar stays open while you click into another pane or tab, and the one
+   * searched kept every amber mark until somebody searched it again.
+   */
   clearSearch(): void {
+    for (const inst of this.searched) {
+      if (!inst.disposed) inst.search.clearDecorations()
+    }
+    this.searched.clear()
     this.activeInstance()?.search.clearDecorations()
+  }
+
+  /** Panes the find bar has drawn marks in since it last cleared them. */
+  private readonly searched = new Set<Instance>()
+
+  private searchedInstance(): Instance | null {
+    const inst = this.activeInstance()
+    if (inst) this.searched.add(inst)
+    return inst
   }
 
   /**
@@ -2782,4 +2825,32 @@ function jobRowElement(row: JobRow, toggle: string): HTMLDivElement {
   el.appendChild(cell('pane-jobs__note', row.note ?? '', row.note))
   el.appendChild(cell('pane-jobs__toggle', toggle))
   return el
+}
+
+/**
+ * The columns and rows that fit inside a pane's padding.
+ *
+ * Not the fit addon's own answer: it measures the pane with `getComputedStyle`
+ * height, which under this app's `box-sizing: border-box` already includes the
+ * padding, and subtracts only the padding of xterm's own element. So the
+ * padding the blocked bar and the jobs strip are drawn into was counted as
+ * room for rows, and the last rows of the terminal — the prompt — ran under
+ * them. Same arithmetic otherwise: whole cells, and the scrollbar's width kept
+ * clear on the right.
+ */
+function paneGrid(inst: Instance): { cols: number; rows: number } | undefined {
+  const cell = (inst.term as any)._core?._renderService?.dimensions?.css?.cell
+  if (!cell || !cell.width || !cell.height) return undefined
+  const style = getComputedStyle(inst.element)
+  const px = (name: string) => parseFloat(style.getPropertyValue(name)) || 0
+  const outer = style.boxSizing === 'border-box'
+  const height =
+    px('height') - (outer ? px('padding-top') + px('padding-bottom') + px('border-top-width') + px('border-bottom-width') : 0)
+  const width =
+    px('width') - (outer ? px('padding-left') + px('padding-right') + px('border-left-width') + px('border-right-width') : 0)
+  const scrollbar = inst.term.options.scrollback === 0 ? 0 : inst.term.options.overviewRuler?.width || 14
+  return {
+    cols: Math.max(2, Math.floor((width - scrollbar) / cell.width)),
+    rows: Math.max(1, Math.floor(height / cell.height)),
+  }
 }
