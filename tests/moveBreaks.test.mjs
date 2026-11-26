@@ -79,13 +79,14 @@ check('switched off, nothing is counted or raised', () => {
 })
 
 check('settings from the document are kept within sense', () => {
-  assert.deepEqual(B.readBreakSettings({}), { enabled: true, everyMin: 25, breakMin: 5, equipment: [], avoid: [], waitMin: 20 })
+  assert.deepEqual(B.readBreakSettings({}), { enabled: true, everyMin: 25, breakMin: 5, equipment: [], avoid: [], kindsOff: [], waitMin: 20 })
   assert.deepEqual(B.readBreakSettings({ moveBreaks: false, moveEveryMin: 0, moveBreakMin: 99, moveEquipment: ['band', 3], moveAvoid: 'knees' }), {
     enabled: false,
     everyMin: 5,
     breakMin: 30,
     equipment: ['band'],
     avoid: [],
+    kindsOff: [],
     waitMin: 20,
   })
   assert.equal(B.readBreakSettings({ moveWaitMin: 0 }).waitMin, 0)
@@ -271,10 +272,34 @@ check('nothing that loads a part being spared is ever suggested', () => {
   }
 })
 
-check('avoiding everything still leaves a break: the walk, or resting the eyes', () => {
+check('avoiding everything still leaves a break: the walk, resting the eyes, breathing', () => {
   const avoid = E.STRAINS.map((s) => s.id)
   assert.deepEqual(E.pickChoices('standing', { avoid }), ['walk'])
-  assert.deepEqual(E.pickChoices('seated', { avoid }), ['eyes'])
+  assert.deepEqual(E.pickChoices('seated', { avoid }).sort(), ['breathing', 'eyes'])
+})
+
+check('a kind switched off is never suggested; rest is offered whatever is off', () => {
+  const kindsOff = E.KINDS.map((k) => k.id)
+  assert.deepEqual(E.pickChoices('standing', { kindsOff }), ['walk'])
+  assert.deepEqual(E.pickChoices('seated', { kindsOff }).sort(), ['breathing', 'eyes'])
+  const gentle = E.pickChoices('standing', { kindsOff: ['cardio', 'strength'] }).map(E.exercise)
+  assert.ok(gentle.length > 5)
+  for (const ex of gentle) assert.ok(['stretch', 'yoga', 'rest'].includes(ex.kind), ex.id)
+})
+
+check('every exercise has a known kind, and every kind has exercises in both postures', () => {
+  const kinds = new Set([...E.KINDS.map((k) => k.id), 'rest'])
+  for (const ex of E.EXERCISES) assert.ok(kinds.has(ex.kind), ex.id)
+  for (const k of E.KINDS) {
+    for (const posture of ['standing', 'seated']) {
+      assert.ok(E.EXERCISES.some((ex) => ex.kind === k.id && ex.posture === posture && !ex.equipment), `${k.id} ${posture}`)
+    }
+  }
+})
+
+check('exercise ids are unique', () => {
+  const ids = E.EXERCISES.map((ex) => ex.id)
+  assert.equal(new Set(ids).size, ids.length)
 })
 
 check('every exercise names known equipment and strains', () => {

@@ -6,6 +6,11 @@ All notable changes to this project.
 
 ### Added
 
+- **Yoga, more stretches, and a choice of kinds.** 22 new break exercises — chair
+  pose, warrior, tree, sun salutation, forward folds, a seated figure-four,
+  eagle arms, finger and tendon glides, slow breathing, and on a mat child's
+  pose, downward dog, sphinx, low lunge and a lying twist. Settings → Breaks →
+  *Kinds of exercise* turns off getting moving, strength, stretches or yoga.
 - **Reminders to get up.** After a stretch at the machine (25 minutes by
   default, counted from keyboard and mouse in any program) a short break with
   one exercise, standing or seated, covers the window. It waits for a pause

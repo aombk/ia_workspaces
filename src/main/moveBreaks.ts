@@ -128,7 +128,7 @@ export class MoveBreaks {
   private deal(posture: BreakPosture, settings: BreakSettings): string[] {
     const { choices, round } = dealChoices(
       posture,
-      { equipment: settings.equipment, avoid: settings.avoid },
+      { equipment: settings.equipment, avoid: settings.avoid, kindsOff: settings.kindsOff },
       this.rounds[posture],
       Math.random,
       this.records.at(-1)?.exercise

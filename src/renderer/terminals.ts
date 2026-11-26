@@ -323,6 +323,16 @@ export class TerminalManager {
       allowTransparency: isTranslucent(settings),
       // ConPTY already reflows; letting xterm do it too double-wraps.
       windowsPty: { backend: 'conpty' },
+      // Links a program marks up itself (OSC 8) — which is how Claude Code
+      // prints every link. Without a handler xterm uses its own: a "this link
+      // could be dangerous" confirm, then `window.open()` on a blank page that
+      // it fills in afterwards. Main refuses every popup and only passes on
+      // web addresses, and a blank page is not one, so clicking OK did
+      // nothing. Same route as a plain link in the text: the default browser.
+      linkHandler: {
+        activate: (_e, uri) => void backend().openExternal(uri),
+        allowNonHttpProtocols: false,
+      },
     })
 
     const fit = new FitAddon()

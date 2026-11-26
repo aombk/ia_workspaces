@@ -64,6 +64,8 @@ export interface BreakSettings {
   equipment: string[]
   /** What to leave alone — a bad knee, a sore back. See `STRAINS`. */
   avoid: string[]
+  /** Kinds of exercise switched off — no yoga, nothing but stretches. See `KINDS`. */
+  kindsOff: string[]
   /** Once owed, how many more minutes a break waits for you to pause. 0 raises it on time. */
   waitMin: number
 }
@@ -118,7 +120,7 @@ export const SNOOZE_MIN = 5
  */
 export const PAUSE_SEC = 20
 
-export const DEFAULT_BREAKS: BreakSettings = { enabled: true, everyMin: 25, breakMin: 5, equipment: [], avoid: [], waitMin: 20 }
+export const DEFAULT_BREAKS: BreakSettings = { enabled: true, everyMin: 25, breakMin: 5, equipment: [], avoid: [], kindsOff: [], waitMin: 20 }
 
 /** Settings as stored, made safe: a hand-edited zero must not raise a break every tick. */
 export function readBreakSettings(raw: {
@@ -127,6 +129,7 @@ export function readBreakSettings(raw: {
   moveBreakMin?: unknown
   moveEquipment?: unknown
   moveAvoid?: unknown
+  moveKindsOff?: unknown
   moveWaitMin?: unknown
 }): BreakSettings {
   const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
@@ -138,6 +141,7 @@ export function readBreakSettings(raw: {
     breakMin: num(raw.moveBreakMin, DEFAULT_BREAKS.breakMin, 1, 30),
     equipment: ids(raw.moveEquipment),
     avoid: ids(raw.moveAvoid),
+    kindsOff: ids(raw.moveKindsOff),
     waitMin: num(raw.moveWaitMin, DEFAULT_BREAKS.waitMin, 0, 120),
   }
 }

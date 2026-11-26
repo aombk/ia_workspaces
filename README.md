@@ -463,7 +463,12 @@ release. It turned out to solve problems other people have too, so here it is.
   mid-thought, and comes anyway after *Wait for a pause, up to*.
 
   Exercises are dealt like a shuffled deck: none repeats until every one has
-  come up, then the deck is shuffled again. Tick the equipment you have (a
+  come up, then the deck is shuffled again. There are over sixty — getting
+  moving, strength, stretches for what sitting tightens (hips, hamstrings,
+  chest, neck, wrists and fingers) and yoga, standing, in the chair or on a
+  mat — and *Kinds of exercise* switches any sort off, so a break can be
+  only stretching and yoga. Walking, resting your eyes and slow breathing are
+  always offered. Tick the equipment you have (a
   band, weights, a mat, a step…) and one minute of each break uses it; tick
   what to *Go easy on* — knees, lower back, wrists, balance, impact and so on —
   and nothing that works it is ever suggested. Skipping means typing a

@@ -12,7 +12,7 @@ import { refreshTokensNow } from './tokenMonitor'
 import { syncSystemStrip } from './systemStrip'
 import { appVersion, checkForUpdates, describeUpdate } from '../updates'
 import type { AgentConfigInfo } from '../../shared/types'
-import { EQUIPMENT, STRAINS } from '../../shared/exercises'
+import { EQUIPMENT, KINDS, STRAINS } from '../../shared/exercises'
 import type { OpenWithApp, ShellProfile, Settings, SoundName } from '../../shared/types'
 
 let onChange: (() => void) | null = null
@@ -1168,6 +1168,20 @@ async function render(): Promise<void> {
           'Sound when the break is over',
           'The notification sound, at its volume \u2014 set under Notifications.',
           toggle(s.moveSound !== false, (v) => patch({ moveSound: v }))
+        ),
+        subheading(
+          'Kinds of exercise',
+          'Which sorts a break may suggest. Switch off what you do not want \u2014 leave only Stretches ' +
+            'and Yoga for gentle breaks. Walking, resting your eyes and slow breathing are always offered.'
+        ),
+        ...KINDS.map((item) =>
+          field(
+            item.label,
+            item.hint,
+            toggle(!(s.moveKindsOff ?? []).includes(item.id), (v) =>
+              patch({ moveKindsOff: pick(store.settings.moveKindsOff ?? [], item.id, !v) })
+            )
+          )
         ),
         subheading(
           'Equipment you have',
